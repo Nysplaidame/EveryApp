@@ -1,0 +1,76 @@
+<style>
+  .win{border:1px solid #8884;border-radius:8px;padding:12px;font-size:13px;background:#ffffff08}
+  .bar{height:10px;border-radius:5px;background:#8883;overflow:hidden;margin:4px 0 8px}
+  .bar>i{display:block;height:100%;background:#3b82f6}
+  .bar.g>i{background:#22c55e}
+  .row{display:flex;justify-content:space-between;gap:8px;font-size:12px;opacity:.85}
+  .btns{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap}
+  .btns span{border:1px solid #8886;border-radius:4px;padding:3px 9px;font-size:12px}
+  .opts{display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;font-size:12px;margin-top:6px}
+  .opts label{display:flex;gap:5px;align-items:center}
+  .tip{font-size:11px;background:#fde68a;color:#222;border-radius:4px;padding:4px 6px;margin-top:6px}
+  .q{font-size:12px;border-top:1px dashed #8885;margin-top:8px;padding-top:6px}
+  .q div{display:flex;justify-content:space-between;padding:2px 0}
+  .muted{opacity:.6}
+  .sec{font-weight:600;font-size:11px;text-transform:uppercase;opacity:.6;margin-top:8px}
+</style>
+
+<h2>Copy window: which layout feels right?</h2>
+<p class="subtitle">This is what pops up when you press Ctrl+V. Same features in all three; they differ in how much is on screen at once. Click one (or tell me what to mix).</p>
+
+<div class="cards">
+
+  <div class="card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="card-image"><div class="win">
+      <b>Copying 1,248 files</b> <span class="muted">E:\Downloads → K:\Backup</span>
+      <div class="bar"><i style="width:42%"></i></div>
+      <div class="row"><span>42% · 61 GB of 146 GB</span><span>182 MB/s · ~8 min left</span></div>
+      <div class="row muted"><span>movie_2019.mkv</span><span>file 523 of 1,248</span></div>
+      <div class="btns"><span>⏸ Pause</span><span>✕ Cancel</span><span>⋯ More ▾</span></div>
+      <div class="tip">"More" opens options, the queue and the log.</div>
+    </div></div>
+    <div class="card-body"><h3>A · Compact</h3><p>Small and calm, like the Windows dialog but better. Options and the queue are one click away.</p></div>
+  </div>
+
+  <div class="card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="card-image"><div class="win">
+      <b>Copying 1,248 files</b> <span class="muted">E:\Downloads → K:\Backup</span>
+      <div class="sec">Total</div>
+      <div class="bar"><i style="width:42%"></i></div>
+      <div class="row"><span>61 / 146 GB</span><span>182 MB/s · ~8 min</span></div>
+      <div class="sec">Current file</div>
+      <div class="bar g"><i style="width:70%"></i></div>
+      <div class="row muted"><span>movie_2019.mkv</span><span>2.1 / 3.0 GB</span></div>
+      <div class="sec">Options for this copy</div>
+      <div class="opts">
+        <label>☑ Verify after copy ⓘ</label><label>☐ Skip files already there ⓘ</label>
+        <label>☑ Keep dates & attributes ⓘ</label><label>☐ Shut down when done ⓘ</label>
+        <label>If file exists: <u>Ask ▾</u></label><label>If a file fails: <u>Skip & list ▾</u></label>
+      </div>
+      <div class="tip">ⓘ Verify after copy: "Reads each copied file back and checks it matches the original. Slower, but you know nothing got damaged."</div>
+      <div class="btns"><span>⏸ Pause</span><span>✕ Cancel</span><span>📋 Log</span><span>⚠ 0 problems</span></div>
+    </div></div>
+    <div class="card-body"><h3>B · Everything visible</h3><p>Two progress bars plus the tick-box options right there while it copies. Bigger window, nothing hidden.</p></div>
+  </div>
+
+  <div class="card" data-choice="c" onclick="toggleSelect(this)">
+    <div class="card-image"><div class="win">
+      <b>Copying 1,248 files</b> <span class="muted">E:\Downloads → K:\Backup</span>
+      <div class="bar"><i style="width:42%"></i></div>
+      <div class="row"><span>42% · 61 / 146 GB</span><span>182 MB/s · ~8 min</span></div>
+      <div class="bar g"><i style="width:70%"></i></div>
+      <div class="row muted"><span>movie_2019.mkv</span><span>2.1 / 3.0 GB</span></div>
+      <div class="btns"><span>⏸ Pause</span><span>✕ Cancel</span></div>
+      <div class="q"><b>Tabs:</b> <u>Options</u> · Queue (2) · Files · Problems (0) · Log
+        <div><span>☑ Verify after copy ⓘ</span><span>☐ Shut down when done ⓘ</span></div>
+        <div><span>If file exists: Ask ▾</span><span>If a file fails: Skip & list ▾</span></div>
+      </div>
+      <div class="q muted"><b>Queue</b>
+        <div><span>⏳ H:\Skyrim → NAS (other drive, running alongside)</span><span>38%</span></div>
+        <div><span>⌛ E:\Photos → K:\ (waits: same source drive)</span><span>queued</span></div>
+      </div>
+    </div></div>
+    <div class="card-body"><h3>C · Compact top, tabs below</h3><p>Progress always on top; a tab strip underneath for options, queue, file list, problems and log. Can collapse to just the top half.</p></div>
+  </div>
+
+</div>
