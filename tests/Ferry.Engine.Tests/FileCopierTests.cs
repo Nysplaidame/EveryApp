@@ -60,7 +60,7 @@ public sealed class FileCopierTests
         Assert.Null(outcome.Problem);
         Assert.Equal(size, b.Fs.GetEntry(dst).Length);
         Assert.True(data.AsSpan().SequenceEqual(b.ReadAll(dst)), "Destination content differs from the source.");
-        Assert.False(b.Exists(dst + FileCopier.PartSuffix));
+        Assert.Empty(b.PartFiles());
         Assert.Equal(0, pool.Outstanding);
     }
 
@@ -90,23 +90,24 @@ public sealed class FileCopierTests
         using var pool = new BufferPool();
         var data = Bytes(MiB, seed: 1);
         var (src, dst) = (b.PathOf("src.bin"), b.PathOf("dst.bin"));
-        var part = dst + FileCopier.PartSuffix;
         b.AddFile(src, data);
-        bool? partDuring = null;
+        IReadOnlyList<string>? partsDuring = null;
         bool? destDuring = null;
         b.Faults.MutateDuringRead(src, 512 * KiB, () =>
         {
-            partDuring = b.Exists(part);
+            partsDuring = b.PartFiles();
             destDuring = b.Exists(dst);
         });
 
         var outcome = await new FileCopier(b.Fs, pool).CopyAsync(src, dst, new CopyOptions { BufferSizeBytes = 64 * KiB }, new PauseGate(), new LatestProgress(), Ct);
 
         Assert.True(outcome.Success, outcome.Problem?.Message);
-        Assert.True(partDuring);
+        var partDuring = Assert.Single(partsDuring!);
+        Assert.Matches(@"dst\.bin\.[0-9a-f]{8}\.ferrypart$", partDuring);
+        Assert.Equal(Path.GetFileName(outcome.PartPath), Path.GetFileName(partDuring));
         Assert.False(destDuring);
         Assert.True(b.Exists(dst));
-        Assert.False(b.Exists(part));
+        Assert.Empty(b.PartFiles());
     }
 
     [Theory]
@@ -124,7 +125,7 @@ public sealed class FileCopierTests
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
             new FileCopier(b.Fs, pool).CopyAsync(src, dst, new CopyOptions { BufferSizeBytes = MiB }, new PauseGate(), new LatestProgress(), cts.Token));
 
-        Assert.False(b.Exists(dst + FileCopier.PartSuffix));
+        Assert.Empty(b.PartFiles());
         Assert.False(b.Exists(dst));
         Assert.Equal(0, pool.Outstanding);
     }
@@ -228,7 +229,7 @@ public sealed class FileCopierTests
         Assert.False(outcome.Success);
         Assert.Equal("The file changed while it was being copied", outcome.Problem?.Message);
         Assert.False(b.Exists(dst));
-        Assert.False(b.Exists(dst + FileCopier.PartSuffix));
+        Assert.Empty(b.PartFiles());
         Assert.Equal(0, pool.Outstanding);
     }
 
@@ -246,7 +247,7 @@ public sealed class FileCopierTests
         Assert.False(outcome.Success);
         Assert.Equal(CopyMessages.SourceChanged, outcome.Problem?.Message);
         Assert.False(b.Exists(dst));
-        Assert.False(b.Exists(dst + FileCopier.PartSuffix));
+        Assert.Empty(b.PartFiles());
     }
 
     [Fact]
@@ -277,7 +278,7 @@ public sealed class FileCopierTests
         using var pool = new BufferPool();
         var (src, dst) = (b.PathOf("src.bin"), b.PathOf("dst.bin"));
         b.AddFile(src, Bytes(16 * MiB, seed: 10));
-        b.Faults.FailWrite(dst + FileCopier.PartSuffix, 5 * MiB, IoErrorKind.DiskFull);
+        b.Hooks.OnWrite = (path, offset) => IsPart(path) && offset >= 5 * MiB ? new FileSystemException(path, IoErrorKind.DiskFull, null) : null;
 
         var outcome = await new FileCopier(b.Fs, pool).CopyAsync(src, dst, new CopyOptions { BufferSizeBytes = MiB }, new PauseGate(), new LatestProgress(), Ct);
 
@@ -286,7 +287,7 @@ public sealed class FileCopierTests
         Assert.Equal(CopyMessages.NotEnoughSpace(b.DriveName), outcome.Problem?.Message);
         Assert.Equal(src, outcome.Problem?.Path);
         Assert.False(b.Exists(dst));
-        Assert.False(b.Exists(dst + FileCopier.PartSuffix));
+        Assert.Empty(b.PartFiles());
         Assert.Equal(0, pool.Outstanding);
     }
 
@@ -306,7 +307,7 @@ public sealed class FileCopierTests
         Assert.Equal(IoErrorKind.BadBlock, outcome.Problem?.Kind);
         Assert.Equal("The disk couldn't read part of this file", outcome.Problem?.Message);
         Assert.False(b.Exists(dst));
-        Assert.False(b.Exists(dst + FileCopier.PartSuffix));
+        Assert.Empty(b.PartFiles());
         Assert.Equal(0, pool.Outstanding);
     }
 
@@ -326,26 +327,130 @@ public sealed class FileCopierTests
         Assert.False(outcome.Success);
         Assert.Equal(IoErrorKind.AlreadyExists, outcome.Problem?.Kind);
         Assert.Equal(existing, b.ReadAll(dst));
-        Assert.False(b.Exists(dst + FileCopier.PartSuffix));
+        Assert.Empty(b.PartFiles());
         Assert.Equal(0, pool.Outstanding);
     }
 
     [Theory]
     [MemberData(nameof(Backends))]
-    public async Task Copy_StalePartFile_IsReplaced(string backend)
+    public async Task Copy_ExistingPartFiles_AreLeftUntouched(string backend)
     {
         using var b = Backend.Create(backend);
         using var pool = new BufferPool();
         var data = Bytes(10 * MiB, seed: 14);
         var (src, dst) = (b.PathOf("src.bin"), b.PathOf("dst.bin"));
         b.AddFile(src, data);
-        b.AddFile(dst + FileCopier.PartSuffix, Bytes(11 * MiB, seed: 15)); // left over from a crash, longer than the new copy
+        var oldStyle = dst + ".ferrypart";
+        var otherAttempt = dst + ".deadbeef.ferrypart";
+        var oldContent = Bytes(11 * MiB, seed: 15);
+        var otherContent = Bytes(3000, seed: 16);
+        b.AddFile(oldStyle, oldContent);
+        b.AddFile(otherAttempt, otherContent);
 
         var outcome = await new FileCopier(b.Fs, pool).CopyAsync(src, dst, new CopyOptions(), new PauseGate(), new LatestProgress(), Ct);
 
         Assert.True(outcome.Success, outcome.Problem?.Message);
         Assert.True(data.AsSpan().SequenceEqual(b.ReadAll(dst)));
-        Assert.False(b.Exists(dst + FileCopier.PartSuffix));
+        Assert.True(oldContent.AsSpan().SequenceEqual(b.ReadAll(oldStyle)), "A part file this attempt did not create was changed.");
+        Assert.Equal(otherContent, b.ReadAll(otherAttempt));
+        Assert.Equal(2, b.PartFiles().Count);
+        Assert.NotNull(outcome.PartPath);
+        Assert.Matches(@"dst\.bin\.[0-9a-f]{8}\.ferrypart$", outcome.PartPath);
+    }
+
+    [Theory]
+    [MemberData(nameof(Backends))]
+    public async Task Copy_ConcurrentToSameDestination_OneWins_NoPartsLeft(string backend)
+    {
+        using var b = Backend.Create(backend);
+        using var pool = new BufferPool();
+        var (srcA, srcB, dst) = (b.PathOf("a.bin"), b.PathOf("b.bin"), b.PathOf("dst.bin"));
+        var dataA = Bytes((8 * MiB) + 3, seed: 30);
+        var dataB = Bytes((6 * MiB) + 5, seed: 31);
+        b.AddFile(srcA, dataA);
+        b.AddFile(srcB, dataB);
+        using var bothAtMove = new CountdownEvent(2);
+        var partsSeenAtMove = 0;
+        b.Hooks.BeforeMove = (_, _) =>
+        {
+            bothAtMove.Signal();
+            if (bothAtMove.Wait(TimeSpan.FromSeconds(10)))
+            {
+                Interlocked.Exchange(ref partsSeenAtMove, b.PartFiles().Count); // both parts are complete and closed right now
+            }
+        };
+        var copier = new FileCopier(b.Fs, pool);
+        var options = new CopyOptions { BufferSizeBytes = 256 * KiB };
+
+        var a = Task.Run(() => copier.CopyAsync(srcA, dst, options, new PauseGate(), new LatestProgress(), Ct), Ct);
+        var c = Task.Run(() => copier.CopyAsync(srcB, dst, options, new PauseGate(), new LatestProgress(), Ct), Ct);
+        var outcomes = await Task.WhenAll(a, c);
+
+        Assert.Equal(2, partsSeenAtMove);
+        Assert.NotEqual(outcomes[0].PartPath, outcomes[1].PartPath);
+        Assert.Single(outcomes, o => o.Success);
+        var loser = Assert.Single(outcomes, o => !o.Success);
+        Assert.Equal(IoErrorKind.AlreadyExists, loser.Problem?.Kind);
+        var winnerData = outcomes[0].Success ? dataA : dataB;
+        Assert.True(winnerData.AsSpan().SequenceEqual(b.ReadAll(dst)), "Destination does not match the winning source.");
+        Assert.Empty(b.PartFiles());
+        Assert.Equal(0, pool.Outstanding);
+    }
+
+    [Theory]
+    [MemberData(nameof(Backends))]
+    public async Task Copy_WriterFailsWhileReaderMidRead_ReportsWritersError(string backend)
+    {
+        using var b = Backend.Create(backend);
+        using var pool = new BufferPool();
+        var (src, dst) = (b.PathOf("src.bin"), b.PathOf("dst.bin"));
+        b.AddFile(src, Bytes(4 * MiB, seed: 32));
+        b.Hooks.BlockRead = (path, offset) => offset >= MiB; // the reader sits in a read until it is cancelled, then fails like an aborted I/O
+        b.Hooks.OnWrite = (path, offset) => IsPart(path) ? new FileSystemException(path, IoErrorKind.DiskFull, null) : null;
+
+        var outcome = await new FileCopier(b.Fs, pool).CopyAsync(src, dst, new CopyOptions { BufferSizeBytes = MiB }, new PauseGate(), new LatestProgress(), Ct);
+
+        Assert.False(outcome.Success);
+        Assert.Equal(IoErrorKind.DiskFull, outcome.Problem?.Kind);
+        Assert.Equal(CopyMessages.NotEnoughSpace(b.DriveName), outcome.Problem?.Message);
+        Assert.Empty(b.PartFiles());
+        Assert.Equal(0, pool.Outstanding);
+    }
+
+    [Theory]
+    [MemberData(nameof(Backends))]
+    public async Task Copy_ProgressCallbackThrows_AfterRename_StillSucceeds(string backend)
+    {
+        using var b = Backend.Create(backend);
+        using var pool = new BufferPool();
+        var data = Bytes(1000, seed: 33);
+        var (src, dst) = (b.PathOf("src.bin"), b.PathOf("dst.bin"));
+        b.AddFile(src, data);
+
+        var outcome = await new FileCopier(b.Fs, pool).CopyAsync(src, dst, new CopyOptions(), new PauseGate(), new ThrowingProgress(), Ct);
+
+        Assert.True(outcome.Success, outcome.Problem?.Message);
+        Assert.Equal(data, b.ReadAll(dst));
+        Assert.Empty(b.PartFiles());
+    }
+
+    [Theory]
+    [MemberData(nameof(Backends))]
+    public async Task Copy_PartFileVanishesBeforeRename_ReportsPlainProblem(string backend)
+    {
+        using var b = Backend.Create(backend);
+        using var pool = new BufferPool();
+        var (src, dst) = (b.PathOf("src.bin"), b.PathOf("dst.bin"));
+        b.AddFile(src, Bytes(100_000, seed: 34));
+        b.Hooks.BeforeMove = (from, _) => b.Faults.Delete(from);
+
+        var outcome = await new FileCopier(b.Fs, pool).CopyAsync(src, dst, new CopyOptions(), new PauseGate(), new LatestProgress(), Ct);
+
+        Assert.False(outcome.Success);
+        Assert.Equal(IoErrorKind.NotFound, outcome.Problem?.Kind);
+        Assert.Equal("The temporary copy disappeared before it could be finished", outcome.Problem?.Message);
+        Assert.False(b.Exists(dst));
+        Assert.Empty(b.PartFiles());
     }
 
     [Fact]
@@ -384,6 +489,8 @@ public sealed class FileCopierTests
     }
 
     internal static CancellationToken Ct => TestContext.Current.CancellationToken;
+
+    internal static bool IsPart(string path) => path.EndsWith(FileCopier.PartSuffix, StringComparison.OrdinalIgnoreCase);
 
     internal static byte[] Bytes(int size, int seed)
     {
@@ -447,6 +554,91 @@ internal sealed class LatestProgress : IProgress<FileProgress>
     public void Report(FileProgress value) => Volatile.Write(ref _last, value);
 }
 
+/// <summary>A progress callback that always fails.</summary>
+internal sealed class ThrowingProgress : IProgress<FileProgress>
+{
+    public void Report(FileProgress value) => throw new InvalidOperationException("Progress callback failed.");
+}
+
+/// <summary>
+/// Decorator with test hooks for things <see cref="FaultInjectingFileSystem"/> cannot express: failing writes to files whose name is not
+/// known in advance, a read that hangs until cancelled (then fails like an aborted I/O), and a hook just before a move.
+/// </summary>
+internal sealed class HookFileSystem(IFileSystem inner) : IFileSystem
+{
+    /// <summary>Returns an exception to throw for a write to (path, offset), or null to let it through.</summary>
+    public Func<string, long, Exception?>? OnWrite { get; set; }
+
+    /// <summary>True for a read at (path, offset) that should wait for cancellation and then fail.</summary>
+    public Func<string, long, bool>? BlockRead { get; set; }
+
+    public Action<string, string>? BeforeMove { get; set; }
+
+    public IReadHandle OpenRead(string path, bool unbuffered) => new ReadHandle(this, path, inner.OpenRead(path, unbuffered));
+
+    public IWriteHandle CreateWrite(string path, long preallocate, bool unbuffered) =>
+        new WriteHandle(this, path, inner.CreateWrite(path, preallocate, unbuffered));
+
+    public FileEntry GetEntry(string path) => inner.GetEntry(path);
+
+    public FileEntry GetEntryFollowingLinks(string path) => inner.GetEntryFollowingLinks(path);
+
+    public IEnumerable<FileEntry> EnumerateChildren(string directory) => inner.EnumerateChildren(directory);
+
+    public void CreateDirectory(string path) => inner.CreateDirectory(path);
+
+    public void Move(string source, string destination, bool overwrite)
+    {
+        BeforeMove?.Invoke(source, destination);
+        inner.Move(source, destination, overwrite);
+    }
+
+    public void Delete(string path) => inner.Delete(path);
+
+    public void SetMetadata(string path, FileAttributes attributes, DateTime creationUtc, DateTime lastWriteUtc) =>
+        inner.SetMetadata(path, attributes, creationUtc, lastWriteUtc);
+
+    public long GetFreeSpace(string path) => inner.GetFreeSpace(path);
+
+    public int GetSectorSize(string path) => inner.GetSectorSize(path);
+
+    private sealed class ReadHandle(HookFileSystem fs, string path, IReadHandle inner) : IReadHandle
+    {
+        public long Length => inner.Length;
+
+        public ValueTask<int> ReadAsync(Memory<byte> buffer, long offset, CancellationToken ct) =>
+            fs.BlockRead?.Invoke(path, offset) == true ? BlockAsync(ct) : inner.ReadAsync(buffer, offset, ct);
+
+        public ValueTask DisposeAsync() => inner.DisposeAsync();
+
+        private async ValueTask<int> BlockAsync(CancellationToken ct)
+        {
+            try
+            {
+                await Task.Delay(Timeout.Infinite, ct);
+            }
+            catch (OperationCanceledException ex)
+            {
+                throw new FileSystemException(path, IoErrorKind.Other, ex); // like ERROR_OPERATION_ABORTED surfacing as an I/O error
+            }
+
+            return 0;
+        }
+    }
+
+    private sealed class WriteHandle(HookFileSystem fs, string path, IWriteHandle inner) : IWriteHandle
+    {
+        public ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, long offset, CancellationToken ct) =>
+            fs.OnWrite?.Invoke(path, offset) is { } ex ? ValueTask.FromException(ex) : inner.WriteAsync(buffer, offset, ct);
+
+        public ValueTask SetLengthAsync(long length) => inner.SetLengthAsync(length);
+
+        public ValueTask FlushAsync() => inner.FlushAsync();
+
+        public ValueTask DisposeAsync() => inner.DisposeAsync();
+    }
+}
+
 /// <summary>Fake clock whose timers fire at once and move the clock forward by their due time, so delays cost no real time.</summary>
 internal sealed class AutoAdvancingTime : TimeProvider
 {
@@ -494,11 +686,14 @@ internal sealed class Backend : IDisposable
         _root = root;
         Memory = memory;
         Faults = new FaultInjectingFileSystem(inner);
+        Hooks = new HookFileSystem(Faults);
     }
 
     public FaultInjectingFileSystem Faults { get; }
 
-    public IFileSystem Fs => Faults;
+    public HookFileSystem Hooks { get; }
+
+    public IFileSystem Fs => Hooks;
 
     /// <summary>The in-memory fake, or null for real files.</summary>
     public InMemoryFileSystem? Memory { get; }
@@ -521,6 +716,10 @@ internal sealed class Backend : IDisposable
     }
 
     public string PathOf(string name) => Path.Combine(_root, name);
+
+    /// <summary>Every <c>*.ferrypart</c> file in the test folder.</summary>
+    public IReadOnlyList<string> PartFiles() =>
+        Fs.EnumerateChildren(_root).Select(e => e.FullPath).Where(FileCopierTests.IsPart).ToList();
 
     public void AddFile(string path, byte[] data)
     {

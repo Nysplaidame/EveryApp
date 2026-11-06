@@ -8,6 +8,7 @@ public static class CopyMessages
     public const string SourceChanged = "The file changed while it was being copied";
     public const string CouldNotRead = "The disk couldn't read part of this file";
     public const string CouldNotWrite = "The disk couldn't save part of this file";
+    public const string PartFileVanished = "The temporary copy disappeared before it could be finished";
     public const string WrongSize = "The copy didn't come out the same size as the original";
     public const string NetworkLost = "The network connection was lost";
     public const string SourceMissing = "The file couldn't be found";

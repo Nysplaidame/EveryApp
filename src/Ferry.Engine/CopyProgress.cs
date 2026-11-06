@@ -7,5 +7,7 @@ public sealed record FileProgress(string RelativePath, long Done, long Total);
 /// Result of copying one file. When <paramref name="Success"/> is true the destination holds the complete data; <paramref name="Problem"/> may
 /// still carry a warning (for example dates and attributes could not be kept). When false, nothing was left under the destination name.
 /// <paramref name="SourceHash"/> is the hash of exactly the bytes read (null when neither verify nor checksum export is on).
+/// <paramref name="PartPath"/> is the temporary part-file name this attempt used (null if it never created one), so the job journal can
+/// record it and clean up after a crash. The copier itself never touches a part file it did not create.
 /// </summary>
-public sealed record FileCopyOutcome(bool Success, byte[]? SourceHash, Problem? Problem);
+public sealed record FileCopyOutcome(bool Success, byte[]? SourceHash, Problem? Problem, string? PartPath = null);

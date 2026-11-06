@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
+using System.Security.Cryptography;
 using System.Threading.Channels;
 using EveryApp.Core.FileSystem;
 using EveryApp.Core.Hashing;
@@ -8,7 +9,7 @@ using EveryApp.Core.Jobs;
 namespace Ferry.Engine;
 
 /// <summary>
-/// Copies one file. Data goes to <c>&lt;destination&gt;.ferrypart</c> and only takes the real name (by rename) once it is complete, flushed,
+/// Copies one file. Data goes to a part file, <c>&lt;destination&gt;.&lt;random&gt;.ferrypart</c>, and only takes the real name (by rename) once it is complete, flushed,
 /// the right size, and the source did not change meanwhile; the real name never holds partial content. Every failure or cancellation
 /// deletes the part file. Large files stream through a reader loop and a writer loop joined by a small bounded queue of pooled, aligned buffers.
 /// Thread safe: one instance can run many copies at once.
@@ -73,7 +74,7 @@ public sealed class FileCopier
             ArgumentOutOfRangeException.ThrowIfNegativeOrZero(limit);
         }
 
-        var part = destination + PartSuffix;
+        string? part = null;
         IReadHandle? reader = null;
         IWriteHandle? writer = null;
         StreamingHasher? hasher = null;
@@ -88,10 +89,10 @@ public sealed class FileCopier
             reader = _fs.OpenRead(source, unbuffered);
             if (reader.Length != length)
             {
-                return Failed(source, IoErrorKind.Other, CopyMessages.SourceChanged);
+                return Failed(source, IoErrorKind.Other, CopyMessages.SourceChanged, part);
             }
 
-            writer = CreatePart(part, length, unbuffered);
+            (writer, part) = CreatePart(destination, length, unbuffered);
             partIsOurs = true;
             if (options.Verify || options.ExportChecksums)
             {
@@ -126,32 +127,35 @@ public sealed class FileCopier
             var after = _fs.GetEntry(source);
             if (after.Length != length || after.LastWriteTimeUtc != before.LastWriteTimeUtc)
             {
-                return Failed(source, IoErrorKind.Other, CopyMessages.SourceChanged);
+                return Failed(source, IoErrorKind.Other, CopyMessages.SourceChanged, part);
             }
 
             if (_fs.GetEntry(part).Length != length)
             {
-                return Failed(source, IoErrorKind.Other, CopyMessages.WrongSize);
+                return Failed(source, IoErrorKind.Other, CopyMessages.WrongSize, part);
             }
 
             ct.ThrowIfCancellationRequested();
             _fs.Move(part, destination, overwrite: false);
             partIsOurs = false;
-            transfer.ReportProgress(force: true);
+            ReportFinalProgress(transfer);
             var hash = hasher?.Finish();
 
             // After the rename (a rename can change them), and ReadOnly last so it cannot block the rename.
             var warning = options.KeepDatesAndAttributes ? ApplyMetadata(source, destination, before) : null;
-            return new FileCopyOutcome(true, hash, warning);
+            return new FileCopyOutcome(true, hash, warning, part);
         }
         catch (SourceChangedException)
         {
-            return Failed(source, IoErrorKind.Other, CopyMessages.SourceChanged);
+            return Failed(source, IoErrorKind.Other, CopyMessages.SourceChanged, part);
         }
         catch (FileSystemException ex) when (!ct.IsCancellationRequested)
         {
-            var atDestination = SamePath(ex.Path, part) || SamePath(ex.Path, destination);
-            return Failed(source, ex.Kind, CopyMessages.For(ex.Kind, atDestination, DriveOf(destination)));
+            var atPart = part is not null && SamePath(ex.Path, part);
+            var message = atPart && ex.Kind == IoErrorKind.NotFound
+                ? CopyMessages.PartFileVanished
+                : CopyMessages.For(ex.Kind, atPart || SamePath(ex.Path, destination), DriveOf(destination));
+            return Failed(source, ex.Kind, message, part);
         }
         catch (FileSystemException ex)
         {
@@ -164,7 +168,22 @@ public sealed class FileCopier
         }
     }
 
-    private static FileCopyOutcome Failed(string source, IoErrorKind kind, string message) => new(false, null, new Problem(source, kind, message));
+    private static FileCopyOutcome Failed(string source, IoErrorKind kind, string message, string? part) =>
+        new(false, null, new Problem(source, kind, message), part);
+
+    /// <summary>The copy is already complete under its real name, so a failing progress callback must not turn it into a failure.</summary>
+    private static void ReportFinalProgress(Transfer transfer)
+    {
+#pragma warning disable CA1031 // The callback belongs to the caller; the file is done whatever it throws.
+        try
+        {
+            transfer.ReportProgress(force: true);
+        }
+        catch (Exception)
+        {
+        }
+#pragma warning restore CA1031
+    }
 
     private static int ChunkSizeFor(CopyOptions options, int alignment)
     {
@@ -206,22 +225,25 @@ public sealed class FileCopier
         return p.StartsWith(@"\\?\", StringComparison.Ordinal) ? p[4..] : p;
     }
 
-    /// <summary>Creates the part file. One left behind by a crash is ours and never trusted: it is deleted and created again.</summary>
-    private IWriteHandle CreatePart(string part, long length, bool unbuffered)
+    /// <summary>
+    /// Creates this attempt's part file, <c>&lt;destination&gt;.&lt;8 random hex&gt;.ferrypart</c>. The random name means a concurrent job or a
+    /// crashed earlier attempt can never share it, and nothing that already exists is ever deleted or reused (stale parts are cleaned up from
+    /// the job journal). A name clash is retried with a fresh name, up to three times.
+    /// </summary>
+    private (IWriteHandle Handle, string Path) CreatePart(string destination, long length, bool unbuffered)
     {
-        try
+        const int MaxAttempts = 4;
+        for (var attempt = 1; ; attempt++)
         {
-            return _fs.CreateWrite(part, length, unbuffered);
-        }
-        catch (FileSystemException ex) when (ex.Kind == IoErrorKind.AlreadyExists)
-        {
-            if (_fs.GetEntry(part).Attributes.HasFlag(FileAttributes.Directory))
+            var part = $"{destination}.{RandomNumberGenerator.GetHexString(8, lowercase: true)}{PartSuffix}";
+            try
             {
-                throw;
+                return (_fs.CreateWrite(part, length, unbuffered), part);
             }
-
-            _fs.Delete(part);
-            return _fs.CreateWrite(part, length, unbuffered);
+            catch (FileSystemException ex) when (ex.Kind == IoErrorKind.AlreadyExists && attempt < MaxAttempts)
+            {
+                // Someone else's file has this name: leave it alone and pick another.
+            }
         }
     }
 
@@ -305,6 +327,7 @@ public sealed class FileCopier
         int alignment,
         bool unbuffered)
     {
+        private Exception? _firstFailure; // whichever loop faulted first
         private long _done; // write side
         private long _lastReport = time.GetTimestamp(); // write side
 
@@ -387,8 +410,9 @@ public sealed class FileCopier
                 return;
             }
 
-            // Report the failure that started it, not the cancellation it caused on the other side.
-            var primary = RealFailure(readTask) ?? RealFailure(writeTask);
+            // Report the failure that started it, not the cancellation (or aborted I/O) it then caused on the other side.
+            var first = Volatile.Read(ref _firstFailure);
+            var primary = IsReal(first) ? first : RealFailure(readTask) ?? RealFailure(writeTask);
             if (primary is not null)
             {
                 ExceptionDispatchInfo.Throw(primary);
@@ -398,8 +422,11 @@ public sealed class FileCopier
             throw new OperationCanceledException(ct);
         }
 
-        private static Exception? RealFailure(Task task) =>
-            task.Exception?.InnerException is { } e and not OperationCanceledException and not ChannelClosedException ? e : null;
+        private static Exception? RealFailure(Task task) => IsReal(task.Exception?.InnerException) ? task.Exception!.InnerException : null;
+
+        private static bool IsReal(Exception? e) => e is not null and not OperationCanceledException and not ChannelClosedException;
+
+        private void RecordFailure(Exception ex) => Interlocked.CompareExchange(ref _firstFailure, ex, null);
 
         private async Task ReadLoopAsync(ChannelWriter<Chunk> output, CancellationTokenSource cts)
         {
@@ -432,12 +459,20 @@ public sealed class FileCopier
                     pool.Return(buffer);
                 }
 
+                RecordFailure(ex);
                 output.TryComplete(ex);
                 await cts.CancelAsync().ConfigureAwait(false);
                 throw;
             }
         }
 
+        // Design note for Task 16 (ruling R27): this loop keeps ONE write in flight per file. To raise it, keep up to N WriteChunkAsync
+        // calls outstanding (e.g. a SemaphoreSlim(N) or a small ring of pending tasks) and return each chunk's buffer when its own write
+        // completes. The change is local: every chunk carries its own offset, so writes may complete in any order. Two rules must hold:
+        // (1) the final short (unaligned) tail write is issued only after every earlier write has completed, because the handle zero-pads
+        // it to a whole sector and trims the file to the data end on flush; (2) progress adds bytes as each write completes (Interlocked)
+        // and never assumes in-order completion. FileOptions.WriteThrough on unbuffered handles is not needed for safety:
+        // FlushFileBuffers runs before the rename, so the real name only ever appears on durable data.
         private async Task WriteLoopAsync(ChannelReader<Chunk> input, CancellationTokenSource cts)
         {
             var ct = cts.Token;
@@ -458,8 +493,9 @@ public sealed class FileCopier
                     }
                 }
             }
-            catch (Exception)
+            catch (Exception ex)
             {
+                RecordFailure(ex);
                 await cts.CancelAsync().ConfigureAwait(false);
                 throw;
             }
