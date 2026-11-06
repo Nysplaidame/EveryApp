@@ -31,37 +31,42 @@ public sealed class DriveAwareScheduler
 
     /// <summary>
     /// Completes when the job may start. Dispose the returned handle when the job ends (disposing twice is harmless).
-    /// Cancelling while waiting removes the job from the queue and throws <see cref="OperationCanceledException"/>.
+    /// Cancelling while waiting (or in a race with admission) removes the job and throws <see cref="OperationCanceledException"/>; a cancelled caller never receives a handle.
     /// </summary>
-    public Task<IAsyncDisposable> AcquireAsync(string source, string destination, CancellationToken ct)
+    public async Task<IAsyncDisposable> AcquireAsync(string source, string destination, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(source);
         ArgumentNullException.ThrowIfNull(destination);
         ct.ThrowIfCancellationRequested();
 
+        // Resolved before taking the lock: resolution never runs under it.
         var devices = _resolver.Resolve(source).Union(_resolver.Resolve(destination));
         var entry = new Entry(devices);
-        bool mustWait;
         lock (_gate)
         {
             _queue.Add(entry);
             Pump();
-            mustWait = !entry.Running;
         }
 
-        if (!mustWait)
+        if (!entry.Started.Task.IsCompleted)
         {
-            return entry.Started.Task; // already completed
+            RaiseWaiting($"{source} to {destination}");
+            if (ct.CanBeCanceled)
+            {
+                // Registered after queueing; a token cancelled in between fires the callback immediately.
+                entry.CancelRegistration = ct.Register(() => Cancel(entry, ct));
+            }
         }
 
-        RaiseWaiting($"{source} to {destination}");
-        if (ct.CanBeCanceled)
+        var lease = await entry.Started.Task.ConfigureAwait(false);
+        if (ct.IsCancellationRequested)
         {
-            // Registered after queueing; a token cancelled in between fires the callback immediately.
-            entry.CancelRegistration = ct.Register(() => Cancel(entry, ct));
+            // Admitted in a race with cancellation: never hand a lease to a cancelled caller.
+            await lease.DisposeAsync().ConfigureAwait(false);
+            throw new OperationCanceledException(ct);
         }
 
-        return entry.Started.Task;
+        return lease;
     }
 
     private void RaiseWaiting(string label)

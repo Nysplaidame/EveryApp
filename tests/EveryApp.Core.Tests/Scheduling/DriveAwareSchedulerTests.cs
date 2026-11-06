@@ -227,4 +227,104 @@ public sealed class DriveAwareSchedulerTests
         await using var lease = await scheduler.AcquireAsync("a", "b", Ct).WaitAsync(Long, Ct);
         Assert.NotNull(lease);
     }
+
+    private sealed class IdListResolver : IDeviceResolver
+    {
+        public DeviceSet Resolve(string path) => DeviceSet.Of(path.Split(','));
+    }
+
+    [Fact]
+    public async Task OneRelease_AdmitsTwoNonOverlappingWaiters()
+    {
+        var scheduler = new DriveAwareScheduler(new IdListResolver());
+
+        var first = await scheduler.AcquireAsync("disk:1,disk:2", "disk:9", Ct);
+        var b = scheduler.AcquireAsync("disk:1", "disk:10", Ct);
+        var c = scheduler.AcquireAsync("disk:2", "disk:11", Ct);
+        Assert.False(b.IsCompleted);
+        Assert.False(c.IsCompleted);
+
+        await first.DisposeAsync();
+
+        await using var leaseB = await b.WaitAsync(Long, Ct);
+        await using var leaseC = await c.WaitAsync(Long, Ct);
+        Assert.NotNull(leaseB);
+        Assert.NotNull(leaseC);
+    }
+
+    [Fact]
+    public async Task CancelledAfterAdmission_ReleasesLeaseAndThrows()
+    {
+        var scheduler = new DriveAwareScheduler(new IdListResolver());
+        var first = await scheduler.AcquireAsync("disk:1", "disk:2", Ct);
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(Ct);
+        // Race simulation: by the time the waiting job is told to wait, the blocker has finished AND the caller cancelled.
+        scheduler.Waiting += (_, _) =>
+        {
+            first.DisposeAsync().AsTask().GetAwaiter().GetResult();
+            cts.Cancel();
+        };
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => scheduler.AcquireAsync("disk:1", "disk:3", cts.Token));
+
+        // The lease it briefly held must have been released.
+        await using var next = await scheduler.AcquireAsync("disk:1", "disk:4", Ct).WaitAsync(Long, Ct);
+        Assert.NotNull(next);
+    }
+
+    [Fact]
+    public async Task WaitingIsNotRaised_ForJobThatAlreadyStarted()
+    {
+        var scheduler = new DriveAwareScheduler(new IdListResolver());
+        var raised = 0;
+        scheduler.Waiting += (_, _) => raised++;
+
+        await using var a = await scheduler.AcquireAsync("disk:1", "disk:2", Ct);
+        await using var b = await scheduler.AcquireAsync("disk:3", "disk:4", Ct);
+
+        Assert.Equal(0, raised);
+    }
+
+    [Fact]
+    public async Task Stress_OverlappingJobsAreNeverActiveTogether_AndNothingHangs()
+    {
+        const int Devices = 6;
+        var scheduler = new DriveAwareScheduler(new IdListResolver());
+        var active = new int[Devices];
+        var violations = 0;
+        var completed = 0;
+
+        async Task Checked(int seed)
+        {
+            var rng = new Random(seed);
+            for (var i = 0; i < 200; i++)
+            {
+                var a = rng.Next(Devices);
+                var b = rng.Next(Devices);
+                var set = new[] { a, b }.Distinct().ToArray();
+                await using var lease = await scheduler.AcquireAsync("disk:" + a, "disk:" + b, CancellationToken.None);
+                foreach (var d in set)
+                {
+                    if (Interlocked.Increment(ref active[d]) != 1)
+                    {
+                        Interlocked.Increment(ref violations);
+                    }
+                }
+
+                await Task.Yield();
+                foreach (var d in set)
+                {
+                    Interlocked.Decrement(ref active[d]);
+                }
+
+                Interlocked.Increment(ref completed);
+            }
+        }
+
+        var workers = Enumerable.Range(0, 8).Select(t => Task.Run(() => Checked(t + 1), Ct)).ToArray();
+        await Task.WhenAll(workers).WaitAsync(TimeSpan.FromSeconds(20), Ct);
+
+        Assert.Equal(0, violations);
+        Assert.Equal(8 * 200, completed);
+    }
 }
