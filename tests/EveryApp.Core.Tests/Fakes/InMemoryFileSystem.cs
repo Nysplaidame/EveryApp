@@ -29,7 +29,7 @@ public sealed class InMemoryFileSystem : IFileSystem
     public int SectorSize { get; set; } = 512;
 
     /// <summary>Test helper: creates parent directories and the file in one go.</summary>
-    public void AddFile(string path, byte[] content)
+    public void AddFile(string path, byte[] content, uint reparseTag = 0)
     {
         lock (_lock)
         {
@@ -38,6 +38,12 @@ public sealed class InMemoryFileSystem : IFileSystem
             var node = NewNode(key, isDirectory: false);
             node.Data = content.ToArray();
             node.Length = content.Length;
+            node.Tag = reparseTag;
+            if (reparseTag != 0)
+            {
+                node.Attributes |= FileAttributes.ReparsePoint;
+            }
+
             _nodes[key] = node;
         }
     }
@@ -46,7 +52,13 @@ public sealed class InMemoryFileSystem : IFileSystem
     /// Test helper: adds a junction-like directory at <paramref name="path"/> whose children are those of <paramref name="targetDirectory"/>
     /// (listed under the junction's own path). It has its own file id and the reparse-point attribute, like a real junction.
     /// </summary>
-    public void AddJunction(string path, string targetDirectory)
+    public void AddJunction(string path, string targetDirectory) => AddReparseDirectory(path, 0xA0000003, targetDirectory);
+
+    /// <summary>
+    /// Test helper: adds a directory carrying an arbitrary reparse tag. With a <paramref name="targetDirectory"/> its children are the target's
+    /// (a link); without, it lists its own children (like a cloud placeholder folder).
+    /// </summary>
+    public void AddReparseDirectory(string path, uint reparseTag, string? targetDirectory = null)
     {
         lock (_lock)
         {
@@ -54,8 +66,29 @@ public sealed class InMemoryFileSystem : IFileSystem
             EnsureDirectories(ParentOf(key));
             var node = NewNode(key, isDirectory: true);
             node.Attributes = FileAttributes.Directory | FileAttributes.ReparsePoint;
-            node.TargetKey = Key(targetDirectory);
+            node.Tag = reparseTag;
+            node.TargetKey = targetDirectory is null ? null : Key(targetDirectory);
             _nodes[key] = node;
+        }
+    }
+
+    /// <summary>Test helper: lists <paramref name="entry"/> as an extra child of the directory (to simulate a misbehaving file system).</summary>
+    public void InjectListingEntry(string directory, FileEntry entry)
+    {
+        lock (_lock)
+        {
+            EnsureDirectories(Key(directory));
+            Get(directory).Injected.Add(entry);
+        }
+    }
+
+    /// <summary>Test helper: the directory's listing returns <paramref name="count"/> children and then throws a network error.</summary>
+    public void FailListingAfter(string directory, int count)
+    {
+        lock (_lock)
+        {
+            EnsureDirectories(Key(directory));
+            Get(directory).FailAfter = count;
         }
     }
 
@@ -127,6 +160,15 @@ public sealed class InMemoryFileSystem : IFileSystem
         }
     }
 
+    public FileEntry GetEntryFollowingLinks(string path)
+    {
+        lock (_lock)
+        {
+            var node = Get(path);
+            return node.TargetKey is null ? ToEntry(node) : ToEntry(Get(node.TargetKey), node.Key);
+        }
+    }
+
     public IEnumerable<FileEntry> EnumerateChildren(string directory)
     {
         lock (_lock)
@@ -142,16 +184,37 @@ public sealed class InMemoryFileSystem : IFileSystem
                 throw Fail(directory, IoErrorKind.AccessDenied);
             }
 
-            var shown = dir.Key.EndsWith('\\') ? dir.Key : dir.Key + "\\";
+            var requested = Key(directory);
+            var shown = requested.EndsWith('\\') ? requested : requested + "\\";
             var source = dir.TargetKey is null ? dir : Get(dir.TargetKey);
             var prefix = source.Key.EndsWith('\\') ? source.Key : source.Key + "\\";
-            return _nodes.Values
+            var list = _nodes.Values
                 .Where(n => n.Key.Length > prefix.Length
                     && n.Key.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
                     && n.Key.IndexOf('\\', prefix.Length) < 0)
                 .OrderBy(n => n.Key, StringComparer.OrdinalIgnoreCase)
                 .Select(n => ToEntry(n, shown + n.Key[prefix.Length..]))
+                .Concat(dir.Injected)
                 .ToList();
+            return dir.FailAfter is { } after ? FailingListing(list, after, directory) : list;
+        }
+    }
+
+    private static IEnumerable<FileEntry> FailingListing(List<FileEntry> list, int after, string directory)
+    {
+        for (var i = 0; i < list.Count; i++)
+        {
+            if (i == after)
+            {
+                throw Fail(directory, IoErrorKind.NetworkLost);
+            }
+
+            yield return list[i];
+        }
+
+        if (after >= list.Count)
+        {
+            throw Fail(directory, IoErrorKind.NetworkLost);
         }
     }
 
@@ -270,7 +333,7 @@ public sealed class InMemoryFileSystem : IFileSystem
         };
     }
 
-    private Node Get(string path)
+    private Node Get(string path, int depth = 0)
     {
         var key = Key(path);
         if (_nodes.TryGetValue(key, out var node))
@@ -283,6 +346,16 @@ public sealed class InMemoryFileSystem : IFileSystem
             node = NewNode(key.EndsWith('\\') ? key : key + "\\", isDirectory: true);
             _nodes[key] = node;
             return node;
+        }
+
+        // A path below a junction resolves to the same object below the junction's target.
+        var previous = key;
+        for (var parent = ParentOf(key); parent.Length > 0 && parent.Length < previous.Length; previous = parent, parent = ParentOf(parent))
+        {
+            if (_nodes.TryGetValue(parent, out var link) && link.TargetKey is not null)
+            {
+                return depth < 40 ? Get(link.TargetKey + key[parent.Length..], depth + 1) : throw Fail(path, IoErrorKind.NotFound);
+            }
         }
 
         throw Fail(path, IoErrorKind.NotFound);
@@ -338,7 +411,8 @@ public sealed class InMemoryFileSystem : IFileSystem
         n.LastWriteTimeUtc,
         n.Attributes.HasFlag(FileAttributes.ReparsePoint),
         n.FileId,
-        n.VolumeSerial);
+        n.VolumeSerial,
+        n.Tag);
 
     private sealed class Node
     {
@@ -351,6 +425,9 @@ public sealed class InMemoryFileSystem : IFileSystem
         public DateTime LastWriteTimeUtc;
         public UInt128 FileId;
         public ulong VolumeSerial;
+        public uint Tag;
+        public List<FileEntry> Injected = [];
+        public int? FailAfter;
         public string? TargetKey;
         public bool ListingDenied;
     }

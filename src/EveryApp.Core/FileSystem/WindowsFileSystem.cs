@@ -100,6 +100,18 @@ public sealed class WindowsFileSystem(AlignedBufferPool? pool = null) : IFileSys
         }
     }
 
+    public FileEntry GetEntryFollowingLinks(string path)
+    {
+        try
+        {
+            return QueryEntry(Normalize(path), followLinks: true);
+        }
+        catch (Exception ex) when (IsTranslatable(ex))
+        {
+            throw ErrorKinds.Translate(path, ex);
+        }
+    }
+
     public IEnumerable<FileEntry> EnumerateChildren(string directory)
     {
         // Probe now so a directory that cannot be opened fails here; every enumeration then opens its own handle.
@@ -466,9 +478,9 @@ public sealed class WindowsFileSystem(AlignedBufferPool? pool = null) : IFileSys
         return size is >= 512 and <= 65536 && uint.IsPow2(size) ? (int)size : 0;
     }
 
-    private static FileEntry QueryEntry(string longForm)
+    private static FileEntry QueryEntry(string longForm, bool followLinks = false)
     {
-        using var handle = OpenQuery(longForm, FileReadAttributes, openReparsePoint: true);
+        using var handle = OpenQuery(longForm, FileReadAttributes, openReparsePoint: !followLinks);
         if (!PInvoke.GetFileInformationByHandle(handle, out var info))
         {
             throw new Win32Exception(Marshal.GetLastWin32Error());
@@ -488,10 +500,20 @@ public sealed class WindowsFileSystem(AlignedBufferPool? pool = null) : IFileSys
             ToUtc(info.ftLastWriteTime),
             attrs.HasFlag(FileAttributes.ReparsePoint),
             id,
-            serial);
+            serial,
+            attrs.HasFlag(FileAttributes.ReparsePoint) ? QueryReparseTag(handle) : 0);
 
         static DateTime ToUtc(FILETIME ft) =>
             DateTime.FromFileTimeUtc(((long)ft.dwHighDateTime << 32) | (uint)ft.dwLowDateTime);
+    }
+
+    private static unsafe uint QueryReparseTag(SafeFileHandle handle)
+    {
+        // FILE_ATTRIBUTE_TAG_INFO: FileAttributes at 0, ReparseTag at 4.
+        byte* buffer = stackalloc byte[8];
+        return NativeFileApi.GetInfoEx(handle, FILE_INFO_BY_HANDLE_CLASS.FileAttributeTagInfo, buffer, 8, out _)
+            ? *(uint*)(buffer + 4)
+            : 0;
     }
 
     private static IEnumerable<FileEntry> Iterate(string dirLongForm, string originalDirectory)
@@ -599,6 +621,11 @@ public sealed class WindowsFileSystem(AlignedBufferPool? pool = null) : IFileSys
             DateTime.FromFileTimeUtc(written),
             attributes.HasFlag(FileAttributes.ReparsePoint),
             id,
-            serial);
+            serial,
+            // Both layouts keep the tag in the 4 bytes after the attributes/name length: FILE_ID_EXTD_DIR_INFO.ReparsePointTag at 68,
+            // FILE_ID_BOTH_DIR_INFO.EaSize at 64 (which holds the tag when the entry is a reparse point).
+            attributes.HasFlag(FileAttributes.ReparsePoint)
+                ? BinaryPrimitives.ReadUInt32LittleEndian(span[(extended ? 68 : 64)..])
+                : 0);
     }
 }

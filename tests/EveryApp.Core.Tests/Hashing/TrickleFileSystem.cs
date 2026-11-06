@@ -15,6 +15,8 @@ internal sealed class TrickleFileSystem(IFileSystem inner, int maxPerRead) : IFi
 
     public FileEntry GetEntry(string path) => inner.GetEntry(path);
 
+    public FileEntry GetEntryFollowingLinks(string path) => inner.GetEntryFollowingLinks(path);
+
     public IEnumerable<FileEntry> EnumerateChildren(string directory) => inner.EnumerateChildren(directory);
 
     public void CreateDirectory(string path) => inner.CreateDirectory(path);

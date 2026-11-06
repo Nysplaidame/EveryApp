@@ -42,6 +42,12 @@ public interface IFileSystem
 
     FileEntry GetEntry(string path);
 
+    /// <summary>
+    /// Like <see cref="GetEntry"/> but for a link (junction, symlink, mount point) describes the TARGET it leads to, not the link itself
+    /// (FullPath stays the path given). Use it to learn which folder a link really reaches, e.g. for loop and duplicate-path detection.
+    /// </summary>
+    FileEntry GetEntryFollowingLinks(string path);
+
     IEnumerable<FileEntry> EnumerateChildren(string directory);
 
     void CreateDirectory(string path);

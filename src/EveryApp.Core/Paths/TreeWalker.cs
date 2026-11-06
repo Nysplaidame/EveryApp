@@ -11,24 +11,33 @@ public sealed record WalkSkip(string Path, string Reason);
 
 /// <summary>
 /// Lazy, iterative (explicit stack, so depth is limited by memory not the call stack) walk of one folder tree.
-/// It never leaves the root (links are not followed unless asked), never loops (when following links, every folder is entered at most once,
-/// keyed on volume serial and file id) and never stops on one bad folder (the problem is reported and the walk goes on).
+/// It never leaves the root (links to folders are not followed unless asked), never loops and never lists one physical folder twice
+/// (when following links, every folder is entered at most once, keyed on the volume serial and file id of the folder it really is),
+/// and never stops on one bad folder (the problem is reported and the walk goes on).
 /// Folders are listed before their contents. Only one directory handle is open at a time.
 /// </summary>
+/// <remarks>
+/// Only name-surrogate reparse points (junctions, symlinks, mount points) count as links. Other reparse folders, such as cloud placeholder
+/// folders, are ordinary user data and are walked. Files are always listed whatever their reparse tag; the tag is in the entry so the caller
+/// can decide how to treat a file symlink.
+/// </remarks>
 public sealed class TreeWalker
 {
-    private const string DirectoryProbe = "/_";
+    private const uint NameSurrogateBit = 0x20000000;
 
     private readonly IFileSystem _fs;
     private readonly bool _followReparsePoints;
     private readonly Matcher? _exclude;
+    private readonly Matcher? _excludeFolders;
 
     /// <param name="fs">Disk access.</param>
-    /// <param name="followReparsePoints">False (the default choice) skips every link, junction and other reparse point and reports it.</param>
+    /// <param name="followReparsePoints">False (the default choice) skips every folder link (junction, symlink, mount point) and reports it.</param>
     /// <param name="excludeGlobs">
     /// Patterns matched against the path relative to the root, case-insensitively, with <c>/</c> separators (<c>\</c> in a pattern is accepted).
-    /// A pattern without a slash matches at any depth (<c>Thumbs.db</c> means <c>**/Thumbs.db</c>). A matching folder is not entered.
-    /// Excluded items are left out silently: that is a choice, not a problem.
+    /// A pattern without a slash matches at any depth (<c>Thumbs.db</c> means <c>**/Thumbs.db</c>). An item is excluded when its own relative path
+    /// matches. A folder is also excluded, with everything in it, when a pattern ending in <c>/**</c> matches the folder's own path once that
+    /// suffix is removed (<c>**/node_modules/**</c> prunes every folder named node_modules). Excluded items are left out silently: that is a
+    /// choice, not a problem.
     /// </param>
     public TreeWalker(IFileSystem fs, bool followReparsePoints, IReadOnlyList<string> excludeGlobs)
     {
@@ -37,18 +46,26 @@ public sealed class TreeWalker
         _fs = fs;
         _followReparsePoints = followReparsePoints;
 
-        if (excludeGlobs.Count > 0)
+        foreach (var glob in excludeGlobs)
         {
-            _exclude = new Matcher(StringComparison.OrdinalIgnoreCase);
-            foreach (var glob in excludeGlobs)
+            var pattern = glob.Trim().Replace('\\', '/');
+            if (pattern.Length == 0)
             {
-                var pattern = glob.Trim().Replace('\\', '/');
-                if (pattern.Length == 0)
-                {
-                    continue;
-                }
+                continue;
+            }
 
-                _exclude.AddInclude(pattern.Contains('/', StringComparison.Ordinal) ? pattern : "**/" + pattern);
+            if (!pattern.Contains('/', StringComparison.Ordinal))
+            {
+                pattern = "**/" + pattern;
+            }
+
+            _exclude ??= new Matcher(StringComparison.OrdinalIgnoreCase);
+            _exclude.AddInclude(pattern);
+
+            if (pattern.EndsWith("/**", StringComparison.Ordinal) && pattern.Length > 3)
+            {
+                _excludeFolders ??= new Matcher(StringComparison.OrdinalIgnoreCase);
+                _excludeFolders.AddInclude(pattern[..^3]);
             }
         }
     }
@@ -63,6 +80,9 @@ public sealed class TreeWalker
         ArgumentNullException.ThrowIfNull(onSkip);
         return WalkCore(root, onSkip);
     }
+
+    private static bool IsNameSurrogateFolder(FileEntry entry) =>
+        entry.IsReparsePoint && entry.Attributes.HasFlag(FileAttributes.Directory) && (entry.ReparseTag & NameSurrogateBit) != 0;
 
     private IEnumerable<WalkItem> WalkCore(string root, Action<WalkSkip> onSkip)
     {
@@ -84,12 +104,24 @@ public sealed class TreeWalker
         }
 
         var rootPath = rootEntry.FullPath;
-        var prefixLength = rootPath.EndsWith('\\') ? rootPath.Length : rootPath.Length + 1;
+        var rootPrefix = rootPath.EndsWith('\\') ? rootPath : rootPath + "\\";
 
+        // Which physical folders have been entered. Only needed when links can be followed: without that, every folder is reached by exactly one path.
         HashSet<(ulong, UInt128)>? visited = null;
         if (_followReparsePoints)
         {
-            visited = [(rootEntry.VolumeSerial, rootEntry.FileId)];
+            FileEntry rootTarget;
+            try
+            {
+                rootTarget = IsNameSurrogateFolder(rootEntry) ? _fs.GetEntryFollowingLinks(rootPath) : rootEntry;
+            }
+            catch (FileSystemException ex)
+            {
+                onSkip(new WalkSkip(PathDisplay.ToDisplayPath(rootPath), Describe(ex.Kind, "folder")));
+                yield break;
+            }
+
+            visited = [(rootTarget.VolumeSerial, rootTarget.FileId)];
         }
 
         var pending = new Stack<string>();
@@ -133,14 +165,14 @@ public sealed class TreeWalker
                     }
 
                     var full = child.FullPath;
-                    if (full.Length <= prefixLength || !full.StartsWith(rootPath, StringComparison.OrdinalIgnoreCase))
+                    if (full.Length <= rootPrefix.Length || !full.StartsWith(rootPrefix, StringComparison.OrdinalIgnoreCase))
                     {
                         // Cannot happen with a well-behaved file system; never hand out a path that is not under the root.
                         onSkip(new WalkSkip(PathDisplay.ToDisplayPath(full), "This item is outside the chosen folder."));
                         continue;
                     }
 
-                    var relative = full.Substring(prefixLength);
+                    var relative = full.Substring(rootPrefix.Length);
                     var isDirectory = child.Attributes.HasFlag(FileAttributes.Directory);
 
                     if (_exclude is not null && IsExcluded(relative, isDirectory))
@@ -148,23 +180,33 @@ public sealed class TreeWalker
                         continue;
                     }
 
-                    if (child.IsReparsePoint)
+                    if (isDirectory)
                     {
-                        if (!_followReparsePoints)
+                        if (IsNameSurrogateFolder(child) && !_followReparsePoints)
                         {
-                            onSkip(new WalkSkip(PathDisplay.ToDisplayPath(full), "Skipped: this is a link to somewhere else."));
+                            onSkip(new WalkSkip(PathDisplay.ToDisplayPath(full), "Skipped: this is a link to another folder."));
                             continue;
                         }
 
-                        if (isDirectory && !visited!.Add((child.VolumeSerial, child.FileId)))
+                        if (visited is not null)
                         {
-                            onSkip(new WalkSkip(PathDisplay.ToDisplayPath(full), "Skipped: this link leads back to a folder already visited, which would loop forever."));
-                            continue;
+                            FileEntry target;
+                            try
+                            {
+                                target = IsNameSurrogateFolder(child) ? _fs.GetEntryFollowingLinks(full) : child;
+                            }
+                            catch (FileSystemException ex)
+                            {
+                                onSkip(new WalkSkip(PathDisplay.ToDisplayPath(full), Describe(ex.Kind, "link")));
+                                continue;
+                            }
+
+                            if (!visited.Add((target.VolumeSerial, target.FileId)))
+                            {
+                                onSkip(new WalkSkip(PathDisplay.ToDisplayPath(full), "Skipped: this folder was already scanned via another path (a link leads to it)."));
+                                continue;
+                            }
                         }
-                    }
-                    else if (isDirectory)
-                    {
-                        visited?.Add((child.VolumeSerial, child.FileId));
                     }
 
                     yield return new WalkItem(child, relative);
@@ -186,8 +228,7 @@ public sealed class TreeWalker
             return true;
         }
 
-        // A folder-only pattern such as "**/node_modules/**" matches what is inside the folder, so probe with a child name to prune the folder itself.
-        return isDirectory && _exclude!.Match(slashed + DirectoryProbe).HasMatches;
+        return isDirectory && _excludeFolders is not null && _excludeFolders.Match(slashed).HasMatches;
     }
 
     private static string Describe(IoErrorKind kind, string what) => kind switch
