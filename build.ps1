@@ -33,6 +33,15 @@ function Invoke-Step {
 
 Push-Location $root
 try {
+    if ($env:CI) {
+        $missing = Get-ChildItem -Path $root -Recurse -Filter '*.csproj' -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -notmatch '[\/](obj|bin|artifacts)[\/]' } |
+            Where-Object { -not (Test-Path (Join-Path $_.DirectoryName 'packages.lock.json')) }
+        if ($missing) {
+            throw ('Missing packages.lock.json in CI for: ' + (($missing | ForEach-Object { $_.Name }) -join ', ') + '. Generate them locally with ./build.ps1 and commit them.')
+        }
+    }
+
     $hasLockFiles = [bool](Get-ChildItem -Path $root -Recurse -Filter 'packages.lock.json' -ErrorAction SilentlyContinue |
             Where-Object { $_.FullName -notmatch '[\/](obj|bin|artifacts)[\/]' } |
             Select-Object -First 1)
