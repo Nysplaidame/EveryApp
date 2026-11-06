@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>ferry</AssemblyName>
+    <RootNamespace>Ferry.Cli</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Ferry.Engine\Ferry.Engine.csproj" />
+  </ItemGroup>
+
+</Project>
