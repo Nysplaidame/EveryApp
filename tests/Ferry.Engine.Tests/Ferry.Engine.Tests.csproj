@@ -20,4 +20,9 @@
     <ProjectReference Include="../../src/Ferry.Engine/Ferry.Engine.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Shared test fakes (InMemoryFileSystem, FaultInjectingFileSystem) live in the core test project. -->
+    <Compile Include="..\EveryApp.Core.Tests\Fakes\**\*.cs" Link="Fakes\%(RecursiveDir)%(Filename)%(Extension)" />
+  </ItemGroup>
+
 </Project>
