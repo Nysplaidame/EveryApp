@@ -21,4 +21,9 @@
     <PackageReference Include="Serilog.Sinks.File" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Exclude-pattern matching (**/node_modules/** and friends) for the tree walker: first-party Microsoft package, no dependencies. -->
+    <PackageReference Include="Microsoft.Extensions.FileSystemGlobbing" />
+  </ItemGroup>
+
 </Project>

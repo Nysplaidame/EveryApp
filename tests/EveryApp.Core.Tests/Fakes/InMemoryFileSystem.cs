@@ -42,6 +42,33 @@ public sealed class InMemoryFileSystem : IFileSystem
         }
     }
 
+    /// <summary>
+    /// Test helper: adds a junction-like directory at <paramref name="path"/> whose children are those of <paramref name="targetDirectory"/>
+    /// (listed under the junction's own path). It has its own file id and the reparse-point attribute, like a real junction.
+    /// </summary>
+    public void AddJunction(string path, string targetDirectory)
+    {
+        lock (_lock)
+        {
+            var key = Key(path);
+            EnsureDirectories(ParentOf(key));
+            var node = NewNode(key, isDirectory: true);
+            node.Attributes = FileAttributes.Directory | FileAttributes.ReparsePoint;
+            node.TargetKey = Key(targetDirectory);
+            _nodes[key] = node;
+        }
+    }
+
+    /// <summary>Test helper: makes listing the directory fail with <see cref="IoErrorKind.AccessDenied"/> (creates it if missing).</summary>
+    public void DenyListing(string path)
+    {
+        lock (_lock)
+        {
+            EnsureDirectories(Key(path));
+            Get(path).ListingDenied = true;
+        }
+    }
+
     /// <summary>Test helper: returns a copy of a file's content.</summary>
     public byte[] ReadAllBytes(string path)
     {
@@ -110,13 +137,20 @@ public sealed class InMemoryFileSystem : IFileSystem
                 throw Fail(directory, IoErrorKind.InvalidName);
             }
 
-            var prefix = dir.Key.EndsWith('\\') ? dir.Key : dir.Key + "\\";
+            if (dir.ListingDenied)
+            {
+                throw Fail(directory, IoErrorKind.AccessDenied);
+            }
+
+            var shown = dir.Key.EndsWith('\\') ? dir.Key : dir.Key + "\\";
+            var source = dir.TargetKey is null ? dir : Get(dir.TargetKey);
+            var prefix = source.Key.EndsWith('\\') ? source.Key : source.Key + "\\";
             return _nodes.Values
                 .Where(n => n.Key.Length > prefix.Length
                     && n.Key.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
                     && n.Key.IndexOf('\\', prefix.Length) < 0)
                 .OrderBy(n => n.Key, StringComparer.OrdinalIgnoreCase)
-                .Select(ToEntry)
+                .Select(n => ToEntry(n, shown + n.Key[prefix.Length..]))
                 .ToList();
         }
     }
@@ -294,8 +328,10 @@ public sealed class InMemoryFileSystem : IFileSystem
         _nodes[key] = NewNode(key, isDirectory: true);
     }
 
-    private FileEntry ToEntry(Node n) => new(
-        n.Key.StartsWith(@"\\", StringComparison.Ordinal) ? @"\\?\UNC\" + n.Key[2..] : LongPrefix + n.Key,
+    private static FileEntry ToEntry(Node n) => ToEntry(n, n.Key);
+
+    private static FileEntry ToEntry(Node n, string key) => new(
+        key.StartsWith(@"\\", StringComparison.Ordinal) ? @"\\?\UNC\" + key[2..] : LongPrefix + key,
         n.IsDirectory ? 0 : n.Length,
         n.Attributes,
         n.CreationTimeUtc,
@@ -315,6 +351,8 @@ public sealed class InMemoryFileSystem : IFileSystem
         public DateTime LastWriteTimeUtc;
         public UInt128 FileId;
         public ulong VolumeSerial;
+        public string? TargetKey;
+        public bool ListingDenied;
     }
 
     private sealed class ReadHandle(InMemoryFileSystem fs, Node node) : IReadHandle

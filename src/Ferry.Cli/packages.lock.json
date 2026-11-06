@@ -5,6 +5,7 @@
       "everyapp.core": {
         "type": "Project",
         "dependencies": {
+          "Microsoft.Extensions.FileSystemGlobbing": "[10.0.14, )",
           "Serilog": "[4.3.0, )",
           "Serilog.Sinks.File": "[7.0.0, )",
           "System.IO.Hashing": "[10.0.14, )"
@@ -15,6 +16,12 @@
         "dependencies": {
           "EveryApp.Core": "[1.0.0, )"
         }
+      },
+      "Microsoft.Extensions.FileSystemGlobbing": {
+        "type": "CentralTransitive",
+        "requested": "[10.0.14, )",
+        "resolved": "10.0.14",
+        "contentHash": "xt6c/PWLL6+CiBiZA3PWRSfkwcPh+HCwiOLrgSUkhzBT7lrT/+QpIKPeuCQyDPspwOuG1q0cbJhuiGpRjr4UNQ=="
       },
       "Serilog": {
         "type": "CentralTransitive",
