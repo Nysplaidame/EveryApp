@@ -59,13 +59,24 @@ public abstract class FileSystemContractTests : IDisposable
     }
 
     [Fact]
-    public async Task Contract_Preallocate_DoesNotMoveEndOfFile()
+    public async Task Contract_Preallocate_SetsEndOfFile_AndTrimsToDataOnFlush()
     {
         await using var w = Fs.CreateWrite(P("pre.bin"), 1024 * 1024, unbuffered: false);
-        Assert.Equal(0, Fs.GetEntry(P("pre.bin")).Length);
+        Assert.Equal(1024 * 1024, Fs.GetEntry(P("pre.bin")).Length);
         await w.WriteAsync(new byte[10], 0, CancellationToken.None);
         await w.FlushAsync();
         Assert.Equal(10, Fs.GetEntry(P("pre.bin")).Length);
+    }
+
+    [Fact]
+    public async Task Contract_Preallocate_TrimsToDataOnDispose()
+    {
+        await using (var w = Fs.CreateWrite(P("pre2.bin"), 4096, unbuffered: false))
+        {
+            await w.WriteAsync(new byte[100], 0, CancellationToken.None);
+        }
+
+        Assert.Equal(100, Fs.GetEntry(P("pre2.bin")).Length);
     }
 
     [Fact]
@@ -130,6 +141,55 @@ public abstract class FileSystemContractTests : IDisposable
     }
 
     [Fact]
+    public async Task Contract_EnumerationAndGetEntry_AgreeOnIdAndSerial()
+    {
+        Fs.CreateDirectory(P("ids\\sub"));
+        await Write(Fs, P("ids\\f"), [1]);
+        foreach (var child in Fs.EnumerateChildren(P("ids")))
+        {
+            var direct = Fs.GetEntry(child.FullPath);
+            Assert.Equal(direct.FileId, child.FileId);
+            Assert.Equal(direct.VolumeSerial, child.VolumeSerial);
+            Assert.NotEqual(UInt128.Zero, child.FileId);
+        }
+
+        var all = Fs.EnumerateChildren(P("ids")).ToList();
+        Assert.Equal(2, all.Select(e => e.FileId).Distinct().Count());
+    }
+
+    [Fact]
+    public async Task Contract_EnumeratingTwice_GivesIdenticalResults()
+    {
+        Fs.CreateDirectory(P("twice"));
+        await Write(Fs, P("twice\\a"), [1]);
+        await Write(Fs, P("twice\\b"), [2]);
+        var children = Fs.EnumerateChildren(P("twice"));
+        Assert.True(children.Any());
+        var first = children.Select(e => e.FullPath).Order().ToList();
+        var second = children.Select(e => e.FullPath).Order().ToList();
+        Assert.Equal(2, first.Count);
+        Assert.Equal(first, second);
+    }
+
+    [Fact]
+    public async Task Contract_FullPaths_AreAlwaysThePrefixedForm_AndRelativePathsWork()
+    {
+        Fs.CreateDirectory(P("rel\\foo."));
+        await Write(Fs, P("rel\\foo.\\a"), [1]);
+        var root = Fs.GetEntry(P("rel")).FullPath;
+        Assert.StartsWith(@"\\?\", root, StringComparison.Ordinal);
+
+        var dir = Fs.EnumerateChildren(root).Single();
+        Assert.StartsWith(@"\\?\", dir.FullPath, StringComparison.Ordinal);
+        Assert.Equal(@"foo.", dir.FullPath[(root.Length + 1)..]);
+
+        var file = Fs.EnumerateChildren(dir.FullPath).Single();
+        Assert.StartsWith(@"\\?\", file.FullPath, StringComparison.Ordinal);
+        Assert.Equal(@"foo.\a", file.FullPath[(root.Length + 1)..]);
+        Assert.StartsWith(@"\\?\", Fs.GetEntry(file.FullPath).FullPath, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Contract_UseAfterDispose_ThrowsObjectDisposed()
     {
         var w = Fs.CreateWrite(P("d1"), 0, unbuffered: false);
@@ -165,7 +225,7 @@ public sealed class WindowsFileSystemContractTests : FileSystemContractTests
     {
         try
         {
-            Directory.Delete(_root, recursive: true);
+            Directory.Delete(@"\\?\" + _root, recursive: true);
         }
         catch (IOException)
         {

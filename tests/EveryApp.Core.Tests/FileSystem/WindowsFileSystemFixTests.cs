@@ -53,6 +53,104 @@ public sealed class WindowsFileSystemFixTests : IDisposable
         Assert.NotEmpty(lengths);
     }
 
+    [Fact]
+    public async Task PlainPaths_WithTrailingDotOrSpace_ActOnTheRightFile_NeverTheSibling()
+    {
+        var fs = new WindowsFileSystem();
+        foreach (var (name, content) in new[] { ("foo", 1), ("foo.", 2), ("foo ", 3) })
+        {
+            await using var w = fs.CreateWrite(Raw(name), 0, unbuffered: false);
+            await w.WriteAsync(new byte[content], 0, CancellationToken.None);
+        }
+
+        var plainDot = _root + @"\foo.";
+        var plainSpace = _root + @"\foo ";
+        Assert.Equal(2, fs.GetEntry(plainDot).Length);
+        Assert.Equal(3, fs.GetEntry(plainSpace).Length);
+        await using (var r = fs.OpenRead(plainDot, unbuffered: false))
+        {
+            Assert.Equal(2, r.Length);
+        }
+
+        fs.Delete(plainDot);
+        fs.Delete(plainSpace);
+        Assert.Equal(1, fs.GetEntry(_root + @"\foo").Length);
+        Assert.Single(fs.EnumerateChildren(_root));
+    }
+
+    [Theory]
+    [InlineData(@"C:\a\b", @"\\?\C:\a\b")]
+    [InlineData(@"C:\a\b.", @"\\?\C:\a\b.")]
+    [InlineData(@"\\srv\share\x ", @"\\?\UNC\srv\share\x ")]
+    [InlineData(@"C:\a\..\b", @"\\?\C:\b")]
+    [InlineData(@"C:\a\.\b", @"\\?\C:\a\b")]
+    public void Normalize_PrefixesQualifiedPathsDirectly_AndResolvesDottedOnes(string input, string expected) =>
+        Assert.Equal(expected, WindowsFileSystem.Normalize(input));
+
+    [Fact]
+    public void ToDisplayPath_StripsPrefixOnlyWhenSafe()
+    {
+        Assert.Equal(@"C:\a\b", PathDisplay.ToDisplayPath(@"\\?\C:\a\b"));
+        Assert.Equal(@"\\srv\share\x", PathDisplay.ToDisplayPath(@"\\?\UNC\srv\share\x"));
+        Assert.Equal(@"\\?\C:\a\b.", PathDisplay.ToDisplayPath(@"\\?\C:\a\b."));
+        Assert.Equal(@"\\?\C:\a\b ", PathDisplay.ToDisplayPath(@"\\?\C:\a\b "));
+        Assert.Equal(@"C:\plain", PathDisplay.ToDisplayPath(@"C:\plain"));
+    }
+
+    [Fact]
+    public void AllEntries_UseThePrefixedForm_EvenForPlainInput()
+    {
+        var fs = new WindowsFileSystem();
+        File.WriteAllBytes(Path.Combine(_root, "p.txt"), [1]);
+        Assert.StartsWith(@"\\?\", fs.GetEntry(Path.Combine(_root, "p.txt")).FullPath, StringComparison.Ordinal);
+        Assert.StartsWith(@"\\?\", fs.EnumerateChildren(_root).Single().FullPath, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Dispose_WithWritesInFlight_CompletesPromptly_AndNeverCorruptsMemory()
+    {
+        using var pool = new AlignedBufferPool();
+        var fs = new WindowsFileSystem(pool);
+        var path = Path.Combine(_root, "inflight.bin");
+        var w = fs.CreateWrite(path, 0, unbuffered: true);
+        var data = new byte[1024 * 1024];
+        var writes = Enumerable.Range(0, 32)
+            .Select(i => Task.Run(async () =>
+            {
+                try
+                {
+                    await w.WriteAsync(data, (long)i * data.Length, CancellationToken.None);
+                }
+                catch (Exception ex) when (ex is IOException or ObjectDisposedException or OperationCanceledException)
+                {
+                    // allowed once dispose has started
+                }
+            }))
+            .ToList();
+        var dispose = w.DisposeAsync().AsTask();
+        Assert.Same(dispose, await Task.WhenAny(dispose, Task.Delay(TimeSpan.FromSeconds(15), TestContext.Current.CancellationToken)));
+        await dispose;
+        await Task.WhenAll(writes);
+    }
+
+    [Fact]
+    public void Pool_DoubleReturn_Throws()
+    {
+        using var pool = new AlignedBufferPool();
+        var buffer = pool.Rent(4096);
+        pool.Return(buffer);
+        Assert.Throws<InvalidOperationException>(() => pool.Return(buffer));
+    }
+
+    [Fact]
+    public void Pool_ReturnAfterDispose_ThrowsObjectDisposed()
+    {
+        var pool = new AlignedBufferPool();
+        var buffer = pool.Rent(4096);
+        pool.Dispose();
+        Assert.Throws<ObjectDisposedException>(() => pool.Return(buffer));
+    }
+
     [Theory]
     [InlineData(@"\\.\PhysicalDrive0")]
     [InlineData(@"\\?\GLOBALROOT\Device\HarddiskVolume1\x")]
@@ -184,7 +282,7 @@ public sealed class WindowsFileSystemFixTests : IDisposable
         Assert.Equal(10_000, entries.Count);
         Assert.Equal(10_000, entries.Select(e => e.FileId).Distinct().Count());
         Assert.Single(entries.Select(e => e.VolumeSerial).Distinct());
-        Assert.All(entries, e => Assert.NotEqual(0u, e.VolumeSerial));
+        Assert.All(entries, e => Assert.NotEqual(0UL, e.VolumeSerial));
     }
 
     [Fact]

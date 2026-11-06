@@ -6,18 +6,19 @@ using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.ComTypes;
 using Microsoft.Win32.SafeHandles;
 using Windows.Win32;
-using Windows.Win32.Foundation;
 using Windows.Win32.Storage.FileSystem;
 
 namespace EveryApp.Core.FileSystem;
 
 /// <summary>
 /// Real-disk <see cref="IFileSystem"/> built on File.OpenHandle and RandomAccess, with Win32 only where the BCL has no equivalent.
-/// Internally every path is a full path in the <c>\\?\</c> form, so names with trailing dots or spaces keep their identity.
+/// Internally (and in every <see cref="FileEntry.FullPath"/>) paths are full paths in the <c>\\?\</c> form, so names with trailing dots
+/// or spaces keep their identity.
 /// </summary>
 public sealed class WindowsFileSystem(AlignedBufferPool? pool = null) : IFileSystem
 {
     internal const FileOptions NoBuffering = (FileOptions)0x20000000; // FILE_FLAG_NO_BUFFERING
+    internal static readonly TimeSpan DisposeTimeout = TimeSpan.FromSeconds(5);
     private const int DefaultSectorSize = 4096;
     private const uint FileListDirectory = 0x1;
     private const uint FileReadAttributes = 0x80;
@@ -26,7 +27,7 @@ public sealed class WindowsFileSystem(AlignedBufferPool? pool = null) : IFileSys
     private const int DirectoryBufferSize = 64 * 1024;
 
     private readonly AlignedBufferPool _pool = pool ?? AlignedBufferPool.Shared;
-    private readonly ConcurrentDictionary<uint, int> _sectorByVolume = new();
+    private readonly ConcurrentDictionary<ulong, int> _sectorByVolume = new();
 
     public IReadHandle OpenRead(string path, bool unbuffered)
     {
@@ -67,15 +68,17 @@ public sealed class WindowsFileSystem(AlignedBufferPool? pool = null) : IFileSys
             {
                 if (preallocate > 0)
                 {
-                    ReserveAllocation(handle, preallocate); // reserves disk space only; end of file stays at 0
+                    // End of file is set up front (extending writes are slow and serialised on NTFS). The target is a temporary part-file
+                    // that nobody trusts until it is verified and renamed; the file is trimmed to the data written on flush/dispose.
+                    RandomAccess.SetLength(handle, preallocate);
                 }
 
-                return new WindowsWriteHandle(handle, path, unbuffered ? SectorFor(handle, p) : 0, _pool);
+                return new WindowsWriteHandle(handle, path, unbuffered ? SectorFor(handle, p) : 0, _pool, preallocate > 0);
             }
             catch
             {
                 handle.Dispose();
-                TryDeleteOwnFile(p); // we created it a moment ago; don't leave an empty stub behind
+                TryDeleteOwnFile(p); // we created it a moment ago; don't leave a stub behind
                 throw;
             }
         }
@@ -99,29 +102,19 @@ public sealed class WindowsFileSystem(AlignedBufferPool? pool = null) : IFileSys
 
     public IEnumerable<FileEntry> EnumerateChildren(string directory)
     {
-        // Open the directory eagerly so failures to open it surface here; children are then read lazily from this single handle.
-        SafeFileHandle handle;
+        // Probe now so a directory that cannot be opened fails here; every enumeration then opens its own handle.
         string dir;
-        uint serial;
         try
         {
             dir = Normalize(directory);
-            handle = OpenQuery(dir, FileListDirectory | FileReadAttributes);
-            if (!PInvoke.GetFileInformationByHandle(handle, out var info))
-            {
-                var error = Marshal.GetLastWin32Error();
-                handle.Dispose();
-                throw new Win32Exception(error);
-            }
-
-            serial = info.dwVolumeSerialNumber;
+            using var probe = OpenDirectory(dir, out _);
         }
         catch (Exception ex) when (IsTranslatable(ex))
         {
             throw ErrorKinds.Translate(directory, ex);
         }
 
-        return Iterate(handle, dir, directory, serial);
+        return Iterate(dir, directory);
     }
 
     public void CreateDirectory(string path)
@@ -226,8 +219,9 @@ public sealed class WindowsFileSystem(AlignedBufferPool? pool = null) : IFileSys
         ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException or Win32Exception;
 
     /// <summary>
-    /// Turns a caller-supplied path into a full <c>\\?\</c> path. GetFullPath runs once and only on paths that are not already in
-    /// that form (it would strip trailing dots and spaces). Device paths and anything but a drive or UNC path are rejected.
+    /// Turns a caller-supplied path into a full <c>\\?\</c> path. A drive-rooted or UNC path without dot segments is prefixed as it is
+    /// (GetFullPath would strip trailing dots and spaces); only relative or dotted input goes through GetFullPath. Paths already in
+    /// <c>\\?\</c> form are accepted only when they are drive or UNC paths. Device paths are rejected.
     /// </summary>
     internal static string Normalize(string path)
     {
@@ -250,6 +244,11 @@ public sealed class WindowsFileSystem(AlignedBufferPool? pool = null) : IFileSys
             throw new FileSystemException(path, IoErrorKind.InvalidName, null);
         }
 
+        if (TryPrefixDirectly(path, out var direct))
+        {
+            return direct;
+        }
+
         string full;
         try
         {
@@ -265,6 +264,65 @@ public sealed class WindowsFileSystem(AlignedBufferPool? pool = null) : IFileSys
             : @"\\?\" + full;
     }
 
+    private static bool TryPrefixDirectly(string path, out string result)
+    {
+        result = string.Empty;
+        int start;
+        bool unc;
+        if (path.Length >= 3 && char.IsAsciiLetter(path[0]) && path[1] == ':' && path[2] == '\\')
+        {
+            start = 3;
+            unc = false;
+        }
+        else if (path.Length > 2 && path[0] == '\\' && path[1] == '\\' && path[2] is not ('\\' or '?' or '.'))
+        {
+            start = 2;
+            unc = true;
+        }
+        else
+        {
+            return false;
+        }
+
+        var rest = path.AsSpan(start);
+        if (rest.IndexOfAny('/', ':') >= 0)
+        {
+            return false; // forward slashes, drive-relative colons, alternate streams: let GetFullPath decide
+        }
+
+        var segments = 0;
+        while (!rest.IsEmpty)
+        {
+            var i = rest.IndexOf('\\');
+            var segment = i < 0 ? rest : rest[..i];
+            rest = i < 0 ? default : rest[(i + 1)..];
+            if (segment.IsEmpty)
+            {
+                if (rest.IsEmpty)
+                {
+                    break; // a single trailing backslash
+                }
+
+                return false; // doubled backslash
+            }
+
+            if (segment is "." or "..")
+            {
+                return false;
+            }
+
+            segments++;
+        }
+
+        if (unc && segments < 2)
+        {
+            return false; // server and share are both required
+        }
+
+        result = unc ? @"\\?\UNC\" + path[2..] : @"\\?\" + path;
+        return true;
+    }
+
     internal static string StripPrefix(string path)
     {
         if (path.StartsWith(@"\\?\UNC\", StringComparison.OrdinalIgnoreCase))
@@ -273,20 +331,6 @@ public sealed class WindowsFileSystem(AlignedBufferPool? pool = null) : IFileSys
         }
 
         return path.StartsWith(@"\\?\", StringComparison.Ordinal) ? path[4..] : path;
-    }
-
-    /// <summary>The path handed back to callers: the friendly form when it round-trips, the <c>\\?\</c> form when stripping it would change the name.</summary>
-    private static string Display(string longForm)
-    {
-        var plain = StripPrefix(longForm);
-        try
-        {
-            return string.Equals(Path.GetFullPath(plain), plain, StringComparison.Ordinal) ? plain : longForm;
-        }
-        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or IOException)
-        {
-            return longForm;
-        }
     }
 
     private static string ExistingAncestor(string longForm)
@@ -318,7 +362,7 @@ public sealed class WindowsFileSystem(AlignedBufferPool? pool = null) : IFileSys
         }
     }
 
-    private static unsafe bool TryGetFreeBytes(string longForm, out long free)
+    private static bool TryGetFreeBytes(string longForm, out long free)
     {
         var dir = Directory.Exists(longForm) ? longForm : Path.GetDirectoryName(longForm) ?? longForm;
         var withSlash = dir.EndsWith('\\') ? dir : dir + "\\";
@@ -353,27 +397,26 @@ public sealed class WindowsFileSystem(AlignedBufferPool? pool = null) : IFileSys
         return handle;
     }
 
-    private static unsafe void ReserveAllocation(SafeFileHandle handle, long bytes)
+    private static SafeFileHandle OpenDirectory(string longForm, out ulong volumeSerial)
     {
-        long allocationSize = bytes; // FILE_ALLOCATION_INFO
-        if (!PInvoke.SetFileInformationByHandle(new HANDLE(handle.DangerousGetHandle()), FILE_INFO_BY_HANDLE_CLASS.FileAllocationInfo, &allocationSize, sizeof(long)))
+        var handle = OpenQuery(longForm, FileListDirectory | FileReadAttributes);
+        if (!NativeFileApi.TryGetFileId(handle, out volumeSerial, out _))
         {
-            throw new Win32Exception(Marshal.GetLastWin32Error());
+            var error = Marshal.GetLastWin32Error();
+            handle.Dispose();
+            throw new Win32Exception(error);
         }
+
+        return handle;
     }
 
     /// <summary>Alignment for unbuffered I/O: the larger of the logical and the physical-for-performance sector size, cached per volume.</summary>
     private int SectorFor(SafeFileHandle handle, string longForm)
     {
-        uint serial = 0;
-        var haveSerial = PInvoke.GetFileInformationByHandle(handle, out var info);
-        if (haveSerial)
+        var haveSerial = NativeFileApi.TryGetFileId(handle, out var serial, out _);
+        if (haveSerial && _sectorByVolume.TryGetValue(serial, out var cached))
         {
-            serial = info.dwVolumeSerialNumber;
-            if (_sectorByVolume.TryGetValue(serial, out var cached))
-            {
-                return cached;
-            }
+            return cached;
         }
 
         var size = QueryStorageSector(handle);
@@ -412,7 +455,7 @@ public sealed class WindowsFileSystem(AlignedBufferPool? pool = null) : IFileSys
     {
         // FILE_STORAGE_INFO: LogicalBytesPerSector at 0, PhysicalBytesPerSectorForPerformance at 8.
         byte* buffer = stackalloc byte[32];
-        if (!PInvoke.GetFileInformationByHandleEx(new HANDLE(handle.DangerousGetHandle()), FILE_INFO_BY_HANDLE_CLASS.FileStorageInfo, buffer, 32))
+        if (!NativeFileApi.GetInfoEx(handle, FILE_INFO_BY_HANDLE_CLASS.FileStorageInfo, buffer, 32, out _))
         {
             return 0;
         }
@@ -423,31 +466,47 @@ public sealed class WindowsFileSystem(AlignedBufferPool? pool = null) : IFileSys
         return size is >= 512 and <= 65536 && uint.IsPow2(size) ? (int)size : 0;
     }
 
-    private static unsafe FileEntry QueryEntry(string longForm)
+    private static FileEntry QueryEntry(string longForm)
     {
-        using var handle = OpenQuery(longForm, 0, openReparsePoint: true);
+        using var handle = OpenQuery(longForm, FileReadAttributes, openReparsePoint: true);
         if (!PInvoke.GetFileInformationByHandle(handle, out var info))
+        {
+            throw new Win32Exception(Marshal.GetLastWin32Error());
+        }
+
+        if (!NativeFileApi.TryGetFileId(handle, out var serial, out var id))
         {
             throw new Win32Exception(Marshal.GetLastWin32Error());
         }
 
         var attrs = (FileAttributes)info.dwFileAttributes;
         return new FileEntry(
-            Display(longForm),
+            longForm,
             (long)(((ulong)info.nFileSizeHigh << 32) | info.nFileSizeLow),
             attrs,
             ToUtc(info.ftCreationTime),
             ToUtc(info.ftLastWriteTime),
             attrs.HasFlag(FileAttributes.ReparsePoint),
-            ((ulong)info.nFileIndexHigh << 32) | info.nFileIndexLow,
-            info.dwVolumeSerialNumber);
+            id,
+            serial);
 
         static DateTime ToUtc(FILETIME ft) =>
             DateTime.FromFileTimeUtc(((long)ft.dwHighDateTime << 32) | (uint)ft.dwLowDateTime);
     }
 
-    private static IEnumerable<FileEntry> Iterate(SafeFileHandle handle, string dirLongForm, string originalDirectory, uint serial)
+    private static IEnumerable<FileEntry> Iterate(string dirLongForm, string originalDirectory)
     {
+        SafeFileHandle handle;
+        ulong serial;
+        try
+        {
+            handle = OpenDirectory(dirLongForm, out serial); // a fresh handle for every enumeration
+        }
+        catch (Exception ex) when (IsTranslatable(ex))
+        {
+            throw ErrorKinds.Translate(originalDirectory, ex);
+        }
+
         using (handle)
         {
             var buffer = ArrayPool<byte>.Shared.Rent(DirectoryBufferSize);
@@ -508,12 +567,12 @@ public sealed class WindowsFileSystem(AlignedBufferPool? pool = null) : IFileSys
             : (restart ? FILE_INFO_BY_HANDLE_CLASS.FileIdBothDirectoryRestartInfo : FILE_INFO_BY_HANDLE_CLASS.FileIdBothDirectoryInfo);
         fixed (byte* p = buffer)
         {
-            return PInvoke.GetFileInformationByHandleEx(new HANDLE(handle.DangerousGetHandle()), infoClass, p, (uint)buffer.Length) ? 0 : Marshal.GetLastWin32Error();
+            return NativeFileApi.GetInfoEx(handle, infoClass, p, (uint)buffer.Length, out var error) ? 0 : error;
         }
     }
 
-    // FILE_ID_EXTD_DIR_INFO: name at 88, 128-bit id at 72. FILE_ID_BOTH_DIR_INFO: name at 104, 64-bit id at 96. Common head: see offsets below.
-    private static FileEntry? ParseEntry(byte[] buffer, int offset, bool extended, string dirPrefix, uint serial, out int next)
+    // FILE_ID_EXTD_DIR_INFO: 128-bit id at 72, name at 88. FILE_ID_BOTH_DIR_INFO: 64-bit id at 96, name at 104. Common head up to offset 64.
+    private static FileEntry? ParseEntry(byte[] buffer, int offset, bool extended, string dirPrefix, ulong serial, out int next)
     {
         var span = buffer.AsSpan(offset);
         next = (int)BinaryPrimitives.ReadUInt32LittleEndian(span);
@@ -523,7 +582,7 @@ public sealed class WindowsFileSystem(AlignedBufferPool? pool = null) : IFileSys
         var attributes = (FileAttributes)BinaryPrimitives.ReadUInt32LittleEndian(span[56..]);
         var nameBytes = (int)BinaryPrimitives.ReadUInt32LittleEndian(span[60..]);
         var id = extended
-            ? BinaryPrimitives.ReadUInt64LittleEndian(span[72..])
+            ? BinaryPrimitives.ReadUInt128LittleEndian(span[72..])
             : BinaryPrimitives.ReadUInt64LittleEndian(span[96..]);
         var nameStart = extended ? 88 : 104;
         var name = System.Text.Encoding.Unicode.GetString(span.Slice(nameStart, nameBytes));
@@ -533,7 +592,7 @@ public sealed class WindowsFileSystem(AlignedBufferPool? pool = null) : IFileSys
         }
 
         return new FileEntry(
-            Display(dirPrefix + name),
+            dirPrefix + name,
             length,
             attributes,
             DateTime.FromFileTimeUtc(created),

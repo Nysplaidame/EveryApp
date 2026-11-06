@@ -15,14 +15,15 @@ internal sealed class WindowsWriteHandle : IWriteHandle
     private readonly object _stateLock = new();
     private AlignedBuffer? _bounce;
     private long _logicalLength; // end of the data written so far; the file is trimmed to this
-    private bool _padded;
+    private bool _needsTrim;
 
-    public WindowsWriteHandle(SafeFileHandle handle, string path, int sectorSize, AlignedBufferPool pool)
+    public WindowsWriteHandle(SafeFileHandle handle, string path, int sectorSize, AlignedBufferPool pool, bool preallocated)
     {
         _handle = handle;
         _path = path;
         _sector = sectorSize;
         _pool = pool;
+        _needsTrim = preallocated; // end of file is ahead of the data until the final trim
     }
 
     public async ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, long offset, CancellationToken ct)
@@ -70,7 +71,7 @@ internal sealed class WindowsWriteHandle : IWriteHandle
             lock (_stateLock)
             {
                 _logicalLength = Math.Max(_logicalLength, offset + buffer.Length);
-                _padded |= isShort;
+                _needsTrim |= isShort;
             }
         }
         catch (Exception ex) when (WindowsFileSystem.IsTranslatable(ex))
@@ -92,7 +93,7 @@ internal sealed class WindowsWriteHandle : IWriteHandle
             lock (_stateLock)
             {
                 _logicalLength = length;
-                _padded = false;
+                _needsTrim = false;
             }
         }
         catch (Exception ex) when (WindowsFileSystem.IsTranslatable(ex))
@@ -125,8 +126,9 @@ internal sealed class WindowsWriteHandle : IWriteHandle
 
     public async ValueTask DisposeAsync()
     {
-        // Waits for in-flight writes, then trims, then frees the handle and buffer (never while an I/O is pending).
-        if (!await _gate.BeginDisposeAsync().ConfigureAwait(false))
+        // Cancels and waits (bounded) for in-flight writes, then trims, then frees the handle and buffer (never while an I/O is pending).
+        var result = await _gate.BeginDisposeAsync(() => NativeFileApi.CancelAll(_handle), WindowsFileSystem.DisposeTimeout).ConfigureAwait(false);
+        if (result == GateDisposeResult.AlreadyDisposed)
         {
             return;
         }
@@ -134,7 +136,10 @@ internal sealed class WindowsWriteHandle : IWriteHandle
         Exception? failure = null;
         try
         {
-            TrimPadding();
+            if (result == GateDisposeResult.Drained)
+            {
+                TrimPadding();
+            }
         }
         catch (Exception ex) when (WindowsFileSystem.IsTranslatable(ex))
         {
@@ -143,14 +148,18 @@ internal sealed class WindowsWriteHandle : IWriteHandle
         finally
         {
             _handle.Dispose();
-            if (_bounce is not null)
+            if (result == GateDisposeResult.Drained)
             {
-                _pool.Return(_bounce);
-                _bounce = null;
+                if (_bounce is not null)
+                {
+                    _pool.ReturnOrFree(_bounce);
+                    _bounce = null;
+                }
+
+                _gate.EndDispose();
             }
 
-            _gate.EndDispose();
-            _gate.Dispose();
+            // TimedOut: an I/O may still own the buffer, so it is leaked on purpose rather than freed under it.
         }
 
         if (failure is not null)
@@ -198,7 +207,7 @@ internal sealed class WindowsWriteHandle : IWriteHandle
         long length;
         lock (_stateLock)
         {
-            if (!_padded)
+            if (!_needsTrim)
             {
                 return;
             }
@@ -209,7 +218,7 @@ internal sealed class WindowsWriteHandle : IWriteHandle
         RandomAccess.SetLength(_handle, length);
         lock (_stateLock)
         {
-            _padded = false;
+            _needsTrim = false;
         }
     }
 }

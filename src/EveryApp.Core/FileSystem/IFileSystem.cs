@@ -33,9 +33,10 @@ public interface IFileSystem
 
     /// <summary>
     /// Creates a NEW file; throws <see cref="IoErrorKind.AlreadyExists"/> if the path is taken (an existing file is never truncated).
-    /// When <paramref name="preallocate"/> is above zero disk space is reserved up front so a full disk fails early; the file length stays 0
-    /// until data is written. Callers write to a temporary name, call FlushAsync, then Move it into place, so a crash never leaves a
-    /// half-written file under the final name.
+    /// When <paramref name="preallocate"/> is above zero the end of file is set to that length up front, so a full disk fails early and
+    /// extending writes do not serialise; the file is trimmed to the data actually written on FlushAsync and DisposeAsync.
+    /// The target MUST be a temporary part-file name: until the copy is verified the content is untrusted (it may be full-size but only
+    /// partly written after a crash). Write, FlushAsync, verify, then Move it into place.
     /// </summary>
     IWriteHandle CreateWrite(string path, long preallocate, bool unbuffered);
 

@@ -112,8 +112,8 @@ public sealed class WindowsFileSystemTests : IDisposable
 
         var entry = fs.GetEntry(path);
         Assert.Equal(3, entry.Length);
-        Assert.NotEqual(0UL, entry.FileId);
-        Assert.NotEqual(0u, entry.VolumeSerial);
+        Assert.NotEqual(UInt128.Zero, entry.FileId);
+        Assert.NotEqual(0UL, entry.VolumeSerial);
         Assert.Single(fs.EnumerateChildren(dir));
 
         fs.Delete(path);

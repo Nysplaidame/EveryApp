@@ -11,12 +11,18 @@ public sealed unsafe class AlignedBuffer : MemoryManager<byte>
 {
     internal const int Alignment = 65536;
     private nint _ptr;
+    private int _inPool;
 
     internal AlignedBuffer(int length)
     {
         Size = length;
         _ptr = (nint)NativeMemory.AlignedAlloc((nuint)length, Alignment);
     }
+
+    /// <summary>Set while the buffer sits in a pool; used to detect double returns.</summary>
+    internal bool TryMarkReturned() => Interlocked.Exchange(ref _inPool, 1) == 0;
+
+    internal void MarkRented() => Volatile.Write(ref _inPool, 0);
 
     /// <summary>Usable length in bytes (a power of two, at least 4096).</summary>
     public int Size { get; }

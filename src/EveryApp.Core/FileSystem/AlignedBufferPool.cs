@@ -35,15 +35,60 @@ public sealed class AlignedBufferPool : IDisposable
         ArgumentOutOfRangeException.ThrowIfGreaterThan(minSize, MaxSize);
         var size = (int)BitOperations.RoundUpToPowerOf2((uint)Math.Max(minSize, MinSize));
         Interlocked.Increment(ref _rentCount);
-        return _buckets[BitOperations.Log2((uint)size)].TryDequeue(out var buffer) ? buffer : new AlignedBuffer(size);
+        if (_buckets[BitOperations.Log2((uint)size)].TryDequeue(out var buffer))
+        {
+            buffer.MarkRented();
+            return buffer;
+        }
+
+        return new AlignedBuffer(size);
     }
 
-    /// <summary>Gives a buffer back. The caller must not use it afterwards.</summary>
+    /// <summary>
+    /// Gives a buffer back. The caller must not use it afterwards.
+    /// Throws <see cref="InvalidOperationException"/> on a double return and <see cref="ObjectDisposedException"/> after the pool is disposed.
+    /// </summary>
     public void Return(AlignedBuffer buffer)
     {
         ArgumentNullException.ThrowIfNull(buffer);
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (!buffer.TryMarkReturned())
+        {
+            throw new InvalidOperationException("This buffer was already returned to the pool.");
+        }
+
+        Enqueue(buffer);
+    }
+
+    /// <summary>Like <see cref="Return"/> but frees the buffer instead of throwing when the pool is already disposed (used by file handles that outlive a pool).</summary>
+    internal void ReturnOrFree(AlignedBuffer buffer)
+    {
+        if (_disposed)
+        {
+            ((IDisposable)buffer).Dispose();
+            return;
+        }
+
+        try
+        {
+            Return(buffer);
+        }
+        catch (ObjectDisposedException)
+        {
+            ((IDisposable)buffer).Dispose();
+        }
+    }
+
+    public void Dispose()
+    {
+        _disposed = true;
+        Drain();
+    }
+
+    private void Enqueue(AlignedBuffer buffer)
+    {
         var queue = _buckets[BitOperations.Log2((uint)buffer.Size)];
-        if (_disposed || queue.Count >= MaxPerBucket)
+        if (queue.Count >= MaxPerBucket)
         {
             ((IDisposable)buffer).Dispose();
             return;
@@ -54,12 +99,6 @@ public sealed class AlignedBufferPool : IDisposable
         {
             Drain();
         }
-    }
-
-    public void Dispose()
-    {
-        _disposed = true;
-        Drain();
     }
 
     private void Drain()

@@ -119,7 +119,16 @@ public sealed class FaultInjectingFileSystem(IFileSystem inner) : IFileSystem
 
     public int GetSectorSize(string path) => inner.GetSectorSize(path);
 
-    private static string Norm(string path) => path.Replace('/', '\\');
+    private static string Norm(string path)
+    {
+        var p = path.Replace('/', '\\');
+        if (p.StartsWith(@"\\?\UNC\", StringComparison.OrdinalIgnoreCase))
+        {
+            return @"\\" + p[8..];
+        }
+
+        return p.StartsWith(@"\\?\", StringComparison.Ordinal) ? p[4..] : p;
+    }
 
     private void Add(List<Rule> list, Rule rule)
     {

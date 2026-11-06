@@ -55,25 +55,26 @@ internal sealed class WindowsReadHandle : IReadHandle
 
     public async ValueTask DisposeAsync()
     {
-        if (!await _gate.BeginDisposeAsync().ConfigureAwait(false))
+        // Cancels and waits (bounded) for in-flight reads before closing the handle or releasing the buffer.
+        var result = await _gate.BeginDisposeAsync(() => NativeFileApi.CancelAll(_handle), WindowsFileSystem.DisposeTimeout).ConfigureAwait(false);
+        if (result == GateDisposeResult.AlreadyDisposed)
         {
             return;
         }
 
-        try
+        _handle.Dispose();
+        if (result == GateDisposeResult.Drained)
         {
-            _handle.Dispose();
             if (_bounce is not null)
             {
-                _pool.Return(_bounce);
+                _pool.ReturnOrFree(_bounce);
                 _bounce = null;
             }
-        }
-        finally
-        {
+
             _gate.EndDispose();
-            _gate.Dispose();
         }
+
+        // TimedOut: an I/O may still own the buffer, so it is leaked on purpose rather than freed under it.
     }
 
     /// <summary>True when pointer, offset and length are all sector aligned, so the kernel can fill the caller's memory directly.</summary>

@@ -12,6 +12,7 @@ public sealed class InMemoryFileSystem : IFileSystem
     private readonly object _lock = new();
     private readonly Dictionary<string, Node> _nodes = new(StringComparer.OrdinalIgnoreCase);
     private ulong _nextId = 1;
+    private const string LongPrefix = @"\\?\";
 
     public InMemoryFileSystem()
     {
@@ -87,7 +88,7 @@ public sealed class InMemoryFileSystem : IFileSystem
 
             var node = NewNode(key, isDirectory: false);
             _nodes[key] = node;
-            return new WriteHandle(this, node, unbuffered);
+            return new WriteHandle(this, node, unbuffered, preallocate);
         }
     }
 
@@ -193,6 +194,15 @@ public sealed class InMemoryFileSystem : IFileSystem
     {
         ArgumentException.ThrowIfNullOrEmpty(path);
         var k = path.Replace('/', '\\');
+        if (k.StartsWith(@"\\?\UNC\", StringComparison.OrdinalIgnoreCase))
+        {
+            k = @"\\" + k[8..];
+        }
+        else if (k.StartsWith(LongPrefix, StringComparison.Ordinal))
+        {
+            k = k[4..];
+        }
+
         while (k.Length > 3 && k.EndsWith('\\'))
         {
             k = k[..^1];
@@ -218,8 +228,8 @@ public sealed class InMemoryFileSystem : IFileSystem
         {
             Key = key,
             IsDirectory = isDirectory,
-            FileId = _nextId++,
-            VolumeSerial = 0xE0E0_0000u + (key.Length > 0 ? (uint)(char.ToUpperInvariant(key[0]) - 'A') : 0u),
+            FileId = new UInt128(0x1234, _nextId++),
+            VolumeSerial = 0xE0E0_0000_0000UL + (key.Length > 0 ? (ulong)(char.ToUpperInvariant(key[0]) - 'A') : 0UL),
             Attributes = isDirectory ? FileAttributes.Directory : FileAttributes.Normal,
             CreationTimeUtc = now,
             LastWriteTimeUtc = now,
@@ -285,7 +295,7 @@ public sealed class InMemoryFileSystem : IFileSystem
     }
 
     private FileEntry ToEntry(Node n) => new(
-        n.Key,
+        n.Key.StartsWith(@"\\", StringComparison.Ordinal) ? @"\\?\UNC\" + n.Key[2..] : LongPrefix + n.Key,
         n.IsDirectory ? 0 : n.Length,
         n.Attributes,
         n.CreationTimeUtc,
@@ -303,8 +313,8 @@ public sealed class InMemoryFileSystem : IFileSystem
         public FileAttributes Attributes;
         public DateTime CreationTimeUtc;
         public DateTime LastWriteTimeUtc;
-        public ulong FileId;
-        public uint VolumeSerial;
+        public UInt128 FileId;
+        public ulong VolumeSerial;
     }
 
     private sealed class ReadHandle(InMemoryFileSystem fs, Node node) : IReadHandle
@@ -339,9 +349,29 @@ public sealed class InMemoryFileSystem : IFileSystem
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
-    private sealed class WriteHandle(InMemoryFileSystem fs, Node node, bool unbuffered) : IWriteHandle
+    private sealed class WriteHandle : IWriteHandle
     {
+        private readonly InMemoryFileSystem fs;
+        private readonly Node node;
+        private readonly bool unbuffered;
         private bool _disposed;
+        private int _logical; // end of the data written so far
+        private bool _needsTrim;
+
+        public WriteHandle(InMemoryFileSystem fs, Node node, bool unbuffered, long preallocate)
+        {
+            this.fs = fs;
+            this.node = node;
+            this.unbuffered = unbuffered;
+            if (preallocate > 0)
+            {
+                // End of file is set up front, like the real implementation; trimmed to the data written on flush/dispose.
+                var len = checked((int)preallocate);
+                Grow(len);
+                node.Length = len;
+                _needsTrim = true;
+            }
+        }
 
         public ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, long offset, CancellationToken ct)
         {
@@ -363,7 +393,7 @@ public sealed class InMemoryFileSystem : IFileSystem
                         throw new ArgumentException("Unbuffered write offset must be sector aligned.", nameof(offset));
                     }
 
-                    if (buffer.Length % fs.SectorSize != 0 && offset + buffer.Length < node.Length)
+                    if (buffer.Length % fs.SectorSize != 0 && offset + buffer.Length < _logical)
                     {
                         throw new InvalidOperationException("A short unbuffered write must not end before data that already exists.");
                     }
@@ -373,6 +403,7 @@ public sealed class InMemoryFileSystem : IFileSystem
                 Grow(end);
                 buffer.Span.CopyTo(node.Data.AsSpan((int)offset));
                 node.Length = Math.Max(node.Length, end);
+                _logical = Math.Max(_logical, end);
                 node.LastWriteTimeUtc = fs.Clock();
                 return ValueTask.CompletedTask;
             }
@@ -391,6 +422,8 @@ public sealed class InMemoryFileSystem : IFileSystem
                 }
 
                 node.Length = len;
+                _logical = len;
+                _needsTrim = false;
                 return ValueTask.CompletedTask;
             }
         }
@@ -398,13 +431,33 @@ public sealed class InMemoryFileSystem : IFileSystem
         public ValueTask FlushAsync()
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
+            Trim();
             return ValueTask.CompletedTask;
         }
 
         public ValueTask DisposeAsync()
         {
-            _disposed = true;
+            if (!_disposed)
+            {
+                Trim();
+                _disposed = true;
+            }
+
             return ValueTask.CompletedTask;
+        }
+
+        private void Trim()
+        {
+            lock (fs._lock)
+            {
+                if (_needsTrim && node.Length > _logical)
+                {
+                    node.Data.AsSpan(_logical, node.Length - _logical).Clear();
+                    node.Length = _logical;
+                }
+
+                _needsTrim = false;
+            }
         }
 
         private void Grow(int size)
