@@ -10,4 +10,9 @@
     <PackageReference Include="Microsoft.Windows.CsWin32" PrivateAssets="all" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- XxHash3: fast non-cryptographic hash for copy verification and duplicate pre-filtering (first-party Microsoft package). -->
+    <PackageReference Include="System.IO.Hashing" />
+  </ItemGroup>
+
 </Project>
