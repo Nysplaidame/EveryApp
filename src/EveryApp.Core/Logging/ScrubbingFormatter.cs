@@ -8,8 +8,10 @@ namespace EveryApp.Core.Logging;
 /// The only formatter the log file uses. It builds the whole line (time, level, message, exception)
 /// and scrubs it before anything is written, so no log text can skip the scrubber.
 /// </summary>
-internal sealed class ScrubbingFormatter : ITextFormatter
+internal sealed class ScrubbingFormatter(Func<string, string>? scrub = null) : ITextFormatter
 {
+    private readonly Func<string, string> _scrub = scrub ?? SecretScrubber.Scrub;
+
     public void Format(LogEvent logEvent, TextWriter output)
     {
         ArgumentNullException.ThrowIfNull(logEvent);
@@ -27,7 +29,7 @@ internal sealed class ScrubbingFormatter : ITextFormatter
             line.Write(logEvent.Exception.ToString());
         }
 
-        output.WriteLine(SecretScrubber.Scrub(line.ToString()));
+        output.WriteLine(_scrub(line.ToString()));
     }
 
     private static string LevelCode(LogEventLevel level) => level switch

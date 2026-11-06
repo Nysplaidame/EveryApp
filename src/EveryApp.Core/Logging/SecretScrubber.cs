@@ -17,7 +17,7 @@ public static partial class SecretScrubber
     /// <summary>Returns the text with secrets replaced by <c>***</c> and the profile path replaced by <c>%USERPROFILE%</c>.</summary>
     public static string Scrub(string message) => Scrub(message, ProfilePath);
 
-    internal static string Scrub(string message, string? profilePath)
+    internal static string Scrub(string message, string? profilePath, Action? testHook = null)
     {
         if (string.IsNullOrEmpty(message))
         {
@@ -27,6 +27,7 @@ public static partial class SecretScrubber
         try
         {
             var text = ReplaceProfile(message, NormalizeProfile(profilePath));
+            testHook?.Invoke();
             text = PrivateKeyBlock().Replace(text, Redacted);
             text = AuthorizationHeader().Replace(text, "${prefix}" + Redacted);
             text = KeyValueSecret().Replace(text, "${prefix}" + Redacted);
@@ -101,7 +102,7 @@ public static partial class SecretScrubber
     private static partial Regex AuthorizationHeader();
 
     [GeneratedRegex(
-        @"(?<prefix>(?:token|password|pwd|secret|api_?key)\s*=\s*)(?:""[^""]*""|'[^']*'|[^\s&;,""']+)",
+        @"(?<prefix>(?:token|password|pwd|secret|api_?key)\s*=\s*)(?:""[^""]*""|'[^']*'|(?:(?:Bearer|Basic|Digest|Negotiate|Token)\s+)?[^\s&;,""']+)",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant,
         TimeoutMilliseconds)]
     private static partial Regex KeyValueSecret();

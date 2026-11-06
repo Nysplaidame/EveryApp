@@ -12,7 +12,7 @@ public static class LogSetup
     /// <summary>Creates the logger for <paramref name="appName"/>, writing under <see cref="AppPaths.Logs"/>.</summary>
     public static ILogger Create(string appName) => Create(appName, AppPaths.Logs);
 
-    internal static ILogger Create(string appName, string directory)
+    internal static ILogger Create(string appName, string directory, Func<string, string>? scrub = null)
     {
         ValidateAppName(appName);
         ArgumentException.ThrowIfNullOrWhiteSpace(directory);
@@ -20,7 +20,7 @@ public static class LogSetup
         return new LoggerConfiguration()
             .MinimumLevel.Is(LogEventLevel.Information)
             .WriteTo.File(
-                new ScrubbingFormatter(),
+                new ScrubbingFormatter(scrub),
                 Path.Combine(directory, appName + "-.log"),
                 rollingInterval: RollingInterval.Day,
                 retainedFileCountLimit: FilesKept,
