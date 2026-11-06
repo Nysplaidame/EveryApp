@@ -57,7 +57,7 @@ What makes it worth building, rather than installing the existing tools:
   | **Chartroom** (Dev) | Python interpreters + venvs (find, health, packages, create/clone/re-point, "which python wins"), PATH + environment variable editor with history/undo, other toolchains (Node/nvm, .NET, JDKs, Git, Rust/Go), dev cache cleanup + WSL disk compaction, port-in-use finder, hosts editor, git repo dashboard, WSL distro manager, dev-setting switches, toolchain report | Later |
   | **Broadside** 🔫 (Vulnerability scanner) | see §5.5 | First app after v1 |
   | **Gunport** 🔫 (Exposure auditor) | open listening ports and the process behind each, firewall rule audit (overly broad/stale rules), SMB shares and their permissions, remote-access services (RDP/SSH/WinRM) state, UPnP/port-forward check on the router where possible | Later |
-  | **Powderkeg** 🔫 (Secrets finder) | finds passwords, API keys, tokens and private keys lying in plain files, scripts, `.env` files, shell history and git repos (incl. history); shows where, never displays the full secret; guides rotation/removal | Later |
+  | **Powderkeg** 🔫 (Secrets finder) | finds passwords, API keys, tokens and private keys lying in plain files, scripts, `.env` files, shell history and git repos (incl. history); shows where, never displays the full secret; guides rotation/removal. **Have I Been Pwned checks:** (a) any password it finds is checked against HIBP Pwned Passwords using the k-anonymity range API: only the first 5 characters of the SHA-1 hash leave the PC, never the password or full hash; free, no key; (b) optional breach check for the user's own email addresses via the HIBP breached-account API, which needs the user's own paid HIBP API key (stored with DPAPI) and is off until a key is entered. | Later |
 
   All cannon apps are **defensive only**: they inspect and harden this PC. They never scan, probe or attack other machines (Gunport's router check uses only the router's own UPnP status).
 
@@ -119,12 +119,7 @@ What makes it worth building, rather than installing the existing tools:
 - Image thumbnails / quick preview in results.
 
 ### 5.5 Broadside — vulnerability scanner (first app after v1; design pinned here so v1 core supports it)
-- **Inventory** (local only, never uploaded):
-  - installed apps (registry uninstall keys + winget)
-  - drivers and firmware (from Hullwatch/Bosun)
-  - Python/Node/.NET packages in every environment Chartroom finds
-  - browser extensions
-  - Windows build/patch level
+- **Inventory** (local only, never uploaded): gathered by the shared **Inventory** core component (§5.6), which Bosun and Chartroom also use.
 - **Sources:**
   - **OSV** (exact matching for PyPI/npm/NuGet/crates/Go)
   - **NVD CVE** (apps and drivers via CPE)
@@ -136,6 +131,23 @@ What makes it worth building, rather than installing the existing tools:
 - **Matching honesty:** package-ecosystem matches are exact. Desktop app → CVE matches are fuzzy. Each finding shows a confidence level, and the user can mark "not affected" or correct the product mapping. Like the vendor-page override (§4), this is saved and editable.
 - **Plain-language findings:** "Notepad++ 8.5.2 has a known security hole (CVE-…), rated High, actively exploited: update now", with the fix version and an **Update now** button handed to Bosun when present (or a link otherwise).
 - **Alerts** go through the hub (Windows / ntfy / Home Assistant), with rules by urgency. Daily feed refresh by default.
+
+### 5.6 Inventory — shared core component (interfaces in v1, collectors added with the apps that need them)
+
+One pluggable collector per source. Each returns normalised records: name, publisher, version, install location, source, and an identifier usable for matching (CPE / purl / winget ID / hardware ID). Collectors read data directly rather than launching the tools where possible, which is faster and safer (e.g. read `site-packages/*.dist-info/METADATA` instead of running `pip`). Each collector is time-boxed and isolated: one failing or slow collector reports "couldn't check" and never blocks the others. Results are cached with change detection (registry timestamps, folder mtimes), so rescans are incremental and cheap.
+
+| Collector | Source |
+|---|---|
+| Desktop apps | Registry uninstall keys (HKLM 64/32-bit + HKCU), MSI product database |
+| Package managers | winget (`winget export`/list), Chocolatey, Scoop |
+| Store/MSIX apps | AppX/MSIX package registry |
+| Portable apps | user-chosen folders scanned for executables, version taken from file version info |
+| Windows | build + UBR, installed KBs |
+| Drivers | driver store / PnP signed drivers (version, provider, date, hardware IDs) |
+| Firmware | SSD firmware (from Hullwatch), BIOS/UEFI version |
+| Services | installed services and their binaries' versions |
+| Browser extensions | Chrome/Edge/Brave/Firefox profile folders |
+| Dev packages | Python (all interpreters + venvs from Chartroom's finder), Node (`node_modules` + global), .NET (NuGet caches + project lock files), VS Code extensions, Docker images (if Docker present) |
 
 ## 6. Architecture (builder's latitude within these lines)
 
