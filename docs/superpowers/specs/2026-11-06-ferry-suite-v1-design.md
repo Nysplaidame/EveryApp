@@ -1,6 +1,6 @@
-# Ferry Suite — Version 1 Design
+# EveryApp Suite — Version 1 Design
 
-*Date: 2026-11-06 · Status: draft for approval · "Ferry" is a working name*
+*Date: 2026-11-06 · Status: approved 2026-11-06, amended same day (names, Chartroom, cannon apps, security §14) · Suite name: **EveryApp**. "Ferry" is the Copy & Sync app only.*
 
 ## 1. Intent
 
@@ -40,20 +40,26 @@ What makes it worth building, rather than installing the existing tools:
 - Mixed hardware: NVMe SSDs, a SATA SSD, 5400 rpm hard drives, a Storage Spaces volume (G:, NTFS), a NAS over SMB. Everything must behave well on slow hard drives and network shares, not only on NVMe.
 - The user works mostly through Explorer: Ctrl+C/Ctrl+V day to day, sometimes drag and drop.
 - Development tools present: .NET SDK 10, git, GitHub CLI.
-- Repository: `K:\Documents\Obsidian\Ferry`.
+- Repository: `K:\Documents\Obsidian\EveryApp`.
 
 ## 4. Decisions made with the user
 
-- **Suite of separate apps**, not one monolith. Six apps eventually:
+- **Suite of separate apps** under the suite name **EveryApp**, not one monolith. App names follow a nautical theme (user-approved). The defensive security apps are the "cannons". Names were invented for this suite; do a quick clash check before public release.
 
-  | App | Contents | In v1? |
+  | App (name) | Contents | In v1? |
   |---|---|---|
-  | **Copy & Sync** | copy engine, Explorer takeover, folder compare/sync, NAS backup scheduler, "verify folders match", hash checker | Copy engine + Explorer takeover + verify. Sync/backup later. |
-  | **Drive Health** | SMART monitoring + history, Windows disk-error log watcher, plain alerts, drive speed test | Yes (speed test may slip) |
-  | **Organise** | duplicate finder, bulk renamer, downloads tidier | Duplicate finder only |
-  | **Space** | disk space map (TreeSize Free feature set, plus fast MFT scan and duplicates/old-downloads overlays), disk cleanup incl. old driver packages | Later |
-  | **System** | app + driver + firmware update monitor & auto-updater, Windows tweaks auditor, startup/services manager, file-lock finder, USB/ISO writer | Later |
-  | **Connect** | SSH/serial/telnet terminal (PuTTY feature set), SFTP browser, key manager + agent, port forwarding, network toolkit, Wake-on-LAN | Later |
+  | **Ferry** (Copy & Sync) | copy engine, Explorer takeover, folder compare/sync, NAS backup scheduler, "verify folders match", hash checker | Copy engine + Explorer takeover + verify. Sync/backup later. |
+  | **Hullwatch** (Drive Health) | SMART monitoring + history, Windows disk-error log watcher, plain alerts, drive speed test | Yes (speed test may slip) |
+  | **Stowage** (Organise) | duplicate finder, bulk renamer, downloads tidier | Duplicate finder only |
+  | **Hold** (Space) | disk space map (TreeSize Free feature set, plus fast MFT scan and duplicates/old-downloads overlays), disk cleanup incl. old driver packages | Later |
+  | **Bosun** (System) | app + driver + firmware update monitor & auto-updater, Windows tweaks auditor, startup/services manager, file-lock finder, USB/ISO writer | Later |
+  | **Hawser** (Connect) | SSH/serial/telnet terminal (PuTTY feature set), SFTP browser, key manager + agent, port forwarding, network toolkit, Wake-on-LAN | Later |
+  | **Chartroom** (Dev) | Python interpreters + venvs (find, health, packages, create/clone/re-point, "which python wins"), PATH + environment variable editor with history/undo, other toolchains (Node/nvm, .NET, JDKs, Git, Rust/Go), dev cache cleanup + WSL disk compaction, port-in-use finder, hosts editor, git repo dashboard, WSL distro manager, dev-setting switches, toolchain report | Later |
+  | **Broadside** 🔫 (Vulnerability scanner) | see §5.5 | First app after v1 |
+  | **Gunport** 🔫 (Exposure auditor) | open listening ports and the process behind each, firewall rule audit (overly broad/stale rules), SMB shares and their permissions, remote-access services (RDP/SSH/WinRM) state, UPnP/port-forward check on the router where possible | Later |
+  | **Powderkeg** 🔫 (Secrets finder) | finds passwords, API keys, tokens and private keys lying in plain files, scripts, `.env` files, shell history and git repos (incl. history); shows where, never displays the full secret; guides rotation/removal | Later |
+
+  All cannon apps are **defensive only**: they inspect and harden this PC. They never scan, probe or attack other machines (Gunport's router check uses only the router's own UPnP status).
 
   Clipboard history: keep only if it adds something over existing free tools. Decide when System is designed.
 - **v1 = shared core + Copy & Sync (core copy) + Drive Health + Organise (duplicates).**
@@ -111,6 +117,25 @@ What makes it worth building, rather than installing the existing tools:
 - Auto-select rules: keep oldest / newest / in a chosen folder / shortest path / highest resolution (images).
 - Actions: recycle bin, move to a holding folder, replace with hard links (same volume only). All go through the undo centre, with a preview first.
 - Image thumbnails / quick preview in results.
+
+### 5.5 Broadside — vulnerability scanner (first app after v1; design pinned here so v1 core supports it)
+- **Inventory** (local only, never uploaded):
+  - installed apps (registry uninstall keys + winget)
+  - drivers and firmware (from Hullwatch/Bosun)
+  - Python/Node/.NET packages in every environment Chartroom finds
+  - browser extensions
+  - Windows build/patch level
+- **Sources:**
+  - **OSV** (exact matching for PyPI/npm/NuGet/crates/Go)
+  - **NVD CVE** (apps and drivers via CPE)
+  - **CISA KEV**: "actively exploited" turns into the most urgent alert
+  - **EPSS** (likelihood of exploitation)
+  - GitHub Advisory Database
+  - Microsoft security updates
+- **Privacy by design:** download the feeds/databases and match **locally**. Don't send the inventory to any service. Where a live query is unavoidable, send the minimum (package name + version) and say so in Settings.
+- **Matching honesty:** package-ecosystem matches are exact. Desktop app → CVE matches are fuzzy. Each finding shows a confidence level, and the user can mark "not affected" or correct the product mapping. Like the vendor-page override (§4), this is saved and editable.
+- **Plain-language findings:** "Notepad++ 8.5.2 has a known security hole (CVE-…), rated High, actively exploited: update now", with the fix version and an **Update now** button handed to Bosun when present (or a link otherwise).
+- **Alerts** go through the hub (Windows / ntfy / Home Assistant), with rules by urgency. Daily feed refresh by default.
 
 ## 6. Architecture (builder's latitude within these lines)
 
@@ -172,7 +197,7 @@ What makes it worth building, rather than installing the existing tools:
 
 ## 9. Explicitly deferred
 
-- Space, System, Connect apps, and the Copy & Sync sync/backup features: each gets its own short design pass before building.
+- Broadside (first after v1), Hold, Bosun, Hawser, Chartroom, Gunport, Powderkeg, and Ferry's sync/backup features: each gets its own short design pass before building.
 - Optional self-hosted "hub" container (Docker on the user's Proxmox host) for multi-machine dashboards: only if the user later wants it. v1 sends alerts directly to ntfy/Home Assistant.
 
 ## 10. UI/UX rules (all apps)
@@ -205,7 +230,44 @@ What makes it worth building, rather than installing the existing tools:
 - **GitHub repo: public.** Free Windows CI minutes, CodeQL, branch protection on `main`. Self-update reads public GitHub Releases with no token. Repo hygiene follows from being public: secret scanning on, no personal paths or machine names hard-coded in source or tests (benchmark configs that name drives such as E:/K: live in a git-ignored local file with a committed example).
 - **Explorer takeover: always show the copy window** for Ctrl+V and drag-drop. **Plus a quick-paste shortcut, Ctrl+Shift+V by default and changeable in Settings:** Ferry does the copy with no window (tray progress only) and shows the window only if a conflict or problem comes up. The Explorer spike (§8 step 2) must confirm the chosen shortcut doesn't clash with anything Explorer already uses. Drag-drop has no quick variant, since Windows already uses its modifier keys for copy/move/link.
 
-## 13. Left to the builder
+## 14. Security by design (user requirement: "as secure as possible"; details are Claude's/builder's responsibility)
+
+The user explicitly wants maximum security without needing to follow the details. Treat these as requirements, not suggestions.
+
+- **Threat model first:** before step 3 of the build order, write `docs/security/threat-model.md` (STRIDE per component: apps, helper service, named pipes, Explorer extension, elevated copy worker, updater, alert integrations, feed downloads). Update it whenever a component or trust boundary changes.
+- **Least privilege:**
+  - apps run non-elevated
+  - the service exposes a minimal, versioned, allow-listed command set over named pipes, with ACLs restricted to the interactive user + SYSTEM; every request is authenticated and validated
+  - the elevated copy worker is per-job and short-lived
+  - no app runs as admin "just in case"
+- **Untrusted input everywhere:** file names, paths, file contents, SMART data, event-log text, network feeds, vendor web pages, SSH servers and pipe messages are all untrusted. Parsers are defensive and fuzz-tested (SharpFuzz or similar) for the formats we parse (pipe protocol, journals, feed files, hosts file, `pyvenv.cfg`).
+- **Path safety:** guard against path traversal, reparse-point/junction tricks and TOCTOU in the copy engine and every delete/move. Never follow a reparse point out of the selected tree unless the user asked to.
+- **Explorer extension:** minimal native code, compiled with every mitigation on (CFG, /GS, ASLR/high-entropy, CET shadow stack compatible, Spectre mitigations), no parsing of untrusted data in-process. Reviewed line by line.
+- **Updates and downloads:**
+  - self-update packages are signature-checked against the pinned cert before install
+  - vulnerability feeds are downloaded over TLS with integrity checks where the source provides them
+  - vendor-page scraping never auto-installs anything: it only informs
+  - nothing downloaded is executed without the signature/hash checks the source supports, plus user confirmation
+- **Secrets the suite holds** (ntfy tokens, Home Assistant tokens, MQTT creds, SSH keys/passphrases in Hawser): stored with Windows DPAPI / Credential Manager, never in plain settings files or logs. Logs are scrubbed of secrets and personal paths by default.
+- **Supply chain:**
+  - central package management with lock files
+  - minimal, well-maintained dependencies (each new one justified in its PR)
+  - Dependabot
+  - CodeQL
+  - GitHub secret scanning + push protection
+  - pinned GitHub Actions by commit SHA
+  - least-privilege workflow tokens
+  - SBOM (CycloneDX) per release
+  - build provenance attestation
+  - Broadside scans our own dependencies too
+- **Secure defaults:** destructive actions need a preview and confirmation; risky features ship off by default behind feature flags; any network listener (e.g. Hawser port forwarding) binds to localhost unless the user explicitly widens it.
+- **Process:**
+  - every PR touching a trust boundary gets a security review (`/security-review`)
+  - each milestone gets a full audit (security-auditor review against the threat model)
+  - findings are fixed before release or recorded as an accepted risk with a reason
+  - a `SECURITY.md` explains how to report issues
+
+## 15. Left to the builder
 
 - Exact libraries (MQTT client, SMART/NVMe access approach, perceptual hash algorithm, logging library), as long as they fit the lightweight/stable goals and are actively maintained.
 - Buffer sizes, thread counts, and scheduler heuristics, chosen from benchmarks.

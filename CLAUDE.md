@@ -1,6 +1,12 @@
-# EveryApp (working name "Ferry")
+# EveryApp
 
-A suite of small, stable, lightweight Windows 11 utilities (Copy & Sync, Drive Health, Organise, then Space, System, Connect).
+A suite of small, stable, lightweight, secure Windows 11 utilities. App names:
+- **Ferry** (Copy & Sync), **Hullwatch** (Drive Health), **Stowage** (Organise): v1
+- **Broadside** (vulnerability scanner): first after v1
+- then **Hold** (Space), **Bosun** (System), **Hawser** (Connect), **Chartroom** (Dev), **Gunport** (exposure auditor), **Powderkeg** (secrets finder)
+
+"Ferry" means the copy app only, never the suite. Design files named `*-ferry-*` are Ferry's screens.
+
 The source of truth for scope and architecture is `docs/superpowers/specs/2026-11-06-ferry-suite-v1-design.md`.
 
 ## Designs: check before any UI work
@@ -18,4 +24,13 @@ The source of truth for scope and architecture is `docs/superpowers/specs/2026-1
 - Plain, simple language in every user-facing string. No jargon.
 - Destructive actions: preview → explicit confirmation → undo where possible.
 - DevOps: everything builds, tests and lints via `build.ps1` exactly as CI does. Conventional Commits. Short-lived branches + PRs into `main`.
-- Public repo: no secrets, personal paths, drive letters or machine names in committed code or tests. Local-only config goes in git-ignored files with a committed `.example`.
+- Public repo: no secrets, personal paths, drive letters or machine names in committed code or tests. Local-only config goes in git-ignored files with a committed `.example`. `local/` is git-ignored and holds the user's personal scripts. Never commit it.
+
+## Security (user requirement: as secure as possible; they don't want the details)
+
+- Follow spec §14 on every task. It covers threat model, least privilege, untrusted input, path safety, signed updates, DPAPI for secrets, and supply chain.
+- Run `/security-review` on any change that touches a trust boundary: helper service, named pipes, Explorer extension, elevation, updater, downloads/feeds, credential storage, file delete/move logic.
+- Run a security-auditor review against `docs/security/threat-model.md` at each milestone. Fix findings or record them as accepted risks with a reason.
+- Keep the threat model current when components or trust boundaries change.
+- Cannon apps (Broadside, Gunport, Powderkeg) are defensive only: inspect and harden this PC, never scan or attack other machines.
+- Don't explain security internals to the user unless they ask. Just do it properly and flag any decision that needs them.
