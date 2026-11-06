@@ -7,21 +7,16 @@ namespace PasteCatcher;
 /// <summary>Result of resolving the folder Explorer would paste into.</summary>
 internal sealed record TargetInfo(string? FileSystemPath, string DisplayName, string How);
 
-/// <summary>Result of reading files + copy/move intent from the clipboard.</summary>
-internal sealed record ClipboardFiles(IReadOnlyList<string> Paths, uint? DropEffect, string? Problem)
-{
-    public bool IsMove => DropEffect is uint e && (e & 2) != 0 && (e & 1) == 0;
-}
-
-/// <summary>Runs on the STA worker thread only. Never call from the keyboard hook.</summary>
+/// <summary>
+/// Runs on the STA worker thread only. Never call from the keyboard hook. Never touches the clipboard:
+/// clipboard data comes from <see cref="ClipboardWatcher"/>'s snapshot.
+/// </summary>
 internal static class ShellTarget
 {
     private static readonly Guid ClsidShellWindows = new("9BA05972-F6A8-11CF-A442-00A0C90A8F39");
     private static readonly Guid SidSTopLevelBrowser = new("4C96BE40-915C-11CF-99D3-00AA004AE837");
     private static readonly Guid IidIShellBrowser = new("000214E2-0000-0000-C000-000000000046");
     private static readonly Guid IidIPersistFolder2 = new("1AC3D9F0-175C-11d1-95BE-00609797EA4F");
-
-    private static readonly uint PreferredDropEffectFormat = Native.RegisterClipboardFormat("Preferred DropEffect");
 
     public static TargetInfo ForDesktop()
     {
@@ -133,52 +128,6 @@ internal static class ShellTarget
         if (Native.SHGetNameFromIDList(pidl, sigdn, out IntPtr p) != 0 || p == IntPtr.Zero) return null;
         try { return Marshal.PtrToStringUni(p); }
         finally { Native.CoTaskMemFree(p); }
-    }
-
-    /// <summary>Reads CF_HDROP and "Preferred DropEffect". Holds the clipboard open as briefly as possible.</summary>
-    public static ClipboardFiles ReadClipboard()
-    {
-        bool opened = false;
-        for (int attempt = 0; attempt < 10 && !opened; attempt++)
-        {
-            opened = Native.OpenClipboard(IntPtr.Zero);
-            if (!opened) Thread.Sleep(15);
-        }
-        if (!opened) return new ClipboardFiles([], null, "clipboard is busy (another app has it open)");
-
-        try
-        {
-            var paths = new List<string>();
-            IntPtr hDrop = Native.GetClipboardData(Native.CF_HDROP);
-            if (hDrop == IntPtr.Zero)
-                return new ClipboardFiles([], null, "no file list on the clipboard (maybe items from a phone, zip or other virtual folder)");
-
-            uint n = Native.DragQueryFile(hDrop, 0xFFFFFFFF, null, 0);
-            for (uint i = 0; i < n; i++)
-            {
-                uint len = Native.DragQueryFile(hDrop, i, null, 0);
-                var sb = new StringBuilder((int)len + 1);
-                Native.DragQueryFile(hDrop, i, sb, (uint)sb.Capacity);
-                paths.Add(sb.ToString());
-            }
-
-            uint? effect = null;
-            IntPtr hEffect = Native.GetClipboardData(PreferredDropEffectFormat);
-            if (hEffect != IntPtr.Zero && (ulong)Native.GlobalSize(hEffect) >= 4)
-            {
-                IntPtr p = Native.GlobalLock(hEffect);
-                if (p != IntPtr.Zero)
-                {
-                    effect = (uint)Marshal.ReadInt32(p);
-                    Native.GlobalUnlock(hEffect);
-                }
-            }
-            return new ClipboardFiles(paths, effect, null);
-        }
-        finally
-        {
-            Native.CloseClipboard();
-        }
     }
 
     public static string ProcessNameOf(uint pid)

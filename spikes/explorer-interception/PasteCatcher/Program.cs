@@ -15,9 +15,11 @@ internal static class Program
 
     private sealed record HookEvent(
         Shortcut Shortcut, string Where, IntPtr TopLevel, IntPtr ActiveTab, uint Pid,
-        bool Candidate, string? PassReason, bool Swallowed, bool Injected, double HookMs, DateTime At, long QueuedTicks);
+        bool Candidate, string? PassReason, bool Swallowed, bool Injected, double HookMs, DateTime At, long QueuedTicks,
+        ClipboardSnapshot? Snapshot);
 
     private static bool _swallow;
+    private static ClipboardWatcher _clipboard = null!;
     private static uint _mainThreadId;
     private static IntPtr _hook;
     private static readonly Native.LowLevelKeyboardProc HookProc = HookCallback; // kept alive for the hook's lifetime
@@ -50,6 +52,15 @@ internal static class Program
         if (args.Contains("--probe")) return Probe();
 
         _mainThreadId = Native.GetCurrentThreadId();
+
+        // The clipboard is read only when it changes, never at paste time (see ClipboardWatcher).
+        _clipboard = new ClipboardWatcher(Log);
+        if (!_clipboard.Start())
+        {
+            Console.Error.WriteLine("Could not start the clipboard watcher.");
+            return 1;
+        }
+
         var worker = new Thread(WorkerLoop) { IsBackground = true, Name = "PasteCatcher worker" };
         worker.SetApartmentState(ApartmentState.STA);
         worker.Start();
@@ -86,6 +97,7 @@ internal static class Program
         bool unhooked = Native.UnhookWindowsHookEx(_hook);
         Queue.CompleteAdding();
         worker.Join(TimeSpan.FromSeconds(3));
+        _clipboard.Dispose();
 
         using var self = Process.GetCurrentProcess();
         self.Refresh();
@@ -94,6 +106,7 @@ internal static class Program
             $"({cpu.TotalMilliseconds / Math.Max(1, wall.Elapsed.TotalMilliseconds) * 100:F3} %), working set {self.WorkingSet64 / (1024 * 1024)} MB, " +
             $"private {self.PrivateMemorySize64 / (1024 * 1024)} MB.");
         Log($"Hook calls: {_hookCalls}, average {(_hookCalls > 0 ? _hookTotalMs / _hookCalls : 0):F4} ms, max {_hookMaxMs:F4} ms.");
+        Log(_clipboard.Stats());
         return 0;
     }
 
@@ -190,17 +203,23 @@ internal static class Program
             else if (c == "ShellTabWindowClass") { activeTab = h; break; }
         }
 
+        // Clipboard state comes ONLY from the snapshot taken when the clipboard last changed. Never open the
+        // clipboard here or later for this key press: Explorer is opening it right now to paste.
+        ClipboardSnapshot? snap = _clipboard.Current;
+        uint seq = Native.GetClipboardSequenceNumber();
+
         string? reason = null;
         if (focus == IntPtr.Zero) reason = "could not see which control has focus";
         else if (focusClass == "Edit") reason = "focus is in a text box (rename, address bar or search)";
         else if (!inView) reason = $"focus is not in the file list (focused control: {focusClass})";
-        else if (!Native.IsClipboardFormatAvailable(Native.CF_HDROP)) reason = "clipboard has no file list";
+        else if (snap is null || snap.Sequence != seq) reason = $"clipboard changed, snapshot stale (snapshot {snap?.Sequence.ToString() ?? "none"}, now {seq}); Windows pastes";
+        else if (!snap.HasFiles) reason = snap.Problem ?? "clipboard has no file list";
         else if (injected) reason = "key was injected by software, not typed";
 
         bool candidate = reason is null;
         bool swallow = candidate && _swallow;
         double hookMs = Stopwatch.GetElapsedTime(t0).TotalMilliseconds;
-        Queue.TryAdd(new HookEvent(shortcut, where, fg, activeTab, pid, candidate, reason, swallow, injected, hookMs, DateTime.Now, Stopwatch.GetTimestamp()));
+        Queue.TryAdd(new HookEvent(shortcut, where, fg, activeTab, pid, candidate, reason, swallow, injected, hookMs, DateTime.Now, Stopwatch.GetTimestamp(), snap));
         return swallow;
     }
 
@@ -237,10 +256,9 @@ internal static class Program
             return;
         }
 
+        // Candidate events always carry a fresh snapshot with files (checked in the hook). No clipboard access here.
+        ClipboardSnapshot clip = e.Snapshot!;
         var sw = Stopwatch.StartNew();
-        var clip = ShellTarget.ReadClipboard();
-        double clipMs = sw.Elapsed.TotalMilliseconds;
-        sw.Restart();
         TargetInfo target = e.Where == "Desktop" ? ShellTarget.ForDesktop() : ShellTarget.ForExplorer(e.TopLevel, e.ActiveTab);
         double targetMs = sw.Elapsed.TotalMilliseconds;
         double sinceKeyMs = Stopwatch.GetElapsedTime(e.QueuedTicks).TotalMilliseconds + e.HookMs;
@@ -268,7 +286,8 @@ internal static class Program
             if (clip.Paths.Count > 15) Log($"    ... and {clip.Paths.Count - 15} more");
             if (e.Shortcut == Shortcut.CtrlShiftV) Log("  (quick paste: Ferry would copy with no window, tray progress only)");
         }
-        Log($"  timings: hook {e.HookMs:F3} ms, clipboard {clipMs:F1} ms, target {targetMs:F1} ms, key-to-decision {sinceKeyMs:F1} ms.");
+        Log($"  clipboard: snapshot from {clip.TakenAt:HH:mm:ss.fff} (sequence {clip.Sequence}), not opened at paste time.");
+        Log($"  timings: hook {e.HookMs:F3} ms, target {targetMs:F1} ms, key-to-decision {sinceKeyMs:F1} ms.");
     }
 
     private static int Probe()

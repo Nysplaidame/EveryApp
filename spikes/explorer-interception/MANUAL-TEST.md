@@ -50,18 +50,29 @@ Time needed: about 20 minutes for Part A. Part C is optional and takes about 30 
 
 ## Part A: Paste catcher, safe mode (Explorer still pastes)
 
-8. Start it:
+8. **Rebuild first** (the paste catcher was fixed after your first try: it no longer makes the error sound on the
+   first Ctrl+V). If it is still running from before, press Ctrl+C in its window. Then:
+   ```powershell
+   dotnet build spikes\explorer-interception\PasteCatcher\PasteCatcher.csproj -c Release
+   ```
+   It should end with "Build succeeded". Then start it:
    ```powershell
    spikes\explorer-interception\PasteCatcher\bin\Release\net10.0-windows\PasteCatcher.exe
    ```
-   Expected first line: `Keyboard hook installed. Mode: pass-through (Explorer still pastes normally).`
+   Expected first lines: `Clipboard snapshot (start, ...)`, then
+   `Keyboard hook installed. Mode: pass-through (Explorer still pastes normally).`
    Put the Terminal window next to Explorer so you can see both.
+   From now on, each time you copy or cut something, a `Clipboard snapshot (change, ...)` line appears. That is
+   the catcher reading the clipboard when it changes, so it never has to touch it when you paste.
 9. **Copy:** in `FerryTest\From`, select `FerryTest-file1.txt` and `FerryTest-file2.txt`, press **Ctrl+C**.
-   Go to `FerryTest\To`, click an empty spot, press **Ctrl+V**.
-   - Expected in Explorer: the two files are pasted into `To` as usual.
+   - Expected in Terminal straight away: `Clipboard snapshot (change, sequence N): 2 file(s), copy, ...`.
+   Go to `FerryTest\To`, click an empty spot, press **Ctrl+V** once.
+   - Expected in Explorer: the two files are pasted into `To` **on the first press**, with **no error sound**.
    - Expected in Terminal: `Ctrl+V in File Explorer [explorer]. key passed to Explorer.`, then `WOULD COPY`, then
-     `into:` with the full path of `To`, then the two file names.
-   - **R3:** was the target folder right? Were both files listed? Did it say COPY?
+     `into:` with the full path of `To`, the two file names, and `clipboard: snapshot from ... not opened at paste time.`
+   - If you press Ctrl+V within a split second of Ctrl+C, it may say `clipboard changed, snapshot stale ...;
+     Windows pastes`. That is expected and safe: Windows pastes as normal.
+   - **R3:** was the target folder right? Were both files listed? Did it say COPY? First press pasted, no sound?
 10. **Cut:** in `FerryTest\To`, select the two pasted files and press **Ctrl+X**. Open `FerryTest\Drop1`, click
     an empty spot and press **Ctrl+V**.
     - Expected in Terminal: `WOULD MOVE (cut; Preferred DropEffect=2)` and target `Drop1`.

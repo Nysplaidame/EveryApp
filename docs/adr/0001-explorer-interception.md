@@ -25,7 +25,7 @@ Explorer; evaluate (B) on paper only, with no code loaded into Explorer.
 
 | Part | Location | What it does |
 |---|---|---|
-| (A) PasteCatcher | `spikes/explorer-interception/PasteCatcher/` (C#, .NET 10 console) | `WH_KEYBOARD_LL` hook. On Ctrl+V, Ctrl+Shift+V or Shift+Insert, checks (cheaply, inside the hook) that the foreground window is `CabinetWClass`/`ExploreWClass` or the desktop (`Progman`/`WorkerW`), that keyboard focus is inside the folder view (`SHELLDLL_DefView`, not a rename box, the address bar or the navigation pane), that the clipboard has `CF_HDROP`, that AltGr/Win are not down and the key was not injected. A worker thread (STA) then reads `CF_HDROP` + `Preferred DropEffect` and finds the target folder through `IShellWindows` → `IServiceProvider(SID_STopLevelBrowser)` → `IShellBrowser::GetWindow`, matched to the **active tab** (the `ShellTabWindowClass` ancestor of the focused control). Logs what Ferry would do. Never copies. Passes keys through unless `--swallow`. |
+| (A) PasteCatcher | `spikes/explorer-interception/PasteCatcher/` (C#, .NET 10 console) | `WH_KEYBOARD_LL` hook. On Ctrl+V, Ctrl+Shift+V or Shift+Insert, checks (cheaply, inside the hook) that the foreground window is `CabinetWClass`/`ExploreWClass` or the desktop (`Progman`/`WorkerW`), that keyboard focus is inside the folder view (`SHELLDLL_DefView`, not a rename box, the address bar or the navigation pane), that the clipboard snapshot is current and holds files, that AltGr/Win are not down and the key was not injected. The clipboard is never opened at paste time: a separate watcher thread snapshots `CF_HDROP` + `Preferred DropEffect` with the clipboard sequence number whenever the clipboard changes (`AddClipboardFormatListener`). A worker thread (STA) then finds the target folder through `IShellWindows` → `IServiceProvider(SID_STopLevelBrowser)` → `IShellBrowser::GetWindow`, matched to the **active tab** (the `ShellTabWindowClass` ancestor of the focused control). Logs what Ferry would do. Never copies. Passes keys through unless `--swallow`. |
 | (C) DragDropHandler | `spikes/explorer-interception/DragDropHandler/` (C++, no ATL, static CRT, CFG + CET-compatible) | `IShellExtInit` + `IContextMenu`. Adds "Copy/Move here with Ferry (test)" to the right-drag menu when the target is a real file-system folder (`SFGAO_FILESYSTEM`+`SFGAO_FOLDER`, not `SFGAO_STREAM`, so zip files are excluded) and the data has `CF_HDROP`. On choose: sends op/target/sources to a named pipe with overlapped I/O inside a 250 ms total budget (100 ms connect wait + the rest for the write; `SECURITY_IDENTIFICATION` client), logs, returns. Never copies. Class-factory references and `LockServer` count towards `DllCanUnloadNow`. HKCU-only `register.ps1`/`unregister.ps1` (unregister also removes parent keys that register created, if empty), `watch-counter.ps1` (pipe listener + Explorer crash/handle watcher), `hung-server.ps1` (a helper that accepts and never reads), and `harness.exe` (drives the DLL in its own process, never Explorer). |
 
 ## Findings so far (automated, non-interactive)
@@ -63,11 +63,19 @@ Explorer; evaluate (B) on paper only, with no code loaded into Explorer.
 
 Fill in from `MANUAL-TEST.md`. Leave "TBD" where a step was skipped.
 
+> **Found by the manual test (Part A, step 8, first run).** In pass-through mode the first Ctrl+V gave a Windows
+> error sound and did not paste; a second press worked. Cause: on each Ctrl+V the catcher's worker opened the
+> clipboard to read the file list, at the same moment Explorer opened it to paste. Explorer's open failed, so it
+> beeped. The first press lost because start-up and JIT kept the clipboard open longer. Fix (now a production
+> requirement, (A)10): the catcher never opens the clipboard at paste time; it takes a snapshot when the
+> clipboard changes (`WM_CLIPBOARDUPDATE`) and uses only that snapshot at paste time. Verified without keystrokes
+> by `PasteCatcher/test-clipboard-snapshot.ps1`; R3 re-checks it by hand.
+
 | Code | Check | Result |
 |---|---|---|
 | R1 | Ctrl+Shift+V in a folder, no spike running | TBD |
 | R2 | Ctrl+Shift+V on the desktop, no spike running | TBD |
-| R3 | Ctrl+V: right target, all items, COPY | TBD |
+| R3 | Ctrl+V: right target, all items, COPY; pastes on the first press with no error sound (after the clipboard fix) | TBD |
 | R4 | Cut then Ctrl+V reported as MOVE | TBD |
 | R5 | Correct tab with two tabs open | TBD |
 | R6 | Desktop paste target | TBD |
@@ -176,6 +184,15 @@ supported copy-handler API.
 7. Elevated Explorer windows (rare) are out of reach of a non-elevated hook (UIPI); stock paste applies.
 8. Settings: the quick-paste shortcut is changeable and Ferry warns if the user picks one Explorer uses.
 9. Native AOT for the helper, and no allocations in the hook callback, so no JIT or GC pause can land inside it.
+10. **Never open the clipboard at paste time; snapshot on `WM_CLIPBOARDUPDATE`; stale snapshot → don't take the
+    paste.** A message-only window registered with `AddClipboardFormatListener` reads `CF_HDROP` and
+    `Preferred DropEffect` when the clipboard changes (bounded retry if another app holds it; hold it only while
+    copying the data out; don't open it at all when there is no `CF_HDROP`) and stores them with
+    `GetClipboardSequenceNumber()`. On the shortcut, the hook compares the current sequence number with the
+    snapshot's: if they differ, Ferry does not take the paste and Windows pastes. Opening the clipboard at paste
+    time races Explorer's own paste and makes it fail with an error sound (found in the manual test). Residual
+    window: a paste within a few milliseconds of the copy, while the snapshot is being taken; the sequence check
+    makes Ferry stand aside then, and the hold time measured was 0–2 ms.
 
 ### Right-drag handler (C)
 
