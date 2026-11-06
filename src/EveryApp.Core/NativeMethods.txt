@@ -1,0 +1,4 @@
+CreateFile
+GetFileInformationByHandle
+GetDiskFreeSpace
+GetDiskFreeSpaceEx
