@@ -78,6 +78,51 @@ public sealed class WindowsFileSystemFixTests : IDisposable
         Assert.Single(fs.EnumerateChildren(_root));
     }
 
+    [Fact]
+    public async Task ForwardSlashPaths_WithTrailingDotOrSpace_ActOnTheRightFile_NeverTheSibling()
+    {
+        var fs = new WindowsFileSystem();
+        foreach (var (name, content) in new[] { ("foo", 1), ("foo.", 2), ("foo ", 3) })
+        {
+            await using var w = fs.CreateWrite(Raw(name), 0, unbuffered: false);
+            await w.WriteAsync(new byte[content], 0, CancellationToken.None);
+        }
+
+        var slashed = _root.Replace('\\', '/');
+        Assert.Equal(2, fs.GetEntry(slashed + "/foo.").Length);
+        Assert.Equal(3, fs.GetEntry(slashed + "/foo ").Length);
+
+        // Mixed separators: backslashes up to the temp dir's parent, then forward slashes.
+        var parent = Path.GetDirectoryName(_root)!;
+        var mixed = parent + @"\" + Path.GetFileName(_root) + "/foo.";
+        Assert.Equal(2, fs.GetEntry(mixed).Length);
+
+        await using (var r = fs.OpenRead(slashed + "/foo.", unbuffered: false))
+        {
+            Assert.Equal(2, r.Length);
+        }
+
+        fs.Delete(slashed + "/foo.");
+        fs.Delete(slashed + "/foo ");
+        Assert.Equal(1, fs.GetEntry(_root + @"\foo").Length);
+        Assert.Single(fs.EnumerateChildren(_root));
+    }
+
+    [Theory]
+    [InlineData("C:/a/b.", @"\\?\C:\a\b.")]
+    [InlineData("C:/a/b ", @"\\?\C:\a\b ")]
+    [InlineData(@"C:\tmp/sub/foo.", @"\\?\C:\tmp\sub\foo.")]
+    [InlineData("//srv/share/x.", @"\\?\UNC\srv\share\x.")]
+    [InlineData(@"\\srv/share\x ", @"\\?\UNC\srv\share\x ")]
+    [InlineData("C:/a/../b", @"\\?\C:\b")]
+    [InlineData("C:/a//b", @"\\?\C:\a\b")]
+    public void Normalize_ConvertsForwardSlashesBeforePrefixing(string input, string expected) =>
+        Assert.Equal(expected, WindowsFileSystem.Normalize(input));
+
+    [Fact]
+    public void Normalize_LeavesSlashesInPrefixedInputLiteral() =>
+        Assert.Equal(@"\\?\C:\a/b.", WindowsFileSystem.Normalize(@"\\?\C:\a/b."));
+
     [Theory]
     [InlineData(@"C:\a\b", @"\\?\C:\a\b")]
     [InlineData(@"C:\a\b.", @"\\?\C:\a\b.")]

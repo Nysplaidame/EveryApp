@@ -244,7 +244,7 @@ public sealed class WindowsFileSystem(AlignedBufferPool? pool = null) : IFileSys
             throw new FileSystemException(path, IoErrorKind.InvalidName, null);
         }
 
-        if (TryPrefixDirectly(path, out var direct))
+        if (TryPrefixDirectly(path.Replace('/', '\\'), out var direct))
         {
             return direct;
         }
@@ -285,9 +285,9 @@ public sealed class WindowsFileSystem(AlignedBufferPool? pool = null) : IFileSys
         }
 
         var rest = path.AsSpan(start);
-        if (rest.IndexOfAny('/', ':') >= 0)
+        if (rest.Contains(':'))
         {
-            return false; // forward slashes, drive-relative colons, alternate streams: let GetFullPath decide
+            return false; // drive-relative colons, alternate streams: let GetFullPath decide
         }
 
         var segments = 0;
