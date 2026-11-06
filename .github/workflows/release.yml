@@ -1,0 +1,74 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+# Nothing is granted at the top level. The single job below declares exactly what it needs.
+permissions: {}
+
+jobs:
+  release:
+    name: build-sign-release
+    runs-on: windows-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write       # create the GitHub Release
+      id-token: write       # sign the provenance attestation (OIDC)
+      attestations: write   # store the provenance attestation
+    env:
+      EVERYAPP_SIGN_PFX_BASE64: ${{ secrets.EVERYAPP_SIGN_PFX_BASE64 }}
+      EVERYAPP_SIGN_PFX_PASSWORD: ${{ secrets.EVERYAPP_SIGN_PFX_PASSWORD }}
+      RELEASE_TAG: ${{ github.ref_name }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
+        with:
+          global-json-file: global.json
+
+      - name: Build, test and sign
+        shell: pwsh
+        run: ./build.ps1 -Configuration Release -Sign
+
+      - name: Publish CLI
+        shell: pwsh
+        run: |
+          dotnet publish src/Ferry.Cli -c Release -r win-x64 --self-contained false -o artifacts/publish/ferry
+          if ($LASTEXITCODE -ne 0) { throw 'publish failed' }
+
+      - name: Sign published binaries
+        shell: pwsh
+        run: ./build.ps1 -Configuration Release -Sign -SkipTests
+
+      - name: Generate SBOM (CycloneDX)
+        shell: pwsh
+        run: |
+          dotnet tool restore
+          if ($LASTEXITCODE -ne 0) { throw 'tool restore failed' }
+          dotnet CycloneDX EveryApp.slnx -j -o artifacts/sbom
+          if ($LASTEXITCODE -ne 0) { throw 'SBOM generation failed' }
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path artifacts/release | Out-Null
+          Compress-Archive -Path 'artifacts/publish/ferry/*' -DestinationPath "artifacts/release/Ferry-$env:RELEASE_TAG-win-x64.zip"
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-path: artifacts/release/*.zip
+
+      - name: Create GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $assets = @(Get-ChildItem artifacts/release/*.zip, artifacts/sbom/*.json | ForEach-Object { $_.FullName })
+          gh release create $env:RELEASE_TAG @assets --repo $env:GITHUB_REPOSITORY --title $env:RELEASE_TAG --generate-notes --verify-tag
+          if ($LASTEXITCODE -ne 0) { throw 'release creation failed' }
