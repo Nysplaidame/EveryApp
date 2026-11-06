@@ -26,12 +26,16 @@ namespace {
 const CLSID CLSID_FerrySpikeDragDrop = {0x4a158046, 0x8ed4, 0x476f, {0xb5, 0x8b, 0x19, 0xd7, 0xb7, 0xd7, 0x75, 0xfe}};
 
 const wchar_t kPipeName[] = L"\\\\.\\pipe\\FerrySpike-DragDrop";
-const DWORD kPipeTimeoutMs = 300;
+// Total time budget for the whole hand-off on Explorer's UI thread (connect wait + write), kept under the
+// 350 ms "helper down or hung" target with margin for the cancel and the log write.
+const DWORD kPipeBudgetMs = 250;
+const DWORD kPipeConnectWaitMs = 100;
 const size_t kMaxItems = 100000;
 
 HMODULE g_module = nullptr;
-volatile LONG g_objects = 0;
-volatile LONG g_locks = 0;
+volatile LONG g_objects = 0;      // live handler objects
+volatile LONG g_locks = 0;        // IClassFactory::LockServer count
+volatile LONG g_factoryRefs = 0;  // outstanding references to the class factory
 volatile LONG g_menuCount = 0;
 volatile LONG g_invokeCount = 0;
 
@@ -70,13 +74,15 @@ void LogLine(const std::wstring& text) noexcept {
     }
 }
 
-// Sends the job to the pipe. Returns a short status for the log. Never blocks longer than ~2x kPipeTimeoutMs.
+// Sends the job to the pipe. Returns a short status for the log. Whole call stays within kPipeBudgetMs
+// (plus the time CancelIoEx takes to complete, which is immediate for a pipe write).
 std::wstring SendToPipe(const std::wstring& message) noexcept {
     try {
+        const ULONGLONG deadline = GetTickCount64() + kPipeBudgetMs;
         DWORD flags = FILE_FLAG_OVERLAPPED | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION;
         HANDLE pipe = CreateFileW(kPipeName, GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, flags, nullptr);
         if (pipe == INVALID_HANDLE_VALUE && GetLastError() == ERROR_PIPE_BUSY) {
-            if (WaitNamedPipeW(kPipeName, kPipeTimeoutMs)) {
+            if (WaitNamedPipeW(kPipeName, kPipeConnectWaitMs)) {
                 pipe = CreateFileW(kPipeName, GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, flags, nullptr);
             }
         }
@@ -101,7 +107,9 @@ std::wstring SendToPipe(const std::wstring& message) noexcept {
             DWORD written = 0;
             BOOL ok = WriteFile(pipe, message.data(), bytes, &written, &ov);
             if (!ok && GetLastError() == ERROR_IO_PENDING) {
-                if (WaitForSingleObject(ov.hEvent, kPipeTimeoutMs) == WAIT_OBJECT_0) {
+                ULONGLONG now = GetTickCount64();
+                DWORD remaining = now < deadline ? static_cast<DWORD>(deadline - now) : 0;
+                if (WaitForSingleObject(ov.hEvent, remaining) == WAIT_OBJECT_0) {
                     ok = GetOverlappedResult(pipe, &ov, &written, FALSE);
                 } else {
                     CancelIoEx(pipe, &ov);
@@ -158,6 +166,18 @@ public:
             target_.clear();
             sources_.clear();
             if (!pidlFolder || !pdtobj) return E_INVALIDARG;
+
+            // Only real file-system folders. A .zip is a "folder" with a file-system path too, so also
+            // require that it is not a stream (SFGAO_STREAM marks zip/cab files shown as folders).
+            IShellItem* targetItem = nullptr;
+            if (FAILED(SHCreateItemFromIDList(pidlFolder, IID_PPV_ARGS(&targetItem)))) return E_FAIL;
+            SFGAOF attrs = 0;
+            HRESULT hrAttr = targetItem->GetAttributes(SFGAO_FILESYSTEM | SFGAO_FOLDER | SFGAO_STREAM, &attrs);
+            targetItem->Release();
+            if (FAILED(hrAttr) || (attrs & (SFGAO_FILESYSTEM | SFGAO_FOLDER)) != (SFGAO_FILESYSTEM | SFGAO_FOLDER) ||
+                (attrs & SFGAO_STREAM)) {
+                return E_FAIL;
+            }
 
             PWSTR path = nullptr;
             if (FAILED(SHGetNameFromIDList(pidlFolder, SIGDN_FILESYSPATH, &path)) || !path) {
@@ -267,8 +287,10 @@ public:
         }
         return E_NOINTERFACE;
     }
-    IFACEMETHODIMP_(ULONG) AddRef() noexcept override { return 2; }   // static lifetime
-    IFACEMETHODIMP_(ULONG) Release() noexcept override { return 1; }
+    // The factory object is static, but every reference handed out counts towards DllCanUnloadNow,
+    // so COM never unloads the DLL while a caller still holds the factory.
+    IFACEMETHODIMP_(ULONG) AddRef() noexcept override { return static_cast<ULONG>(InterlockedIncrement(&g_factoryRefs)); }
+    IFACEMETHODIMP_(ULONG) Release() noexcept override { return static_cast<ULONG>(InterlockedDecrement(&g_factoryRefs)); }
 
     IFACEMETHODIMP CreateInstance(IUnknown* outer, REFIID riid, void** ppv) noexcept override {
         if (!ppv) return E_POINTER;
@@ -306,5 +328,5 @@ STDAPI DllGetClassObject(REFCLSID clsid, REFIID riid, LPVOID* ppv) {
 }
 
 STDAPI DllCanUnloadNow() {
-    return (g_objects == 0 && g_locks == 0) ? S_OK : S_FALSE;
+    return (g_objects == 0 && g_locks == 0 && g_factoryRefs == 0) ? S_OK : S_FALSE;
 }

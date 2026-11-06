@@ -26,24 +26,34 @@ Explorer; evaluate (B) on paper only, with no code loaded into Explorer.
 | Part | Location | What it does |
 |---|---|---|
 | (A) PasteCatcher | `spikes/explorer-interception/PasteCatcher/` (C#, .NET 10 console) | `WH_KEYBOARD_LL` hook. On Ctrl+V, Ctrl+Shift+V or Shift+Insert, checks (cheaply, inside the hook) that the foreground window is `CabinetWClass`/`ExploreWClass` or the desktop (`Progman`/`WorkerW`), that keyboard focus is inside the folder view (`SHELLDLL_DefView`, not a rename box, the address bar or the navigation pane), that the clipboard has `CF_HDROP`, that AltGr/Win are not down and the key was not injected. A worker thread (STA) then reads `CF_HDROP` + `Preferred DropEffect` and finds the target folder through `IShellWindows` → `IServiceProvider(SID_STopLevelBrowser)` → `IShellBrowser::GetWindow`, matched to the **active tab** (the `ShellTabWindowClass` ancestor of the focused control). Logs what Ferry would do. Never copies. Passes keys through unless `--swallow`. |
-| (C) DragDropHandler | `spikes/explorer-interception/DragDropHandler/` (C++, no ATL, static CRT, CFG + CET-compatible) | `IShellExtInit` + `IContextMenu`. Adds "Copy/Move here with Ferry (test)" to the right-drag menu when the target is a normal folder and the data has `CF_HDROP`. On choose: sends op/target/sources to a named pipe with overlapped I/O and a 300 ms timeout (`SECURITY_IDENTIFICATION` client), logs, returns. Never copies. HKCU-only `register.ps1`/`unregister.ps1`, `watch-counter.ps1` (pipe listener + Explorer crash/handle watcher), and `harness.exe` (drives the DLL in its own process, never Explorer). |
+| (C) DragDropHandler | `spikes/explorer-interception/DragDropHandler/` (C++, no ATL, static CRT, CFG + CET-compatible) | `IShellExtInit` + `IContextMenu`. Adds "Copy/Move here with Ferry (test)" to the right-drag menu when the target is a real file-system folder (`SFGAO_FILESYSTEM`+`SFGAO_FOLDER`, not `SFGAO_STREAM`, so zip files are excluded) and the data has `CF_HDROP`. On choose: sends op/target/sources to a named pipe with overlapped I/O inside a 250 ms total budget (100 ms connect wait + the rest for the write; `SECURITY_IDENTIFICATION` client), logs, returns. Never copies. Class-factory references and `LockServer` count towards `DllCanUnloadNow`. HKCU-only `register.ps1`/`unregister.ps1` (unregister also removes parent keys that register created, if empty), `watch-counter.ps1` (pipe listener + Explorer crash/handle watcher), `hung-server.ps1` (a helper that accepts and never reads), and `harness.exe` (drives the DLL in its own process, never Explorer). |
 
 ## Findings so far (automated, non-interactive)
 
-- **(A) starts and stops cleanly.** Hook installs, `--exit-after` and Ctrl+C both unhook (`Hook removed: True`).
+- **(A) starts and stops cleanly.** Hook installs; both `--exit-after` and Ctrl+C unhook (`Hook removed: True`).
+  Ctrl+C was checked by `PasteCatcher/test-ctrlc.ps1`, which runs the catcher in its own hidden console and raises
+  `CTRL_C_EVENT` on that console with `GenerateConsoleCtrlEvent` (a console signal, no keystrokes): exit code 0,
+  clean unhook line.
 - **(A) idle cost:** 15 s idle with the hook installed used 16 ms CPU (one scheduler tick, ≈0.1 %), working set
-  29 MB, private memory 9 MB. (The .NET runtime is most of that; a Native AOT helper would be smaller.)
+  29 MB, private memory 9 MB. Two reasons to build the production helper with Native AOT: memory (the .NET
+  runtime is most of that 29 MB against a 40 MB budget for the whole helper), and latency inside the hook
+  callback, where a JIT compile on first use or a garbage-collection pause would delay every key press on the PC
+  and could exceed `LowLevelHooksTimeout`. Under AOT the callback is precompiled; it must also allocate nothing.
 - **(A) target lookup works on this PC:** `--probe` found 5 `IShellWindows` entries, all 5 resolved to an Explorer
   tab window through `IShellBrowser`, 4 of 5 showed a normal folder (the 5th is a virtual location such as Home).
   Enumeration took 144 ms cold (first COM activation); this runs on the worker, never in the hook.
 - **(C) compiles** with both MSVC 14.29 (VS 2019 Build Tools) and the newest installed toolset, at `/W4 /WX`,
   exporting only `DllGetClassObject` and `DllCanUnloadNow`, importing only kernel32/user32/ole32/shell32.
 - **(C) harness, 200 runs** of create → Initialize → QueryContextMenu → InvokeCommand → Release in a test process:
-  200/200 menus, 200/200 invokes, handle delta 0, working set +84 KB, `DllCanUnloadNow` = S_OK afterwards, bad
-  verb refused, non-file-system target ("This PC") refused. Pipe down: every invoke logged the fallback, worst
-  case 16 ms. Pipe up (counter listening, 400 ms between drags): 20/20 jobs received, 0 fallbacks, 0 ms each.
-  Back-to-back with no gap, the single-instance test listener missed 19 of 20 (fallback taken cleanly): the
-  production helper must keep several pipe instances listening.
+  200/200 menus, 200/200 invokes, handle delta 0, working set +96 KB. `DllCanUnloadNow` = S_FALSE while the
+  harness still holds the class factory and S_OK once it is released. Bad verb refused; "This PC" and a `.zip`
+  target refused. Pipe down: every invoke logged the fallback, worst case 16 ms. Pipe up (counter listening,
+  400 ms between drags): 20/20 jobs received, 0 fallbacks, 0 ms each. Back-to-back with no gap, the
+  single-instance test listener missed 19 of 20 (fallback taken cleanly): the production helper must keep
+  several pipe instances listening.
+- **(C) hung helper** (`hung-server.ps1`: accepts the connection, never reads, 1-byte buffer): the first invoke
+  timed out at 250 ms and fell back; the next four found the pipe busy and fell back after 109–110 ms. All under
+  the 350 ms target. (Before the fix the worst case was ~600 ms: 300 ms connect wait + 300 ms write timeout.)
 - **Ctrl+Shift+V:** Microsoft's Windows 11 keyboard-shortcut list has no Ctrl+Shift+V entry for File Explorer.
   It lists Ctrl+Shift+V only under text editing ("paste as plain text"), which can apply in Explorer's text boxes
   (rename, address bar, search). Ferry only acts when focus is in the file list, so no clash is expected.
@@ -75,7 +85,7 @@ Fill in from `MANUAL-TEST.md`. Leave "TBD" where a step was skipped.
 | R18 | Pipe down: no felt delay | TBD |
 | R19 | 200-drag counter final line + starting handles/memory | TBD |
 | R20 | Any Explorer freeze/restart/red warning | TBD |
-| R21 | Ferry items wrongly shown on virtual places | TBD |
+| R21 | Ferry items wrongly shown when dropping onto a zip file | TBD |
 
 ## Option (B) on paper: in-process left-drag interception
 
@@ -150,28 +160,44 @@ supported copy-handler API.
    alone can be faked by any app.
 3. Act only when focus is inside `SHELLDLL_DefView` and not an edit control; never on injected keys; never with
    Alt/AltGr or Win held. Swallow the key-down and its matching key-up, and auto-repeat.
-4. **Swallow-then-fallback:** the swallow decision must be made in the hook before the target is known. If Ferry
-   then declines the job (virtual target such as Home/This PC/phone, clipboard without `CF_HDROP`, helper busy or
-   failing), the helper performs the stock operation itself through `IFileOperation` with the clipboard's data
-   object (`OleGetClipboard` → `SHCreateShellItemArrayFromDataObject`), which shows Windows' normal copy UI. Do not
-   re-inject keystrokes.
+4. **Swallow-then-fallback. This changes the Task 4 brief**, which said "swallow the key only if Ferry accepts
+   the job". That is not possible safely: the hook must return its swallow/pass decision within a fraction of a
+   millisecond, and finding out whether Ferry accepts (reading the clipboard, asking Explorer for the target over
+   COM, asking the helper) takes 10–150 ms and calls into Explorer, which inside the hook risks the
+   `LowLevelHooksTimeout` removal and delays every key press on the PC. So the hook swallows when the cheap checks
+   pass, and acceptance is decided afterwards. If Ferry then declines the job (virtual target such as Home/This
+   PC/phone, clipboard without `CF_HDROP`, helper busy or failing), the helper performs the stock operation itself
+   through `IFileOperation` with the clipboard's data object (`OleGetClipboard` →
+   `SHCreateShellItemArrayFromDataObject`), which shows Windows' normal copy UI. The user sees the same result as
+   a stock paste. Do not re-inject keystrokes.
 5. If the helper process dies, the hook dies with it and Windows pastes as normal (R14/R15 confirm).
 6. Not covered by the hook: Paste from Explorer's right-click menu or command bar. Cover with a "Paste with Ferry"
    context-menu command (the planned `IExplorerCommand` submenu), not by hooking Explorer.
 7. Elevated Explorer windows (rare) are out of reach of a non-elevated hook (UIPI); stock paste applies.
 8. Settings: the quick-paste shortcut is changeable and Ferry warns if the user picks one Explorer uses.
+9. Native AOT for the helper, and no allocations in the hook callback, so no JIT or GC pause can land inside it.
 
 ### Right-drag handler (C)
 
 1. Native C++, no exceptions escape any COM method, no blocking without a timeout, no work beyond collecting paths.
-2. Pipe: overlapped I/O with a hard timeout; client uses `SECURITY_IDENTIFICATION`; verify the server process
-   (`GetNamedPipeServerProcessId` → image path under Ferry's install folder → Authenticode signature with the
-   pinned certificate) before sending; per-user, per-session pipe name; the helper keeps several instances
-   listening. Versioned, length-prefixed message; large selections streamed, not built as one string.
+2. Pipe: overlapped I/O with **one total time budget for the whole hand-off** (connect wait + write + cancel),
+   under 350 ms; the spike uses 250 ms (100 ms connect wait, the rest for the write). Client uses
+   `SECURITY_IDENTIFICATION`; verify the server process (`GetNamedPipeServerProcessId` → image path under Ferry's
+   install folder → Authenticode signature with the pinned certificate) before sending; per-user, per-session
+   pipe name; the helper keeps several instances listening. Versioned, length-prefixed message; large selections
+   streamed, not built as one string.
 3. On any failure: perform the stock copy/move through `IFileOperation` (in Explorer, the same call Windows
    uses), never silently drop the job.
-4. Show items only for file-system targets with `CF_HDROP` (verified by the harness for "This PC").
-5. Signed with the project certificate; CFG + CET-compatible; static CRT; registered per user.
+4. Show items only for real file-system folders (`SFGAO_FILESYSTEM` + `SFGAO_FOLDER`, not `SFGAO_STREAM`) with
+   `CF_HDROP` (the harness checks "This PC" and a `.zip`).
+5. **COM unload rules:** every class-factory reference (`AddRef`/`Release`) and every `LockServer(TRUE)` counts
+   towards `DllCanUnloadNow`, as do live objects. Otherwise COM can unload the DLL while Explorer still holds the
+   factory, and the next call crashes Explorer. The harness checks S_FALSE while the factory is held and S_OK
+   after release.
+6. **The hung-helper path must be tested** for every build: a helper that accepts the connection and never reads
+   (spike: `hung-server.ps1`), and a helper that is not listening. Both must fall back within the budget.
+7. Signed with the project certificate; CFG + CET-compatible; static CRT; registered per user; unregistering
+   removes every key it created.
 
 ### Stability test the production build must pass (before M2 ships)
 

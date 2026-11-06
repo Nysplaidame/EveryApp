@@ -110,16 +110,40 @@ int wmain(int argc, wchar_t** argv) {
     PIDLIST_ABSOLUTE thisPc = nullptr;
     SHGetKnownFolderIDList(FOLDERID_ComputerFolder, 0, nullptr, &thisPc);
     HRESULT virtualTarget = init->Initialize(thisPc, data, nullptr);
-    init->Release();
     CoTaskMemFree(thisPc);
 
-    std::printf("iterations=%d menuOk=%d invokeOk=%d totalMs=%llu maxInvokeMs=%llu\n", iterations, menuOk, invokeOk, totalMs, maxInvokeMs);
-    std::printf("workingSetDeltaKB=%lld handleDelta=%ld DllCanUnloadNow=%s\n",
-                (static_cast<long long>(after.WorkingSetSize) - static_cast<long long>(before.WorkingSetSize)) / 1024,
-                static_cast<long>(handlesAfter) - static_cast<long>(handlesBefore), unload == S_OK ? "S_OK" : "S_FALSE");
-    std::printf("badVerbRefused=%s virtualTargetRefused=%s\n", FAILED(badVerb) ? "yes" : "NO", FAILED(virtualTarget) ? "yes" : "NO");
+    // A .zip shown as a folder must be refused too. Minimal valid empty zip = end-of-central-directory record.
+    std::wstring zip = root + L"\\test.zip";
+    {
+        const unsigned char eocd[22] = {'P', 'K', 5, 6};
+        HANDLE h = CreateFileW(zip.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
+        DWORD w = 0;
+        if (h != INVALID_HANDLE_VALUE) { WriteFile(h, eocd, sizeof(eocd), &w, nullptr); CloseHandle(h); }
+    }
+    PIDLIST_ABSOLUTE zipPidl = nullptr;
+    HRESULT zipTarget = E_FAIL;
+    if (SUCCEEDED(SHParseDisplayName(zip.c_str(), nullptr, &zipPidl, 0, nullptr))) {
+        zipTarget = init->Initialize(zipPidl, data, nullptr);
+        CoTaskMemFree(zipPidl);
+    } else {
+        std::printf("note: could not parse test.zip, zip check skipped\n");
+    }
+    init->Release();
+    DeleteFileW(zip.c_str());
 
+    std::printf("iterations=%d menuOk=%d invokeOk=%d totalMs=%llu maxInvokeMs=%llu\n", iterations, menuOk, invokeOk, totalMs, maxInvokeMs);
+    std::printf("workingSetDeltaKB=%lld handleDelta=%ld\n",
+                (static_cast<long long>(after.WorkingSetSize) - static_cast<long long>(before.WorkingSetSize)) / 1024,
+                static_cast<long>(handlesAfter) - static_cast<long>(handlesBefore));
+    std::printf("badVerbRefused=%s virtualTargetRefused=%s zipTargetRefused=%s\n", FAILED(badVerb) ? "yes" : "NO",
+                FAILED(virtualTarget) ? "yes" : "NO", FAILED(zipTarget) ? "yes" : "NO");
+
+    // Unload rules: while we hold the factory the DLL must NOT be unloadable; after releasing it, it must be.
+    HRESULT unloadWhileHeld = unload;
     factory->Release();
+    HRESULT unloadAfter = canUnload();
+    std::printf("DllCanUnloadNow: factory held=%s (want S_FALSE), factory released=%s (want S_OK)\n",
+                unloadWhileHeld == S_OK ? "S_OK" : "S_FALSE", unloadAfter == S_OK ? "S_OK" : "S_FALSE");
     data->Release();
     for (auto k : kids) CoTaskMemFree(k);
     srcFolder->Release();
@@ -131,7 +155,9 @@ int wmain(int argc, wchar_t** argv) {
     RemoveDirectoryW(dst.c_str());
     RemoveDirectoryW(root.c_str());
     CoUninitialize();
-    bool pass = menuOk == iterations && invokeOk == iterations && unload == S_OK && FAILED(badVerb) && FAILED(virtualTarget);
+    bool pass = menuOk == iterations && invokeOk == iterations && unloadWhileHeld == S_FALSE && unloadAfter == S_OK &&
+                FAILED(badVerb) && FAILED(virtualTarget) && FAILED(zipTarget) && (maxInvokeMs < 350);
+    std::printf("maxInvokeUnder350ms=%s\n", maxInvokeMs < 350 ? "yes" : "NO");
     std::printf("%s\n", pass ? "PASS" : "FAIL");
     return pass ? 0 : 1;
 }
