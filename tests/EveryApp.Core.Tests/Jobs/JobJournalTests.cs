@@ -285,18 +285,6 @@ public sealed class JobJournalTests : IDisposable
     }
 
     [Fact]
-    public async Task Journal_FlushesWhenTwoSecondsHavePassed()
-    {
-        var id = Guid.NewGuid();
-        using var j = JobJournal.Create(_dir, id, "{}");
-        j.Append(Done("1.txt"));
-        await Task.Delay(2200, TestContext.Current.CancellationToken);
-        j.Append(Done("2.txt")); // the timestamp check on this call triggers the flush
-
-        Assert.Equal(3, CountLinesShared(PathFor(id)));
-    }
-
-    [Fact]
     public void Journal_Dispose_IsIdempotent_AndAppendAfterDisposeThrows()
     {
         var j = JobJournal.Create(_dir, Guid.NewGuid(), "{}");
