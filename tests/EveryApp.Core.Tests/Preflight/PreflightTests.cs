@@ -90,11 +90,12 @@ public sealed class PreflightTests
     }
 
     [Fact]
-    public void TrailingDotOrSpace_FolderSegmentFlaggedOncePerPath()
+    public void IllegalCharAndTrailingDot_ReportedOncePerPathEach()
     {
-        var issues = Run([File(@"x.\y.txt")], "SMB");
+        var issues = Run([File("a:b.")], "SMB");
         Assert.Single(Of(issues, PreflightCode.TrailingDotOrSpace));
-        Assert.Empty(Of(issues, PreflightCode.IllegalCharForDestination));
+        Assert.Single(Of(issues, PreflightCode.IllegalCharForDestination));
+        Assert.Equal(2, issues.Count);
     }
 
     [Theory]
@@ -160,6 +161,36 @@ public sealed class PreflightTests
         var issue = Assert.Single(Of(issues, PreflightCode.NotEnoughSpace));
         Assert.Contains("146 GB", issue.Message);
         Assert.Contains("120 GB", issue.Message);
+        Assert.StartsWith("Drive D:", issue.Message);
+    }
+
+    public static TheoryData<Exception> NonFatalFailures() => new()
+    {
+        new FileSystemException("x", IoErrorKind.NotFound, null),
+        new ArgumentException("x"),
+        new UnauthorizedAccessException("x"),
+        new IOException("x"),
+        new InvalidOperationException("x"),
+    };
+
+    [Theory]
+    [MemberData(nameof(NonFatalFailures))]
+    public void FreeSpaceUnknown_WhenFreeSpaceLookupFails(Exception failure)
+    {
+        var fs = new InMemoryFileSystem { FreeSpaceException = failure };
+        var issues = new PreflightRunner(fs).Check([File("a.txt")], Dest, "NTFS", false);
+        var issue = Assert.Single(issues);
+        Assert.Equal(PreflightCode.FreeSpaceUnknown, issue.Code);
+        Assert.Contains("D:", issue.Message);
+    }
+
+    [Fact]
+    public void FreeSpaceLookup_FatalExceptionsStillPropagate()
+    {
+#pragma warning disable CA2201 // simulating a fatal runtime failure on purpose
+        var fs = new InMemoryFileSystem { FreeSpaceException = new OutOfMemoryException() };
+#pragma warning restore CA2201
+        Assert.Throws<OutOfMemoryException>(() => new PreflightRunner(fs).Check([File("a.txt")], Dest, "NTFS", false));
     }
 
     [Fact]
@@ -170,12 +201,13 @@ public sealed class PreflightTests
         {
             File(new string('a', 300)), File("CON"), File("a."), File("b:c"), File("A.txt"), File("a.txt"), File("big", 5 * gb),
         };
-        var issues = Run(items, "SMB", free: gb).Concat(Run(items, "FAT32", free: gb)).ToList();
+        var unknown = new PreflightRunner(new InMemoryFileSystem { FreeSpaceException = new IOException("x") }).Check([], Dest, "NTFS", false);
+        var issues = Run(items, "SMB", free: gb).Concat(Run(items, "FAT32", free: gb)).Concat(unknown).ToList();
         Assert.Equal(Enum.GetValues<PreflightCode>().Length - 1, issues.Select(i => i.Code).Distinct().Count());
         foreach (var issue in issues)
         {
             Assert.False(string.IsNullOrWhiteSpace(issue.Message));
-            foreach (var banned in new[] { "MAX_PATH", "HRESULT", "errno", "0x" })
+            foreach (var banned in new[] { "MAX_PATH", "HRESULT", "errno", "0x", "SMB", "NTFS" })
             {
                 Assert.DoesNotContain(banned, issue.Message, StringComparison.OrdinalIgnoreCase);
             }

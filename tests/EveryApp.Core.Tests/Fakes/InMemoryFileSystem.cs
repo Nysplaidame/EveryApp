@@ -25,6 +25,9 @@ public sealed class InMemoryFileSystem : IFileSystem
     /// <summary>Value returned by <see cref="GetFreeSpace"/>.</summary>
     public long FreeSpaceBytes { get; set; } = 1L << 40;
 
+    /// <summary>When set, <see cref="GetFreeSpace"/> throws it.</summary>
+    public Exception? FreeSpaceException { get; set; }
+
     /// <summary>Value returned by <see cref="GetSectorSize"/>.</summary>
     public int SectorSize { get; set; } = 512;
 
@@ -283,7 +286,7 @@ public sealed class InMemoryFileSystem : IFileSystem
         }
     }
 
-    public long GetFreeSpace(string path) => FreeSpaceBytes;
+    public long GetFreeSpace(string path) => FreeSpaceException is { } ex ? throw ex : FreeSpaceBytes;
 
     public int GetSectorSize(string path) => SectorSize;
 

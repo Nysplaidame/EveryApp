@@ -10,6 +10,9 @@ public enum PreflightCode
     TooLargeForFat32,
     NotEnoughSpace,
 
+    /// <summary>The free space on the destination could not be read, so the space check could not run.</summary>
+    FreeSpaceUnknown,
+
     /// <summary>Never produced by <see cref="PreflightRunner"/>; the copier reports it when it meets a locked file.</summary>
     Locked,
 }

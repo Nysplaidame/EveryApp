@@ -105,20 +105,31 @@ public sealed class PreflightRunner
 
     private void CheckSpace(List<PreflightIssue> issues, string destinationRoot, long total)
     {
+        var shown = PathDisplay.ToDisplayPath(destinationRoot);
         long free;
         try
         {
             free = _fs.GetFreeSpace(destinationRoot);
         }
-        catch (FileSystemException)
+        catch (Exception ex) when (ex is not (OutOfMemoryException or StackOverflowException or AccessViolationException or ThreadAbortException))
         {
-            return; // free space unknown: the copy itself still fails safely if the drive fills up
+            // Never fail open: tell the person the space check could not run.
+            issues.Add(new PreflightIssue(PreflightCode.FreeSpaceUnknown, shown, PreflightMessages.FreeSpaceUnknown(DriveName(shown))));
+            return;
         }
 
         if (total > free - free / 100)
         {
-            issues.Add(new PreflightIssue(PreflightCode.NotEnoughSpace, PathDisplay.ToDisplayPath(destinationRoot), PreflightMessages.NotEnoughSpace(total, free)));
+            issues.Add(new PreflightIssue(PreflightCode.NotEnoughSpace, shown, PreflightMessages.NotEnoughSpace(DriveName(shown), total, free)));
         }
+    }
+
+    /// <summary>The drive (or network share) of a display path, e.g. "D:" or a server share.</summary>
+    private static string DriveName(string displayPath)
+    {
+        var root = Path.GetPathRoot(displayPath);
+        var name = string.IsNullOrEmpty(root) ? displayPath : root.TrimEnd('\\');
+        return name.Length == 0 ? displayPath : name;
     }
 
     private static string PlainRoot(string root)

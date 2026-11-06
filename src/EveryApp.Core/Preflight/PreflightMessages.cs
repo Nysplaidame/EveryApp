@@ -25,8 +25,11 @@ internal static class PreflightMessages
     public static string TooLargeForFat32() =>
         "This file is 4 GB or bigger, which is more than a drive formatted as FAT32 can hold.";
 
-    public static string NotEnoughSpace(long needed, long free) =>
-        $"The destination drive needs {FormatSize(needed)} but only {FormatSize(free)} is free.";
+    public static string NotEnoughSpace(string drive, long needed, long free) =>
+        $"Drive {drive} needs {FormatSize(needed)} but only {FormatSize(free)} is free.";
+
+    public static string FreeSpaceUnknown(string drive) =>
+        $"Couldn't check how much free space is on {drive}, so the copy might run out of room.";
 
     /// <summary>Binary units shown with the usual names (1 GB = 1024 MB), as Windows does.</summary>
     internal static string FormatSize(long bytes)
