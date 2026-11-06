@@ -3,3 +3,9 @@ GetFileInformationByHandle
 GetFileInformationByHandleEx
 CancelIoEx
 GetDiskFreeSpaceEx
+GetVolumePathName
+GetVolumeNameForVolumeMountPoint
+GetDriveType
+DeviceIoControl
+IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS
+WNetGetConnection

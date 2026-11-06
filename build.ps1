@@ -167,7 +167,13 @@ try {
         Invoke-Step 'build' { dotnet build $solution -c $Configuration --no-restore }
 
         if (-not $SkipTests) {
-            Invoke-Step 'test' { dotnet test --solution $solution -c $Configuration --no-build }
+            if ($env:CI) {
+                # Category=Machine tests inspect this PC's real drives (device resolver), so they only make sense locally.
+                Invoke-Step 'test (CI: skipping Category=Machine)' { dotnet test --solution $solution -c $Configuration --no-build -- --filter-not-trait 'Category=Machine' }
+            }
+            else {
+                Invoke-Step 'test' { dotnet test --solution $solution -c $Configuration --no-build }
+            }
         }
     }
 
