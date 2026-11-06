@@ -13,6 +13,7 @@ public sealed class FaultInjectingFileSystem(IFileSystem inner) : IFileSystem
     private readonly List<Rule> _writeRules = [];
     private readonly List<Mutation> _mutations = [];
     private readonly Dictionary<string, long> _freeSpace = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, long> _written = new(StringComparer.OrdinalIgnoreCase);
 
     public void FailRead(string path, long atOffset, IoErrorKind kind, int times = int.MaxValue) =>
         Add(_readRules, new Rule(Norm(path), atOffset, kind, times));
@@ -41,13 +42,9 @@ public sealed class FaultInjectingFileSystem(IFileSystem inner) : IFileSystem
 
     public IWriteHandle CreateWrite(string path, long preallocate, bool unbuffered)
     {
-        if (preallocate > 0)
+        if (preallocate > 0 && TryFindLimit(path, out _, out _) && preallocate > GetFreeSpace(path))
         {
-            var free = GetFreeSpace(path);
-            if (preallocate > free)
-            {
-                throw new FileSystemException(path, IoErrorKind.DiskFull, null);
-            }
+            throw new FileSystemException(path, IoErrorKind.DiskFull, null);
         }
 
         return new WriteHandle(this, path, inner.CreateWrite(path, preallocate, unbuffered));
@@ -68,19 +65,56 @@ public sealed class FaultInjectingFileSystem(IFileSystem inner) : IFileSystem
 
     public long GetFreeSpace(string path)
     {
-        var n = Norm(path);
         lock (_lock)
         {
-            foreach (var (root, bytes) in _freeSpace.OrderByDescending(kv => kv.Key.Length))
+            if (TryFindLimit(path, out var root, out var limit))
             {
-                if (n.StartsWith(root, StringComparison.OrdinalIgnoreCase))
-                {
-                    return bytes;
-                }
+                return Math.Max(0, limit - _written.GetValueOrDefault(root));
             }
         }
 
         return inner.GetFreeSpace(path);
+    }
+
+    private bool TryFindLimit(string path, out string root, out long limit)
+    {
+        var n = Norm(path);
+        lock (_lock)
+        {
+            foreach (var (r, bytes) in _freeSpace.OrderByDescending(kv => kv.Key.Length))
+            {
+                if (n.StartsWith(r, StringComparison.OrdinalIgnoreCase))
+                {
+                    root = r;
+                    limit = bytes;
+                    return true;
+                }
+            }
+        }
+
+        root = string.Empty;
+        limit = 0;
+        return false;
+    }
+
+    /// <summary>Counts written bytes against the limit set by <see cref="SetFreeSpace"/>; throws DiskFull when it would be exceeded.</summary>
+    private void ChargeSpace(string path, int length)
+    {
+        lock (_lock)
+        {
+            if (!TryFindLimit(path, out var root, out var limit))
+            {
+                return;
+            }
+
+            var used = _written.GetValueOrDefault(root);
+            if (used + length > limit)
+            {
+                throw new FileSystemException(path, IoErrorKind.DiskFull, null);
+            }
+
+            _written[root] = used + length;
+        }
     }
 
     public int GetSectorSize(string path) => inner.GetSectorSize(path);
@@ -175,6 +209,7 @@ public sealed class FaultInjectingFileSystem(IFileSystem inner) : IFileSystem
         public ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, long offset, CancellationToken ct)
         {
             fs.Check(fs._writeRules, path, offset, buffer.Length);
+            fs.ChargeSpace(path, buffer.Length);
             return inner.WriteAsync(buffer, offset, ct);
         }
 

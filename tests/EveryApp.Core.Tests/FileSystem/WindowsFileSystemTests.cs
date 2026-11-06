@@ -31,6 +31,19 @@ public sealed class WindowsFileSystemTests : IDisposable
     [InlineData(59, IoErrorKind.NetworkLost)]
     [InlineData(206, IoErrorKind.PathTooLong)]
     [InlineData(123, IoErrorKind.InvalidName)]
+    [InlineData(80, IoErrorKind.AlreadyExists)]
+    [InlineData(183, IoErrorKind.AlreadyExists)]
+    [InlineData(1295, IoErrorKind.DiskFull)]
+    [InlineData(1816, IoErrorKind.DiskFull)]
+    [InlineData(27, IoErrorKind.BadBlock)]
+    [InlineData(29, IoErrorKind.BadBlock)]
+    [InlineData(30, IoErrorKind.BadBlock)]
+    [InlineData(483, IoErrorKind.BadBlock)]
+    [InlineData(1392, IoErrorKind.BadBlock)]
+    [InlineData(1393, IoErrorKind.BadBlock)]
+    [InlineData(67, IoErrorKind.NetworkLost)]
+    [InlineData(121, IoErrorKind.NetworkLost)]
+    [InlineData(1236, IoErrorKind.NetworkLost)]
     public void ErrorKinds_MapsWin32Codes(int win32, IoErrorKind expected)
     {
         Assert.Equal(expected, ErrorKinds.FromHResult(win32));

@@ -12,5 +12,6 @@ public enum IoErrorKind
     NetworkLost,
     PathTooLong,
     InvalidName,
+    AlreadyExists,
     Other,
 }

@@ -10,7 +10,9 @@ public interface IReadHandle : IAsyncDisposable
 
 /// <summary>
 /// Random-access write handle. On an unbuffered handle every write offset must be a multiple of the volume sector size;
-/// only the last write may be shorter than a whole number of sectors. The file ends up exactly as long as the data written.
+/// only the last write may be shorter than a whole number of sectors (a short write that would end before existing data throws
+/// InvalidOperationException). The file ends up exactly as long as the data written. Use after dispose throws ObjectDisposedException,
+/// and dispose waits for in-flight operations.
 /// </summary>
 public interface IWriteHandle : IAsyncDisposable
 {
@@ -29,7 +31,12 @@ public interface IFileSystem
 {
     IReadHandle OpenRead(string path, bool unbuffered);
 
-    /// <summary>Creates (or truncates) a file. When <paramref name="preallocate"/> is above zero the file is extended to that length up front so a full disk fails early.</summary>
+    /// <summary>
+    /// Creates a NEW file; throws <see cref="IoErrorKind.AlreadyExists"/> if the path is taken (an existing file is never truncated).
+    /// When <paramref name="preallocate"/> is above zero disk space is reserved up front so a full disk fails early; the file length stays 0
+    /// until data is written. Callers write to a temporary name, call FlushAsync, then Move it into place, so a crash never leaves a
+    /// half-written file under the final name.
+    /// </summary>
     IWriteHandle CreateWrite(string path, long preallocate, bool unbuffered);
 
     FileEntry GetEntry(string path);

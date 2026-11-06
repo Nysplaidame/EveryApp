@@ -3,22 +3,35 @@ using System.Runtime.InteropServices;
 
 namespace EveryApp.Core.FileSystem;
 
-/// <summary>Page-aligned native buffer, required for unbuffered (FILE_FLAG_NO_BUFFERING) I/O.</summary>
-internal sealed unsafe class AlignedBuffer : MemoryManager<byte>
+/// <summary>
+/// Native buffer aligned to 64 KiB (covers every sector size), required for zero-copy unbuffered (FILE_FLAG_NO_BUFFERING) I/O.
+/// Get one from <see cref="AlignedBufferPool.Rent"/>; slice <see cref="MemoryManager{T}.Memory"/> on sector multiples to do direct I/O.
+/// </summary>
+public sealed unsafe class AlignedBuffer : MemoryManager<byte>
 {
-    private const int Alignment = 4096;
-    private void* _ptr;
-    private readonly int _length;
+    internal const int Alignment = 65536;
+    private nint _ptr;
 
-    public AlignedBuffer(int length)
+    internal AlignedBuffer(int length)
     {
-        _length = length;
-        _ptr = NativeMemory.AlignedAlloc((nuint)length, Alignment);
+        Size = length;
+        _ptr = (nint)NativeMemory.AlignedAlloc((nuint)length, Alignment);
     }
 
-    public override Span<byte> GetSpan() => new(_ptr, _length);
+    /// <summary>Usable length in bytes (a power of two, at least 4096).</summary>
+    public int Size { get; }
 
-    public override MemoryHandle Pin(int elementIndex = 0) => new((byte*)_ptr + elementIndex);
+    public override Span<byte> GetSpan()
+    {
+        ObjectDisposedException.ThrowIf(_ptr == 0, this);
+        return new Span<byte>((void*)_ptr, Size);
+    }
+
+    public override MemoryHandle Pin(int elementIndex = 0)
+    {
+        ObjectDisposedException.ThrowIf(_ptr == 0, this);
+        return new MemoryHandle((byte*)_ptr + elementIndex);
+    }
 
     public override void Unpin()
     {
@@ -27,10 +40,10 @@ internal sealed unsafe class AlignedBuffer : MemoryManager<byte>
 
     protected override void Dispose(bool disposing)
     {
-        if (_ptr != null)
+        var p = Interlocked.Exchange(ref _ptr, 0);
+        if (p != 0)
         {
-            NativeMemory.AlignedFree(_ptr);
-            _ptr = null;
+            NativeMemory.AlignedFree((void*)p);
         }
     }
 }

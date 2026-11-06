@@ -75,26 +75,19 @@ public sealed class InMemoryFileSystem : IFileSystem
         {
             var key = Key(path);
             RequireParent(path, key);
-            if (_nodes.TryGetValue(key, out var existing) && existing.IsDirectory)
+            if (_nodes.ContainsKey(key))
             {
-                throw Fail(path, IoErrorKind.AccessDenied);
+                throw Fail(path, IoErrorKind.AlreadyExists); // CreateNew semantics: never truncate or replace
+            }
+
+            if (preallocate > FreeSpaceBytes)
+            {
+                throw Fail(path, IoErrorKind.DiskFull); // same point as the real implementation: reserving space fails at create
             }
 
             var node = NewNode(key, isDirectory: false);
-            if (existing is not null)
-            {
-                node.CreationTimeUtc = existing.CreationTimeUtc;
-                node.FileId = existing.FileId;
-            }
-
             _nodes[key] = node;
-            var handle = new WriteHandle(this, node);
-            if (preallocate > 0)
-            {
-                handle.SetLengthCore(preallocate);
-            }
-
-            return handle;
+            return new WriteHandle(this, node, unbuffered);
         }
     }
 
@@ -146,7 +139,7 @@ public sealed class InMemoryFileSystem : IFileSystem
             {
                 if (!overwrite || target.IsDirectory || src.IsDirectory)
                 {
-                    throw Fail(destination, IoErrorKind.Other);
+                    throw Fail(destination, IoErrorKind.AlreadyExists);
                 }
             }
 
@@ -346,13 +339,36 @@ public sealed class InMemoryFileSystem : IFileSystem
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
-    private sealed class WriteHandle(InMemoryFileSystem fs, Node node) : IWriteHandle
+    private sealed class WriteHandle(InMemoryFileSystem fs, Node node, bool unbuffered) : IWriteHandle
     {
+        private bool _disposed;
+
         public ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, long offset, CancellationToken ct)
         {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            ArgumentOutOfRangeException.ThrowIfNegative(offset);
             ct.ThrowIfCancellationRequested();
+            if (buffer.Length == 0)
+            {
+                return ValueTask.CompletedTask;
+            }
+
             lock (fs._lock)
             {
+                if (unbuffered)
+                {
+                    // Same rules and exception types as the real implementation.
+                    if (offset % fs.SectorSize != 0)
+                    {
+                        throw new ArgumentException("Unbuffered write offset must be sector aligned.", nameof(offset));
+                    }
+
+                    if (buffer.Length % fs.SectorSize != 0 && offset + buffer.Length < node.Length)
+                    {
+                        throw new InvalidOperationException("A short unbuffered write must not end before data that already exists.");
+                    }
+                }
+
                 var end = checked((int)(offset + buffer.Length));
                 Grow(end);
                 buffer.Span.CopyTo(node.Data.AsSpan((int)offset));
@@ -364,27 +380,31 @@ public sealed class InMemoryFileSystem : IFileSystem
 
         public ValueTask SetLengthAsync(long length)
         {
+            ObjectDisposedException.ThrowIf(_disposed, this);
             lock (fs._lock)
             {
-                SetLengthCore(length);
+                var len = checked((int)length);
+                Grow(len);
+                if (len < node.Length)
+                {
+                    node.Data.AsSpan(len, node.Length - len).Clear();
+                }
+
+                node.Length = len;
                 return ValueTask.CompletedTask;
             }
         }
 
-        public ValueTask FlushAsync() => ValueTask.CompletedTask;
-
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
-
-        internal void SetLengthCore(long length)
+        public ValueTask FlushAsync()
         {
-            var len = checked((int)length);
-            Grow(len);
-            if (len < node.Length)
-            {
-                node.Data.AsSpan(len, node.Length - len).Clear();
-            }
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            return ValueTask.CompletedTask;
+        }
 
-            node.Length = len;
+        public ValueTask DisposeAsync()
+        {
+            _disposed = true;
+            return ValueTask.CompletedTask;
         }
 
         private void Grow(int size)

@@ -1,4 +1,5 @@
 CreateFile
 GetFileInformationByHandle
-GetDiskFreeSpace
+GetFileInformationByHandleEx
+SetFileInformationByHandle
 GetDiskFreeSpaceEx
