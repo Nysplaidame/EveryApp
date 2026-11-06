@@ -15,4 +15,10 @@
     <PackageReference Include="System.IO.Hashing" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Structured logging core and rolling-file sink. The bridge to Microsoft.Extensions.Logging is deliberately not used (one package fewer; Serilog's ILogger is returned directly). -->
+    <PackageReference Include="Serilog" />
+    <PackageReference Include="Serilog.Sinks.File" />
+  </ItemGroup>
+
 </Project>
