@@ -10,10 +10,14 @@ internal sealed class JournalIo
 {
     public static readonly Action<FileStream, byte[]> DefaultWrite = static (s, line) => s.Write(line);
     public static readonly Action<FileStream> DefaultFlush = static s => s.Flush(true);
+    public static readonly Action<FileStream> DefaultHandOver = static s => s.Flush(false);
 
     public Action<FileStream, byte[]> Write { get; set; } = DefaultWrite;
 
     public Action<FileStream> Flush { get; set; } = DefaultFlush;
+
+    /// <summary>Hands buffered bytes to the operating system without waiting for the disk (survives a process crash, not a power cut).</summary>
+    public Action<FileStream> HandOver { get; set; } = DefaultHandOver;
 }
 
 /// <summary>
@@ -24,7 +28,9 @@ internal sealed class JournalIo
 /// </para>
 /// <para>
 /// Durability: the file is flushed to disk every 64 records or 2 seconds, whichever comes first, always after
-/// <see cref="JournalRecordKind.FileFailed"/> and <see cref="JournalRecordKind.JobFinished"/>, and on dispose. The 2-second rule
+/// <see cref="JournalRecordKind.FileFailed"/> and <see cref="JournalRecordKind.JobFinished"/>, and on dispose.
+/// A <see cref="JournalRecordKind.FilePartStarted"/> record is always handed to the operating system at once (not flushed to disk), so a
+/// crashed process never leaves an unnamed part file; after a power cut a part file can be left over (harmless, never under a real name). The 2-second rule
 /// is checked only when the next record is appended (there is no background timer), so an idle tail of up to 63 records
 /// may stay buffered until the next <see cref="Append"/> or <see cref="Dispose"/>. After a crash those FileDone records can be
 /// missing. That is safe: the files are simply copied again on resume (the copier writes to temporary names, so a repeat never
@@ -44,6 +50,7 @@ internal sealed class JournalIo
 public sealed class JobJournal : IDisposable
 {
     internal const int MaxLineBytes = 64 * 1024;
+    internal const string PartSuffix = ".ferrypart";
     private const int FlushEveryRecords = 64;
     private const long FlushEveryMilliseconds = 2000;
     private static readonly byte[] CrcPrefix = "{\"crc\":"u8.ToArray();
@@ -52,6 +59,7 @@ public sealed class JobJournal : IDisposable
     private readonly object _lock = new();
     private readonly FileStream _stream;
     private readonly HashSet<string> _completed;
+    private readonly List<JournalPart> _parts;
     private readonly TimeProvider _time;
     private readonly JournalIo _io;
     private long _goodOffset;
@@ -61,11 +69,13 @@ public sealed class JobJournal : IDisposable
     private Exception? _fault;
     private volatile bool _finished;
 
-    private JobJournal(FileStream stream, string optionsJson, HashSet<string> completed, bool isFinished, TimeProvider time, JournalIo io)
+    private JobJournal(
+        FileStream stream, string optionsJson, HashSet<string> completed, List<JournalPart> parts, bool isFinished, TimeProvider time, JournalIo io)
     {
         _stream = stream;
         OptionsJson = optionsJson;
         _completed = completed;
+        _parts = parts;
         _finished = isFinished;
         _time = time;
         _io = io;
@@ -94,6 +104,18 @@ public sealed class JobJournal : IDisposable
         }
     }
 
+    /// <summary>A snapshot (a copy) of every part file named by a <see cref="JournalRecordKind.FilePartStarted"/> record, in order.</summary>
+    public IReadOnlyList<JournalPart> PartFiles
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return [.. _parts];
+            }
+        }
+    }
+
     /// <summary>Starts a new journal. Throws <see cref="IOException"/> if one already exists for this job.</summary>
     public static JobJournal Create(string jobsDir, Guid jobId, string optionsJson, TimeProvider? timeProvider = null) =>
         CreateWithIo(jobsDir, jobId, optionsJson, timeProvider, null);
@@ -107,7 +129,7 @@ public sealed class JobJournal : IDisposable
         var stream = new FileStream(JournalPath(jobsDir, jobId), FileMode.CreateNew, FileAccess.Write, FileShare.Read, 16 * 1024);
         try
         {
-            var journal = new JobJournal(stream, optionsJson, new HashSet<string>(StringComparer.OrdinalIgnoreCase), false,
+            var journal = new JobJournal(stream, optionsJson, new HashSet<string>(StringComparer.OrdinalIgnoreCase), [], false,
                 timeProvider ?? TimeProvider.System, io ?? new JournalIo());
             var header = new JournalRecord(JournalRecordKind.JobStarted, null, 0, DateTime.UtcNow, null, optionsJson);
             journal.AppendCore(header, isHeader: true, forceFlush: true);
@@ -149,7 +171,7 @@ public sealed class JobJournal : IDisposable
             // Cut off anything after the last good line, so new records are not stranded behind garbage.
             stream.SetLength(load.GoodLength);
             stream.Seek(0, SeekOrigin.End);
-            return new JobJournal(stream, load.Options, load.Completed, load.Finished, timeProvider ?? TimeProvider.System, io ?? new JournalIo());
+            return new JobJournal(stream, load.Options, load.Completed, load.Parts, load.Finished, timeProvider ?? TimeProvider.System, io ?? new JournalIo());
         }
         catch
         {
@@ -220,6 +242,10 @@ public sealed class JobJournal : IDisposable
             case JournalRecordKind.FileSkipped:
             case JournalRecordKind.FileFailed:
                 return record.RelativePath is not null && IsSafeRelativePath(record.RelativePath);
+            case JournalRecordKind.FilePartStarted:
+                return record.RelativePath is not null && IsSafeRelativePath(record.RelativePath)
+                    && record.Detail is not null && IsSafeRelativePath(record.Detail)
+                    && record.Detail.EndsWith(PartSuffix, StringComparison.OrdinalIgnoreCase);
             default: // JobFinished
                 return record.RelativePath is null || IsSafeRelativePath(record.RelativePath);
         }
@@ -266,6 +292,11 @@ public sealed class JobJournal : IDisposable
                 else
                 {
                     _unflushed++;
+                    if (record.Kind == JournalRecordKind.FilePartStarted)
+                    {
+                        // The part file is created right after this returns: make sure a crashed process still leaves its name behind.
+                        _io.HandOver(_stream);
+                    }
                 }
             }
             catch (Exception ex)
@@ -278,6 +309,10 @@ public sealed class JobJournal : IDisposable
             if (record.Kind == JournalRecordKind.FileDone)
             {
                 _completed.Add(Normalize(record.RelativePath!));
+            }
+            else if (record.Kind == JournalRecordKind.FilePartStarted)
+            {
+                _parts.Add(new JournalPart(Normalize(record.RelativePath!), Normalize(record.Detail!)));
             }
             else if (record.Kind == JournalRecordKind.JobFinished)
             {
@@ -327,12 +362,13 @@ public sealed class JobJournal : IDisposable
         return line;
     }
 
-    private readonly record struct LoadResult(string? Options, HashSet<string> Completed, bool Finished, long GoodLength);
+    private readonly record struct LoadResult(string? Options, HashSet<string> Completed, List<JournalPart> Parts, bool Finished, long GoodLength);
 
     /// <summary>Reads lines from the start and stops at the first one that cannot be trusted.</summary>
     private static LoadResult Load(FileStream stream)
     {
         var completed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var parts = new List<JournalPart>();
         string? options = null;
         var finished = false;
         long goodLength = 0;
@@ -388,6 +424,9 @@ public sealed class JobJournal : IDisposable
                     case JournalRecordKind.JobFinished:
                         finished = true;
                         break;
+                    case JournalRecordKind.FilePartStarted:
+                        parts.Add(new JournalPart(Normalize(record.RelativePath!), Normalize(record.Detail!)));
+                        break;
                     default:
                         break;
                 }
@@ -397,7 +436,7 @@ public sealed class JobJournal : IDisposable
             }
         }
 
-        return new LoadResult(options, completed, finished, goodLength);
+        return new LoadResult(options, completed, parts, finished, goodLength);
     }
 
     private static bool TryParseLine(ReadOnlySpan<byte> line, bool isHeader, out JournalRecord record)

@@ -74,17 +74,23 @@ public sealed class TreeWalker
     /// Walks <paramref name="root"/>. Relative paths are computed from the canonical root, never from the caller's text. The root itself is always
     /// entered, even if it is a link (the person chose it). Problems go to <paramref name="onSkip"/> as they happen.
     /// </summary>
-    public IEnumerable<WalkItem> Walk(string root, Action<WalkSkip> onSkip)
+    public IEnumerable<WalkItem> Walk(string root, Action<WalkSkip> onSkip) => Walk(root, onSkip, null);
+
+    /// <summary>
+    /// As <see cref="Walk(string, Action{WalkSkip})"/>, but a folder link that is not followed goes to <paramref name="onLink"/> (as the link
+    /// itself, never entered) instead of being reported as skipped. A move uses this to move links as links.
+    /// </summary>
+    public IEnumerable<WalkItem> Walk(string root, Action<WalkSkip> onSkip, Action<WalkItem>? onLink)
     {
         ArgumentNullException.ThrowIfNull(root);
         ArgumentNullException.ThrowIfNull(onSkip);
-        return WalkCore(root, onSkip);
+        return WalkCore(root, onSkip, onLink);
     }
 
     private static bool IsNameSurrogateFolder(FileEntry entry) =>
         entry.IsReparsePoint && entry.Attributes.HasFlag(FileAttributes.Directory) && (entry.ReparseTag & NameSurrogateBit) != 0;
 
-    private IEnumerable<WalkItem> WalkCore(string root, Action<WalkSkip> onSkip)
+    private IEnumerable<WalkItem> WalkCore(string root, Action<WalkSkip> onSkip, Action<WalkItem>? onLink)
     {
         FileEntry rootEntry;
         try
@@ -184,6 +190,12 @@ public sealed class TreeWalker
                     {
                         if (IsNameSurrogateFolder(child) && !_followReparsePoints)
                         {
+                            if (onLink is not null)
+                            {
+                                onLink(new WalkItem(child, relative));
+                                continue;
+                            }
+
                             onSkip(new WalkSkip(PathDisplay.ToDisplayPath(full), "Skipped: this is a link to another folder."));
                             continue;
                         }

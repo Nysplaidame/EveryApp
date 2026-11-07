@@ -62,4 +62,24 @@ public interface IFileSystem
     long GetFreeSpace(string path);
 
     int GetSectorSize(string path);
+
+    /// <summary>
+    /// Gives <paramref name="target"/> the permissions of <paramref name="source"/>: its explicit access entries, whether it blocks inheritance,
+    /// and its owner when that differs. Entries inherited from the new parent folder stay as Windows computes them. Throws
+    /// <see cref="IoErrorKind.AccessDenied"/> when this needs rights the user does not have (for example setting another owner).
+    /// </summary>
+    void CopySecurity(string source, string target);
+
+    /// <summary>
+    /// Copies every extra named data stream (alternate data stream) of the file <paramref name="source"/> onto the file <paramref name="target"/>.
+    /// <paramref name="target"/> must be a file this job created (a part file): an existing stream of the same name on it is replaced.
+    /// </summary>
+    void CopyAlternateStreams(string source, string target);
+
+    /// <summary>
+    /// Creates the NEW file <paramref name="target"/> sharing the data blocks of <paramref name="source"/> (block cloning: ReFS, same volume only).
+    /// Returns false, leaving nothing behind, when cloning is not possible for any reason (other file system, other volume, empty file,
+    /// <paramref name="target"/> already exists, any error); the caller then copies normally. Never throws for those cases.
+    /// </summary>
+    bool TryCloneBlocks(string source, string target);
 }

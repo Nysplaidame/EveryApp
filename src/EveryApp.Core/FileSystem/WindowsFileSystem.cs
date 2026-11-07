@@ -4,8 +4,11 @@ using System.Collections.Concurrent;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.ComTypes;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using Microsoft.Win32.SafeHandles;
 using Windows.Win32;
+using Windows.Win32.Foundation;
 using Windows.Win32.Storage.FileSystem;
 
 namespace EveryApp.Core.FileSystem;
@@ -24,6 +27,7 @@ public sealed class WindowsFileSystem(AlignedBufferPool? pool = null) : IFileSys
     private const uint FileReadAttributes = 0x80;
     private const int ErrorNoMoreFiles = 18;
     private const int ErrorInvalidParameter = 87;
+    private const int ErrorHandleEof = 38;
     private const int DirectoryBufferSize = 64 * 1024;
 
     private readonly AlignedBufferPool _pool = pool ?? AlignedBufferPool.Shared;
@@ -227,6 +231,133 @@ public sealed class WindowsFileSystem(AlignedBufferPool? pool = null) : IFileSys
         }
     }
 
+    public void CopySecurity(string source, string target)
+    {
+        try
+        {
+            var f = Normalize(source);
+            var t = Normalize(target);
+            var isDirectory = Directory.Exists(f);
+            var original = ReadSecurity(f, isDirectory, AccessControlSections.Access | AccessControlSections.Owner);
+
+            // The access list first (explicit entries plus "block inheritance"); inherited entries are recomputed from the new parent.
+            var access = isDirectory ? (FileSystemSecurity)new DirectorySecurity() : new FileSecurity();
+            access.SetSecurityDescriptorBinaryForm(original.GetSecurityDescriptorBinaryForm(), AccessControlSections.Access);
+            WriteSecurity(t, isDirectory, access);
+
+            // The owner only when it differs: setting someone else as owner needs the restore privilege (administrator).
+            var owner = original.GetOwner(typeof(SecurityIdentifier));
+            var current = ReadSecurity(t, isDirectory, AccessControlSections.Owner).GetOwner(typeof(SecurityIdentifier));
+            if (owner is not null && !owner.Equals(current))
+            {
+                var ownerOnly = isDirectory ? (FileSystemSecurity)new DirectorySecurity() : new FileSecurity();
+                ownerOnly.SetOwner(owner);
+                WriteSecurity(t, isDirectory, ownerOnly);
+            }
+        }
+        catch (Exception ex) when (ex is PrivilegeNotHeldException or InvalidOperationException)
+        {
+            // Not allowed to set that owner: only an administrator can.
+            throw new FileSystemException(target, IoErrorKind.AccessDenied, ex);
+        }
+        catch (Exception ex) when (IsTranslatable(ex))
+        {
+            throw ErrorKinds.Translate(target, ex);
+        }
+    }
+
+    public void CopyAlternateStreams(string source, string target)
+    {
+        try
+        {
+            var f = Normalize(source);
+            var t = Normalize(target);
+            foreach (var stream in NamedStreams(f))
+            {
+                using var reader = File.OpenHandle(f + stream, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                using var writer = File.OpenHandle(t + stream, FileMode.Create, FileAccess.Write, FileShare.None);
+                var buffer = ArrayPool<byte>.Shared.Rent(64 * 1024);
+                try
+                {
+                    long offset = 0;
+                    int n;
+                    while ((n = RandomAccess.Read(reader, buffer, offset)) > 0)
+                    {
+                        RandomAccess.Write(writer, buffer.AsSpan(0, n), offset);
+                        offset += n;
+                    }
+                }
+                finally
+                {
+                    ArrayPool<byte>.Shared.Return(buffer);
+                }
+            }
+        }
+        catch (Exception ex) when (IsTranslatable(ex))
+        {
+            throw ErrorKinds.Translate(target, ex);
+        }
+    }
+
+    public bool TryCloneBlocks(string source, string target)
+    {
+        string f;
+        string t;
+        try
+        {
+            f = Normalize(source);
+            t = Normalize(target);
+        }
+        catch (Exception ex) when (IsTranslatable(ex))
+        {
+            return false;
+        }
+
+        SafeFileHandle? output = null;
+        var created = false;
+        var done = false;
+        try
+        {
+            using var input = File.OpenHandle(f, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
+            var length = RandomAccess.GetLength(input);
+
+            // Fails on anything but ReFS, so other file systems stop here before anything is created.
+            if (length == 0 || !BlockClone.TryGetIntegrity(input, out var integrity))
+            {
+                return false;
+            }
+
+            output = File.OpenHandle(t, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None);
+            created = true;
+            if (File.GetAttributes(f).HasFlag(FileAttributes.SparseFile) && !BlockClone.SetSparse(output))
+            {
+                return false;
+            }
+
+            // Cloning needs both files to use the same integrity-stream setting.
+            if (!BlockClone.SetIntegrity(output, integrity))
+            {
+                return false;
+            }
+
+            RandomAccess.SetLength(output, length);
+            done = BlockClone.Duplicate(input, output, length, integrity.ClusterSize) && BlockClone.Flush(output);
+            return done;
+        }
+        catch (Exception ex) when (IsTranslatable(ex))
+        {
+            return false;
+        }
+        finally
+        {
+            output?.Dispose();
+            if (created && !done)
+            {
+                TryDeleteOwnFile(t); // we created it in this call; never leave a half-cloned file
+            }
+        }
+    }
+
     internal static bool IsTranslatable(Exception ex) =>
         ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException or Win32Exception;
 
@@ -360,6 +491,61 @@ public sealed class WindowsFileSystem(AlignedBufferPool? pool = null) : IFileSys
         }
 
         return current;
+    }
+
+    private static FileSystemSecurity ReadSecurity(string longForm, bool isDirectory, AccessControlSections sections) =>
+        isDirectory ? new DirectoryInfo(longForm).GetAccessControl(sections) : new FileInfo(longForm).GetAccessControl(sections);
+
+    private static void WriteSecurity(string longForm, bool isDirectory, FileSystemSecurity security)
+    {
+        if (isDirectory)
+        {
+            new DirectoryInfo(longForm).SetAccessControl((DirectorySecurity)security);
+        }
+        else
+        {
+            new FileInfo(longForm).SetAccessControl((FileSecurity)security);
+        }
+    }
+
+    /// <summary>Suffixes such as <c>:Zone.Identifier:$DATA</c> for every named stream of a file (the unnamed main stream is left out).</summary>
+    private static unsafe List<string> NamedStreams(string longForm)
+    {
+        var names = new List<string>();
+        WIN32_FIND_STREAM_DATA data;
+        HANDLE raw;
+        fixed (char* name = longForm)
+        {
+            raw = PInvoke.FindFirstStream(name, STREAM_INFO_LEVELS.FindStreamInfoStandard, &data, 0);
+        }
+
+        if ((nint)raw.Value is -1 or 0)
+        {
+            var error = Marshal.GetLastWin32Error();
+            return error == ErrorHandleEof ? names : throw new Win32Exception(error);
+        }
+
+        int last;
+        try
+        {
+            do
+            {
+                var stream = data.cStreamName.ToString();
+                if (!stream.Equals("::$DATA", StringComparison.OrdinalIgnoreCase))
+                {
+                    names.Add(stream);
+                }
+            }
+            while (PInvoke.FindNextStream(raw, &data));
+
+            last = Marshal.GetLastWin32Error();
+        }
+        finally
+        {
+            _ = PInvoke.FindClose(raw);
+        }
+
+        return last == ErrorHandleEof ? names : throw new Win32Exception(last);
     }
 
     private static void TryDeleteOwnFile(string longForm)

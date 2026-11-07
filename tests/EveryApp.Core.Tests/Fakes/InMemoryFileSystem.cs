@@ -31,6 +31,48 @@ public sealed class InMemoryFileSystem : IFileSystem
     /// <summary>Value returned by <see cref="GetSectorSize"/>.</summary>
     public int SectorSize { get; set; } = 512;
 
+    /// <summary>When true, <see cref="TryCloneBlocks"/> clones within one drive (like ReFS); otherwise it always returns false (like NTFS).</summary>
+    public bool CloneSupported { get; set; }
+
+    /// <summary>When set, <see cref="CopySecurity"/> throws it (e.g. AccessDenied to simulate a missing privilege).</summary>
+    public FileSystemException? CopySecurityException { get; set; }
+
+    /// <summary>Test helper: sets a file's or folder's permissions, modelled as an opaque text.</summary>
+    public void SetSecurity(string path, string security)
+    {
+        lock (_lock)
+        {
+            Get(path).Security = security;
+        }
+    }
+
+    /// <summary>Test helper: a file's or folder's permissions text (null when never set).</summary>
+    public string? GetSecurity(string path)
+    {
+        lock (_lock)
+        {
+            return Get(path).Security;
+        }
+    }
+
+    /// <summary>Test helper: adds a named extra data stream to a file.</summary>
+    public void AddStream(string path, string streamName, byte[] content)
+    {
+        lock (_lock)
+        {
+            Get(path).Streams[streamName] = content.ToArray();
+        }
+    }
+
+    /// <summary>Test helper: a copy of a file's named extra data streams.</summary>
+    public IReadOnlyDictionary<string, byte[]> GetStreams(string path)
+    {
+        lock (_lock)
+        {
+            return new Dictionary<string, byte[]>(Get(path).Streams, StringComparer.OrdinalIgnoreCase);
+        }
+    }
+
     /// <summary>Test helper: creates parent directories and the file in one go.</summary>
     public void AddFile(string path, byte[] content, uint reparseTag = 0)
     {
@@ -244,8 +286,9 @@ public sealed class InMemoryFileSystem : IFileSystem
                 }
             }
 
-            var moved = _nodes.Where(kv => kv.Key.Equals(src.Key, StringComparison.OrdinalIgnoreCase)
-                    || kv.Key.StartsWith(src.Key + "\\", StringComparison.OrdinalIgnoreCase))
+            var fromKey = src.Key; // captured: the loop below renames src itself
+            var moved = _nodes.Where(kv => kv.Key.Equals(fromKey, StringComparison.OrdinalIgnoreCase)
+                    || kv.Key.StartsWith(fromKey + "\\", StringComparison.OrdinalIgnoreCase))
                 .ToList();
             foreach (var kv in moved)
             {
@@ -254,7 +297,7 @@ public sealed class InMemoryFileSystem : IFileSystem
 
             foreach (var kv in moved)
             {
-                var newKey = toKey + kv.Key[src.Key.Length..];
+                var newKey = toKey + kv.Key[fromKey.Length..];
                 kv.Value.Key = newKey;
                 _nodes[newKey] = kv.Value;
             }
@@ -289,6 +332,78 @@ public sealed class InMemoryFileSystem : IFileSystem
     public long GetFreeSpace(string path) => FreeSpaceException is { } ex ? throw ex : FreeSpaceBytes;
 
     public int GetSectorSize(string path) => SectorSize;
+
+    public void CopySecurity(string source, string target)
+    {
+        lock (_lock)
+        {
+            var from = Get(source);
+            var to = Get(target);
+            if (CopySecurityException is { } ex)
+            {
+                throw ex;
+            }
+
+            to.Security = from.Security;
+        }
+    }
+
+    public void CopyAlternateStreams(string source, string target)
+    {
+        lock (_lock)
+        {
+            var from = Get(source);
+            var to = Get(target);
+            foreach (var (name, data) in from.Streams)
+            {
+                to.Streams[name] = data.ToArray();
+            }
+        }
+    }
+
+    public bool TryCloneBlocks(string source, string target)
+    {
+        lock (_lock)
+        {
+            if (!CloneSupported)
+            {
+                return false;
+            }
+
+            Node from;
+            try
+            {
+                from = Get(source);
+            }
+            catch (FileSystemException)
+            {
+                return false;
+            }
+
+            var key = Key(target);
+            if (from.IsDirectory || from.Length == 0 || _nodes.ContainsKey(key) || !SameDrive(from.Key, key))
+            {
+                return false;
+            }
+
+            try
+            {
+                RequireParent(target, key);
+            }
+            catch (FileSystemException)
+            {
+                return false;
+            }
+
+            var node = NewNode(key, isDirectory: false);
+            node.Data = from.Data.AsSpan(0, from.Length).ToArray();
+            node.Length = from.Length;
+            _nodes[key] = node;
+            return true;
+        }
+    }
+
+    private static bool SameDrive(string a, string b) => a.Length > 0 && b.Length > 0 && char.ToUpperInvariant(a[0]) == char.ToUpperInvariant(b[0]);
 
     private static string Key(string path)
     {
@@ -433,6 +548,8 @@ public sealed class InMemoryFileSystem : IFileSystem
         public int? FailAfter;
         public string? TargetKey;
         public bool ListingDenied;
+        public string? Security;
+        public Dictionary<string, byte[]> Streams = new(StringComparer.OrdinalIgnoreCase);
     }
 
     private sealed class ReadHandle(InMemoryFileSystem fs, Node node) : IReadHandle

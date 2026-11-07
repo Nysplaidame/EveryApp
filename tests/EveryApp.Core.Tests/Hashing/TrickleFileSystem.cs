@@ -32,6 +32,12 @@ internal sealed class TrickleFileSystem(IFileSystem inner, int maxPerRead) : IFi
 
     public int GetSectorSize(string path) => inner.GetSectorSize(path);
 
+    public void CopySecurity(string source, string target) => inner.CopySecurity(source, target);
+
+    public void CopyAlternateStreams(string source, string target) => inner.CopyAlternateStreams(source, target);
+
+    public bool TryCloneBlocks(string source, string target) => inner.TryCloneBlocks(source, target);
+
     private sealed class Handle(TrickleFileSystem owner, IReadHandle h) : IReadHandle
     {
         public long Length => h.Length;

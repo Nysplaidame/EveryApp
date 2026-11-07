@@ -10,7 +10,17 @@ public enum JournalRecordKind
     FileSkipped,
     FileFailed,
     JobFinished,
+
+    /// <summary>
+    /// Written BEFORE a part file is created: <see cref="JournalRecord.RelativePath"/> is the file the job is working on and
+    /// <see cref="JournalRecord.Detail"/> the part file's path relative to the destination root (ending in <c>.ferrypart</c>).
+    /// After a crash, resume deletes exactly these part files (never by pattern) for files not yet done.
+    /// </summary>
+    FilePartStarted,
 }
+
+/// <summary>A part file named by a <see cref="JournalRecordKind.FilePartStarted"/> record. Both paths are safe relative paths.</summary>
+public sealed record JournalPart(string RelativePath, string PartRelativePath);
 
 /// <summary>
 /// One journal entry. For <see cref="JournalRecordKind.JobStarted"/>, <see cref="Detail"/> holds the job options as a JSON string.

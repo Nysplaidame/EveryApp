@@ -15,6 +15,12 @@ public enum PreflightCode
 
     /// <summary>Never produced by <see cref="PreflightRunner"/>; the copier reports it when it meets a locked file.</summary>
     Locked,
+
+    /// <summary>
+    /// Never produced by <see cref="PreflightRunner"/>; the tree copier reports it (and writes nothing) when the destination is inside a
+    /// folder being copied or moved, or is the very item being copied, judged by on-disk identity rather than by path text.
+    /// </summary>
+    DestinationInsideSource,
 }
 
 /// <summary>One problem found before copying. <paramref name="Message"/> is plain language for non-technical people.</summary>

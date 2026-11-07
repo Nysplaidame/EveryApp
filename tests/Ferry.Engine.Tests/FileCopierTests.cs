@@ -544,6 +544,105 @@ public sealed class FileCopierAllocationTests
     }
 }
 
+/// <summary>Part-file naming and hooks (ruling R29).</summary>
+public sealed class FileCopierPartNameTests
+{
+    private static CancellationToken Ct => TestContext.Current.CancellationToken;
+
+    public static TheoryData<string> Backends() => new() { Backend.InMemory, Backend.RealFiles };
+
+    [Theory]
+    [MemberData(nameof(Backends))]
+    public async Task Copy_250CharDestinationName_PartNameFitsAndStaysInFolder(string backend)
+    {
+        using var b = Backend.Create(backend);
+        using var pool = new BufferPool();
+        var src = b.PathOf("src.bin");
+        var dst = b.PathOf(new string('n', 246) + ".bin"); // 250 characters
+        b.AddFile(src, [1, 2, 3]);
+        var parts = new List<string>();
+
+        var outcome = await new FileCopier(b.Fs, pool).CopyAsync(
+            src, dst, new CopyOptions(), new PauseGate(), new LatestProgress(), new FileCopyHooks { PartChosen = parts.Add }, Ct);
+
+        Assert.True(outcome.Success, outcome.Problem?.Message);
+        var part = Assert.Single(parts);
+        Assert.True(Path.GetFileName(part).Length <= 255, $"{Path.GetFileName(part).Length} characters");
+        Assert.EndsWith(FileCopier.PartSuffix, part, StringComparison.Ordinal);
+        Assert.Equal(Path.GetDirectoryName(dst), Path.GetDirectoryName(part));
+        Assert.Equal([1, 2, 3], b.ReadAll(dst));
+    }
+
+    [Fact]
+    public void NewPartPath_ShortName_KeepsWholeName_AndNeverSplitsSurrogatePairs()
+    {
+        var shortPart = FileCopier.NewPartPath(@"C:\d\a.txt");
+        Assert.Matches(@"^C:\\d\\a\.txt\.[0-9a-f]{8}\.ferrypart$", shortPart);
+
+        var emoji = "\U0001F600"; // two chars
+        var name = new string('x', 235) + emoji + new string('y', 10);
+        var part = FileCopier.NewPartPath(@"C:\d\" + name);
+        var partName = Path.GetFileName(part);
+        Assert.True(partName.Length <= 255);
+        Assert.False(char.IsHighSurrogate(partName[partName.IndexOf('.', StringComparison.Ordinal) - 1]));
+    }
+
+    [Fact]
+    public async Task Copy_PartChosen_IsCalledBeforeThePartExists()
+    {
+        using var b = Backend.Create(Backend.InMemory);
+        using var pool = new BufferPool();
+        var src = b.PathOf("src.bin");
+        b.AddFile(src, [1, 2, 3]);
+        var existedWhenAnnounced = true;
+
+        await new FileCopier(b.Fs, pool).CopyAsync(
+            src, b.PathOf("dst.bin"), new CopyOptions(), new PauseGate(), new LatestProgress(),
+            new FileCopyHooks { PartChosen = p => existedWhenAnnounced = b.Exists(p) }, Ct);
+
+        Assert.False(existedWhenAnnounced);
+    }
+
+    [Fact]
+    public async Task Copy_BeforeCommitRefuses_PartDeleted_DestinationNeverAppears()
+    {
+        using var b = Backend.Create(Backend.InMemory);
+        using var pool = new BufferPool();
+        var src = b.PathOf("src.bin");
+        var dst = b.PathOf("dst.bin");
+        b.AddFile(src, [1, 2, 3]);
+        var refusal = new Problem(src, IoErrorKind.Other, CopyMessages.VerifyMismatch);
+
+        var outcome = await new FileCopier(b.Fs, pool).CopyAsync(
+            src, dst, new CopyOptions(), new PauseGate(), new LatestProgress(),
+            new FileCopyHooks { BeforeCommit = (_, _, _) => ValueTask.FromResult<Problem?>(refusal) }, Ct);
+
+        Assert.False(outcome.Success);
+        Assert.Equal(refusal, outcome.Problem);
+        Assert.False(b.Exists(dst));
+        Assert.Empty(b.PartFiles());
+    }
+
+    [Fact]
+    public async Task Copy_ReplaceExisting_ReadOnlyOldFile_Replaced()
+    {
+        using var b = Backend.Create(Backend.RealFiles);
+        using var pool = new BufferPool();
+        var src = b.PathOf("src.bin");
+        var dst = b.PathOf("dst.bin");
+        b.AddFile(src, [9, 9]);
+        b.AddFile(dst, [1]);
+        File.SetAttributes(dst, FileAttributes.ReadOnly);
+
+        var outcome = await new FileCopier(b.Fs, pool).CopyAsync(
+            src, dst, new CopyOptions(), new PauseGate(), new LatestProgress(), new FileCopyHooks { ReplaceExisting = true }, Ct);
+
+        Assert.True(outcome.Success, outcome.Problem?.Message);
+        Assert.Equal([9, 9], b.ReadAll(dst));
+        Assert.Empty(b.PartFiles());
+    }
+}
+
 /// <summary>Records the latest progress report (thread safe).</summary>
 internal sealed class LatestProgress : IProgress<FileProgress>
 {
@@ -601,6 +700,12 @@ internal sealed class HookFileSystem(IFileSystem inner) : IFileSystem
     public long GetFreeSpace(string path) => inner.GetFreeSpace(path);
 
     public int GetSectorSize(string path) => inner.GetSectorSize(path);
+
+    public void CopySecurity(string source, string target) => inner.CopySecurity(source, target);
+
+    public void CopyAlternateStreams(string source, string target) => inner.CopyAlternateStreams(source, target);
+
+    public bool TryCloneBlocks(string source, string target) => inner.TryCloneBlocks(source, target);
 
     private sealed class ReadHandle(HookFileSystem fs, string path, IReadHandle inner) : IReadHandle
     {

@@ -31,7 +31,7 @@ public sealed class FileCopier
 
     private const int BufferedAlignment = 4096;
 
-    private const FileAttributes CopiedAttributes =
+    internal const FileAttributes CopiedAttributes =
         FileAttributes.ReadOnly | FileAttributes.Hidden | FileAttributes.System | FileAttributes.Archive | FileAttributes.NotContentIndexed;
 
     private static readonly TimeSpan ProgressInterval = TimeSpan.FromMilliseconds(100);
@@ -56,12 +56,24 @@ public sealed class FileCopier
         _time = time;
     }
 
+    /// <summary>The longest file name Windows allows in one path segment.</summary>
+    internal const int MaxNameLength = 255;
+
     /// <summary>
     /// Copies <paramref name="source"/> to <paramref name="destination"/>, which must not exist yet (conflict rules belong to the caller).
     /// Disk failures come back as an unsuccessful outcome with a <see cref="Problem"/>; cancellation throws <see cref="OperationCanceledException"/>.
     /// </summary>
+    public Task<FileCopyOutcome> CopyAsync(
+        string source, string destination, CopyOptions options, PauseGate pause, IProgress<FileProgress> progress, CancellationToken ct) =>
+        CopyAsync(source, destination, options, pause, progress, null, ct);
+
+    /// <summary>
+    /// As the overload without hooks; <paramref name="hooks"/> lets a job learn each part-file name before it is created, check or extend the
+    /// complete part file before it takes the real name, replace an existing destination, or try block cloning first.
+    /// A link to a file (symbolic link) is copied as the contents of the file it points to.
+    /// </summary>
     public async Task<FileCopyOutcome> CopyAsync(
-        string source, string destination, CopyOptions options, PauseGate pause, IProgress<FileProgress> progress, CancellationToken ct)
+        string source, string destination, CopyOptions options, PauseGate pause, IProgress<FileProgress> progress, FileCopyHooks? hooks, CancellationToken ct)
     {
         ArgumentException.ThrowIfNullOrEmpty(source);
         ArgumentException.ThrowIfNullOrEmpty(destination);
@@ -82,8 +94,20 @@ public sealed class FileCopier
         try
         {
             await pause.WaitIfPausedAsync(ct).ConfigureAwait(false);
-            var before = _fs.GetEntry(source);
+            var before = _fs.GetEntryFollowingLinks(source);
             var length = before.Length;
+            if (hooks is { TryBlockClone: true } && length > 0)
+            {
+                part = TryClone(source, destination, hooks);
+                if (part is not null)
+                {
+                    partIsOurs = true;
+                    var cloned = await FinishCloneAsync(source, destination, options, hooks, before, part, progress, ct).ConfigureAwait(false);
+                    partIsOurs = !cloned.Success;
+                    return cloned;
+                }
+            }
+
             var unbuffered = length >= UnbufferedThresholdBytes;
             var alignment = unbuffered ? Math.Max(_fs.GetSectorSize(source), _fs.GetSectorSize(destination)) : BufferedAlignment;
             reader = _fs.OpenRead(source, unbuffered);
@@ -92,7 +116,7 @@ public sealed class FileCopier
                 return Failed(source, IoErrorKind.Other, CopyMessages.SourceChanged, part);
             }
 
-            (writer, part) = CreatePart(destination, length, unbuffered);
+            (writer, part) = CreatePart(destination, length, unbuffered, hooks);
             partIsOurs = true;
             if (options.Verify || options.ExportChecksums)
             {
@@ -124,22 +148,21 @@ public sealed class FileCopier
             reader = null;
             await r.DisposeAsync().ConfigureAwait(false);
 
-            var after = _fs.GetEntry(source);
-            if (after.Length != length || after.LastWriteTimeUtc != before.LastWriteTimeUtc)
+            if (CheckComplete(source, before, part, length) is { } incomplete)
             {
-                return Failed(source, IoErrorKind.Other, CopyMessages.SourceChanged, part);
+                return incomplete;
             }
 
-            if (_fs.GetEntry(part).Length != length)
+            var hash = hasher?.Finish();
+            if (await RunBeforeCommitAsync(hooks, part, hash, ct).ConfigureAwait(false) is { } refused)
             {
-                return Failed(source, IoErrorKind.Other, CopyMessages.WrongSize, part);
+                return new FileCopyOutcome(false, null, refused, part);
             }
 
             ct.ThrowIfCancellationRequested();
-            _fs.Move(part, destination, overwrite: false);
+            Commit(part, destination, hooks);
             partIsOurs = false;
             ReportFinalProgress(transfer);
-            var hash = hasher?.Finish();
 
             // After the rename (a rename can change them), and ReadOnly last so it cannot block the rename.
             var warning = options.KeepDatesAndAttributes ? ApplyMetadata(source, destination, before) : null;
@@ -166,6 +189,117 @@ public sealed class FileCopier
             await CleanUpAsync(reader, writer, partIsOurs ? part : null).ConfigureAwait(false);
             hasher?.Dispose();
         }
+    }
+
+    /// <summary>The source must be unchanged and the part file exactly the right size before anything else happens to it.</summary>
+    private FileCopyOutcome? CheckComplete(string source, FileEntry before, string part, long length)
+    {
+        var after = _fs.GetEntryFollowingLinks(source);
+        if (after.Length != length || after.LastWriteTimeUtc != before.LastWriteTimeUtc)
+        {
+            return Failed(source, IoErrorKind.Other, CopyMessages.SourceChanged, part);
+        }
+
+        return _fs.GetEntry(part).Length != length ? Failed(source, IoErrorKind.Other, CopyMessages.WrongSize, part) : null;
+    }
+
+    private static async ValueTask<Problem?> RunBeforeCommitAsync(FileCopyHooks? hooks, string part, byte[]? hash, CancellationToken ct) =>
+        hooks?.BeforeCommit is { } check ? await check(part, hash, ct).ConfigureAwait(false) : null;
+
+    /// <summary>
+    /// Gives the complete part file its real name. When replacing, an existing ReadOnly destination has ReadOnly cleared first (restored if the
+    /// replace then fails); the old file is only ever replaced by the rename itself, never deleted beforehand.
+    /// </summary>
+    private void Commit(string part, string destination, FileCopyHooks? hooks)
+    {
+        if (hooks is not { ReplaceExisting: true })
+        {
+            _fs.Move(part, destination, overwrite: false);
+            return;
+        }
+
+        FileEntry? old = null;
+        try
+        {
+            old = _fs.GetEntry(destination);
+        }
+        catch (FileSystemException ex) when (ex.Kind == IoErrorKind.NotFound)
+        {
+            // Gone meanwhile: a plain rename will do.
+        }
+
+        var clearedReadOnly = false;
+        if (old is not null && old.Attributes.HasFlag(FileAttributes.ReadOnly))
+        {
+            _fs.SetMetadata(destination, old.Attributes & ~FileAttributes.ReadOnly, old.CreationTimeUtc, old.LastWriteTimeUtc);
+            clearedReadOnly = true;
+        }
+
+        try
+        {
+            _fs.Move(part, destination, overwrite: old is not null);
+        }
+        catch (FileSystemException) when (clearedReadOnly)
+        {
+            TryRestore(destination, old!);
+            throw;
+        }
+    }
+
+    private void TryRestore(string destination, FileEntry old)
+    {
+        try
+        {
+            _fs.SetMetadata(destination, old.Attributes, old.CreationTimeUtc, old.LastWriteTimeUtc);
+        }
+        catch (FileSystemException)
+        {
+            // Best effort: the old file is intact either way, only its ReadOnly flag may be off.
+        }
+    }
+
+    /// <summary>Tries block cloning onto a fresh part name (announced first). Returns the part path on success, null to copy normally.</summary>
+    private string? TryClone(string source, string destination, FileCopyHooks hooks)
+    {
+        var part = NewPartPath(destination);
+        hooks.PartChosen?.Invoke(part);
+        return _fs.TryCloneBlocks(source, part) ? part : null;
+    }
+
+    /// <summary>The clone already holds the data: hash the source if asked, then the same checks and commit as a normal copy.</summary>
+    private async Task<FileCopyOutcome> FinishCloneAsync(
+        string source, string destination, CopyOptions options, FileCopyHooks hooks, FileEntry before, string part, IProgress<FileProgress> progress, CancellationToken ct)
+    {
+        byte[]? hash = null;
+        if (options.Verify || options.ExportChecksums)
+        {
+            hash = await Verifier.HashAsync(_fs, source, unbuffered: false, options.HashAlgorithm, ct).ConfigureAwait(false);
+        }
+
+        if (CheckComplete(source, before, part, before.Length) is { } incomplete)
+        {
+            return incomplete;
+        }
+
+        if (await RunBeforeCommitAsync(hooks, part, hash, ct).ConfigureAwait(false) is { } refused)
+        {
+            return new FileCopyOutcome(false, null, refused, part);
+        }
+
+        ct.ThrowIfCancellationRequested();
+        Commit(part, destination, hooks);
+#pragma warning disable CA1031 // The file is complete; a failing callback must not turn it into a failure.
+        try
+        {
+            progress.Report(new FileProgress(Path.GetFileName(source), before.Length, before.Length));
+        }
+        catch (Exception)
+        {
+        }
+#pragma warning restore CA1031
+
+        var warning = options.KeepDatesAndAttributes ? ApplyMetadata(source, destination, before) : null;
+        return new FileCopyOutcome(true, hash, warning, part);
     }
 
     private static FileCopyOutcome Failed(string source, IoErrorKind kind, string message, string? part) =>
@@ -230,12 +364,13 @@ public sealed class FileCopier
     /// crashed earlier attempt can never share it, and nothing that already exists is ever deleted or reused (stale parts are cleaned up from
     /// the job journal). A name clash is retried with a fresh name, up to three times.
     /// </summary>
-    private (IWriteHandle Handle, string Path) CreatePart(string destination, long length, bool unbuffered)
+    private (IWriteHandle Handle, string Path) CreatePart(string destination, long length, bool unbuffered, FileCopyHooks? hooks)
     {
         const int MaxAttempts = 4;
         for (var attempt = 1; ; attempt++)
         {
-            var part = $"{destination}.{RandomNumberGenerator.GetHexString(8, lowercase: true)}{PartSuffix}";
+            var part = NewPartPath(destination);
+            hooks?.PartChosen?.Invoke(part); // the job journals the name before the file exists
             try
             {
                 return (_fs.CreateWrite(part, length, unbuffered), part);
@@ -245,6 +380,30 @@ public sealed class FileCopier
                 // Someone else's file has this name: leave it alone and pick another.
             }
         }
+    }
+
+    /// <summary>
+    /// <c>&lt;destination&gt;.&lt;8 random hex&gt;.ferrypart</c> in the destination's own folder. When that name would pass 255 characters the
+    /// destination's name is shortened inside the part name (never splitting a surrogate pair); the folder never changes.
+    /// </summary>
+    internal static string NewPartPath(string destination)
+    {
+        var suffix = "." + RandomNumberGenerator.GetHexString(8, lowercase: true) + PartSuffix;
+        var cut = destination.LastIndexOfAny(['\\', '/']) + 1;
+        var name = destination[cut..];
+        var room = MaxNameLength - suffix.Length;
+        if (name.Length > room)
+        {
+            var keep = room;
+            if (char.IsHighSurrogate(name[keep - 1]))
+            {
+                keep--;
+            }
+
+            name = name[..keep];
+        }
+
+        return string.Concat(destination.AsSpan(0, cut), name, suffix);
     }
 
     private Problem? ApplyMetadata(string source, string destination, FileEntry before)

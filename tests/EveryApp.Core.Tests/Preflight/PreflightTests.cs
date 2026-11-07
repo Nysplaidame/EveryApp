@@ -203,7 +203,8 @@ public sealed class PreflightTests
         };
         var unknown = new PreflightRunner(new InMemoryFileSystem { FreeSpaceException = new IOException("x") }).Check([], Dest, "NTFS", false);
         var issues = Run(items, "SMB", free: gb).Concat(Run(items, "FAT32", free: gb)).Concat(unknown).ToList();
-        Assert.Equal(Enum.GetValues<PreflightCode>().Length - 1, issues.Select(i => i.Code).Distinct().Count());
+        // Every code except the two the runner never produces (Locked, DestinationInsideSource).
+        Assert.Equal(Enum.GetValues<PreflightCode>().Length - 2, issues.Select(i => i.Code).Distinct().Count());
         foreach (var issue in issues)
         {
             Assert.False(string.IsNullOrWhiteSpace(issue.Message));
