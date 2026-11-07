@@ -36,6 +36,9 @@ public sealed class PreflightRunner
         var issues = new List<PreflightIssue>();
         var isSmb = destinationFileSystem.Equals("SMB", StringComparison.OrdinalIgnoreCase);
         var isFat32 = destinationFileSystem.Equals("FAT32", StringComparison.OrdinalIgnoreCase);
+        var keepsNoStreams = isFat32 || destinationFileSystem.Equals("exFAT", StringComparison.OrdinalIgnoreCase)
+            || destinationFileSystem.Equals("FAT", StringComparison.OrdinalIgnoreCase);
+        var anyFile = false;
         var rootLength = PlainRoot(destinationRoot).Length + 1; // plus the separator before the relative path
         var names = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
         long total = 0;
@@ -52,6 +55,7 @@ public sealed class PreflightRunner
             if (!isDirectory)
             {
                 total += item.Entry.Length;
+                anyFile = true;
             }
 
             if (!longPathsEnabled)
@@ -97,6 +101,12 @@ public sealed class PreflightRunner
             {
                 Add(PreflightCode.TooLargeForFat32, PreflightMessages.TooLargeForFat32());
             }
+        }
+
+        if (keepsNoStreams && anyFile)
+        {
+            // One warning for the whole job: FAT and exFAT have no place for the mark-of-the-web stream.
+            issues.Add(new PreflightIssue(PreflightCode.ZoneMarkerNotKept, PathDisplay.ToDisplayPath(destinationRoot), PreflightMessages.ZoneMarkerNotKept()));
         }
 
         CheckSpace(issues, destinationRoot, total);

@@ -5,6 +5,7 @@ using System.Threading.Channels;
 using EveryApp.Core.FileSystem;
 using EveryApp.Core.Hashing;
 using EveryApp.Core.Jobs;
+using EveryApp.Core.Paths;
 
 namespace Ferry.Engine;
 
@@ -118,6 +119,12 @@ public sealed class FileCopier
 
             (writer, part) = CreatePart(destination, length, unbuffered, hooks);
             partIsOurs = true;
+            if (hooks?.MustBeUnder is { } root && !PathSafety.IsSameOrUnderFinal(root, writer.GetFinalPath()))
+            {
+                writer.DeleteOnClose(); // removed through this handle when it closes; the name is never looked up again
+                partIsOurs = false;
+                return Failed(source, IoErrorKind.InvalidName, CopyMessages.PartOutsideDestination, part);
+            }
             if (options.Verify || options.ExportChecksums)
             {
                 hasher = new StreamingHasher(options.HashAlgorithm);
@@ -274,6 +281,12 @@ public sealed class FileCopier
     private async Task<FileCopyOutcome> FinishCloneAsync(
         string source, string destination, CopyOptions options, FileCopyHooks hooks, FileEntry before, string part, IProgress<FileProgress> progress, CancellationToken ct)
     {
+        // Accepted risk: a clone is checked by path (the clone call creates the file itself), not through a handle.
+        if (hooks.MustBeUnder is { } root && !PathSafety.IsSameOrUnderFinal(root, _fs.GetFinalPath(part)))
+        {
+            return Failed(source, IoErrorKind.InvalidName, CopyMessages.PartOutsideDestination, part);
+        }
+
         byte[]? hash = null;
         if (options.Verify || options.ExportChecksums)
         {

@@ -714,9 +714,20 @@ internal sealed class HookFileSystem(IFileSystem inner) : IFileSystem
 
     public int GetSectorSize(string path) => inner.GetSectorSize(path);
 
-    public void CopySecurity(string source, string target) => inner.CopySecurity(source, target);
+    public SecurityCopyResult CopySecurity(string source, string target) => inner.CopySecurity(source, target);
 
-    public void CopyAlternateStreams(string source, string target) => inner.CopyAlternateStreams(source, target);
+    public void CopyAlternateStreams(string source, string target, bool allStreams, CancellationToken ct) =>
+        inner.CopyAlternateStreams(source, target, allStreams, ct);
+
+    public string GetFinalPath(string path) => inner.GetFinalPath(path);
+
+    public string? GetVolumeId(string path) => inner.GetVolumeId(path);
+
+    public bool DeleteVerified(string path, UInt128 expectedFileId, ulong expectedVolumeSerial, long expectedLength, DateTime expectedLastWriteUtc, string? mustBeUnder) =>
+        inner.DeleteVerified(path, expectedFileId, expectedVolumeSerial, expectedLength, expectedLastWriteUtc, mustBeUnder);
+
+    public bool DeleteEmptyFolderVerified(string path, UInt128 expectedFileId, ulong expectedVolumeSerial, string? mustBeUnder) =>
+        inner.DeleteEmptyFolderVerified(path, expectedFileId, expectedVolumeSerial, mustBeUnder);
 
     public bool TryCloneBlocks(string source, string target) => inner.TryCloneBlocks(source, target);
 
@@ -754,6 +765,10 @@ internal sealed class HookFileSystem(IFileSystem inner) : IFileSystem
         public ValueTask FlushAsync() => inner.FlushAsync();
 
         public ValueTask DisposeAsync() => inner.DisposeAsync();
+
+        public string GetFinalPath() => inner.GetFinalPath();
+
+        public void DeleteOnClose() => inner.DeleteOnClose();
     }
 }
 

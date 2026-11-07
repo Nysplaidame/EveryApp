@@ -37,4 +37,11 @@ public sealed class FileCopyHooks
 
     /// <summary>Try block cloning first (ReFS, same volume); any failure falls back to a normal copy.</summary>
     public bool TryBlockClone { get; init; }
+
+    /// <summary>
+    /// The destination root's final path (links resolved). When set, each part file's final path, read from its own handle right after it is
+    /// created, must be inside it; otherwise the part is deleted through that same handle and the copy fails with
+    /// <see cref="CopyMessages.PartOutsideDestination"/>. Stops a folder swapped for a link between the check and the write.
+    /// </summary>
+    public string? MustBeUnder { get; init; }
 }

@@ -5,9 +5,12 @@ using EveryApp.Core.Preflight;
 namespace Ferry.Engine;
 
 /// <summary>Counters and lists that become the <see cref="CopyResult"/>. One job, one thread at a time.</summary>
-internal sealed class JobOutcome(bool verifyOn)
+internal sealed class JobOutcome(bool verifyOn, int maxProblems = JobOutcome.DefaultMaxProblems)
 {
-    private bool _needsAdminReported;
+    public const int DefaultMaxProblems = 10_000;
+
+    private bool _ownerWarned;
+    private bool _notLocalWarned;
 
     public int Copied { get; set; }
 
@@ -23,7 +26,8 @@ internal sealed class JobOutcome(bool verifyOn)
 
     public bool Stopped { get; set; }
 
-    public List<Problem> Problems { get; } = [];
+    /// <summary>Every problem, but only the first <c>maxProblems</c> are kept (the rest are counted), so a hostile tree cannot exhaust memory.</summary>
+    public ProblemList Problems { get; } = new(maxProblems);
 
     public List<PreflightIssue> Issues { get; } = [];
 
@@ -32,22 +36,73 @@ internal sealed class JobOutcome(bool verifyOn)
     /// copied this run was verified (at least one). Same-drive moves are renames that read nothing back, so they do not count as verified.
     /// </summary>
     public CopyResult ToResult(bool stopped, bool refused = false) =>
-        new(Copied, Skipped, Failed, [.. Problems], [.. Issues], AllVerified: verifyOn && !refused && !VerifyFailed && Verified > 0 && Verified == Copied)
+        new(Copied, Skipped, Failed, Problems.Items, [.. Issues], AllVerified: verifyOn && !refused && !VerifyFailed && Verified > 0 && Verified == Copied)
         {
             Stopped = stopped,
+            MoreProblems = Problems.More,
         };
 
-    /// <summary>A permissions failure. Missing rights get one clear piece of advice for the whole job rather than the same line for every file.</summary>
-    public void PermissionProblem(string target, FileSystemException ex)
+    /// <summary>A job that was refused before it started: one plain reason, nothing done.</summary>
+    public static CopyResult Refused(string path, string message) =>
+        new(0, 0, 0, [new Problem(path, IoErrorKind.None, message)], [], AllVerified: false) { Stopped = true };
+
+    /// <summary>How copying permissions went for one item. Advice that applies to the whole job is given once.</summary>
+    public void PermissionOutcome(string target, SecurityCopyResult result)
     {
-        if (ex.Kind != IoErrorKind.AccessDenied)
+        if (result == SecurityCopyResult.OwnerNotKept && !_ownerWarned)
         {
-            Problems.Add(new Problem(TreePaths.Display(target), ex.Kind, CopyMessages.PermissionsNotCopied));
+            _ownerWarned = true;
+            Problems.Add(new Problem(TreePaths.Display(target), IoErrorKind.AccessDenied, CopyMessages.OwnerNotKept));
         }
-        else if (!_needsAdminReported)
+        else if (result == SecurityCopyResult.Reverted)
         {
-            _needsAdminReported = true;
-            Problems.Add(new Problem(TreePaths.Display(target), ex.Kind, CopyMessages.NeedsAdministrator));
+            Problems.Add(new Problem(TreePaths.Display(target), IoErrorKind.AccessDenied, CopyMessages.PermissionsReverted));
+        }
+    }
+
+    /// <summary>Permissions could not be copied at all for one item (the data is fine).</summary>
+    public void PermissionProblem(string target, FileSystemException ex) =>
+        Problems.Add(new Problem(TreePaths.Display(target), ex.Kind, CopyMessages.PermissionsNotCopied));
+
+    /// <summary>Permissions are only copied between fixed local drives; said once per job.</summary>
+    public void PermissionsNotLocal(string path)
+    {
+        if (!_notLocalWarned)
+        {
+            _notLocalWarned = true;
+            Problems.Add(new Problem(TreePaths.Display(path), IoErrorKind.None, CopyMessages.PermissionsNotLocal));
+        }
+    }
+}
+
+/// <summary>Keeps the first problems and counts the rest.</summary>
+internal sealed class ProblemList(int max)
+{
+    private readonly List<Problem> _items = [];
+
+    public int Count => _items.Count + More;
+
+    public int More { get; private set; }
+
+    public IReadOnlyList<Problem> Items => [.. _items];
+
+    public void Add(Problem problem)
+    {
+        if (_items.Count < max)
+        {
+            _items.Add(problem);
+        }
+        else
+        {
+            More++;
+        }
+    }
+
+    public void AddRange(IEnumerable<Problem> problems)
+    {
+        foreach (var p in problems)
+        {
+            Add(p);
         }
     }
 }

@@ -132,7 +132,7 @@ public sealed class TreeCopierProgressTests : TreeCopierTestBase
         }
 
         _rig.Fs.AfterCreateWrite = null;
-        var resumed = await _rig.NewCopier().ResumeAsync(id, new PauseGate(), new ListProgress(), Ct);
+        var resumed = await _rig.ResumeAsync(id);
         Assert.Equal(1, resumed.Copied);
         Assert.True(_rig.Mem.Exists(@"D:\dst\src\b.bin"));
     }

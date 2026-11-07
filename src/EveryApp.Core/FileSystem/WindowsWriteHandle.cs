@@ -124,6 +124,33 @@ internal sealed class WindowsWriteHandle : IWriteHandle
         }
     }
 
+    public string GetFinalPath()
+    {
+        try
+        {
+            return NativeFileApi.GetFinalPath(_handle);
+        }
+        catch (Exception ex) when (WindowsFileSystem.IsTranslatable(ex) || ex is ObjectDisposedException)
+        {
+            throw ErrorKinds.Translate(_path, ex);
+        }
+    }
+
+    public void DeleteOnClose()
+    {
+        try
+        {
+            if (!NativeFileApi.TrySetDeleteDisposition(_handle, out var error))
+            {
+                throw new System.ComponentModel.Win32Exception(error);
+            }
+        }
+        catch (Exception ex) when (WindowsFileSystem.IsTranslatable(ex) || ex is ObjectDisposedException)
+        {
+            throw ErrorKinds.Translate(_path, ex);
+        }
+    }
+
     public async ValueTask DisposeAsync()
     {
         // Cancels and waits (bounded) for in-flight writes, then trims, then frees the handle and buffer (never while an I/O is pending).

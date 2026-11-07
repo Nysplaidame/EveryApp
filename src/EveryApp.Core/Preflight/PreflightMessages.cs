@@ -28,6 +28,9 @@ internal static class PreflightMessages
     public static string NotEnoughSpace(string drive, long needed, long free) =>
         $"Drive {drive} needs {FormatSize(needed)} but only {FormatSize(free)} is free.";
 
+    public static string ZoneMarkerNotKept() =>
+        "This drive can't keep the 'downloaded from the internet' marker, so Windows may not warn you about these files.";
+
     public static string FreeSpaceUnknown(string drive) =>
         $"Couldn't check how much free space is on {drive}, so the copy might run out of room.";
 

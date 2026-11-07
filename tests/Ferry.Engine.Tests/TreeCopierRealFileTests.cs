@@ -28,7 +28,7 @@ public sealed class TreeCopierRealFileTests : IDisposable
     }
 
     private Task<CopyResult> Run(string source, string destination, CopyOptions options, IFileSystem? fs = null, string? jobs = null) =>
-        new TreeCopier(fs ?? new WindowsFileSystem(), new DriveAwareScheduler(new FakeDeviceResolver()), new ScriptedResolver(), jobs ?? _jobs, new FakeSleepBlocker())
+        new TreeCopier(fs ?? new WindowsFileSystem(), new DriveAwareScheduler(new FakeDeviceResolver()), new ScriptedResolver(), jobs ?? _jobs, new FakeSleepBlocker(), elevation: new FakeElevation())
             .RunAsync(Guid.NewGuid(), [source], destination, CopyMode.Copy, options, new PauseGate(), new ListProgress(), Ct);
 
     private static bool HasExplicitEveryoneRule(string file) =>
@@ -102,14 +102,17 @@ public sealed class TreeCopierRealFileTests : IDisposable
         var src = Directory.CreateDirectory(Path.Combine(_root, "src")).FullName;
         File.WriteAllText(Path.Combine(src, "a.txt"), "main");
         File.WriteAllText(Path.Combine(src, "a.txt") + ":Zone.Identifier", "[ZoneTransfer]\r\nZoneId=3\r\n");
+        File.WriteAllText(Path.Combine(src, "a.txt") + ":other", "x");
 
         var on = await Run(src, Path.Combine(_root, "on"), new CopyOptions { CopyAlternateStreams = true });
         var off = await Run(src, Path.Combine(_root, "off"), new CopyOptions());
 
         Assert.Equal(1, on.Copied);
         Assert.Equal("[ZoneTransfer]\r\nZoneId=3\r\n", File.ReadAllText(Path.Combine(_root, "on", "src", "a.txt") + ":Zone.Identifier"));
+        Assert.Equal("x", File.ReadAllText(Path.Combine(_root, "on", "src", "a.txt") + ":other"));
         Assert.Equal(1, off.Copied);
-        Assert.False(File.Exists(Path.Combine(_root, "off", "src", "a.txt") + ":Zone.Identifier"));
+        Assert.Equal("[ZoneTransfer]\r\nZoneId=3\r\n", File.ReadAllText(Path.Combine(_root, "off", "src", "a.txt") + ":Zone.Identifier")); // always kept
+        Assert.False(File.Exists(Path.Combine(_root, "off", "src", "a.txt") + ":other"));
     }
 
     [Fact]

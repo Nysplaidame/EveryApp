@@ -18,7 +18,7 @@ namespace EveryApp.Core.FileSystem;
 /// Internally (and in every <see cref="FileEntry.FullPath"/>) paths are full paths in the <c>\\?\</c> form, so names with trailing dots
 /// or spaces keep their identity.
 /// </summary>
-public sealed class WindowsFileSystem(AlignedBufferPool? pool = null) : IFileSystem
+public sealed partial class WindowsFileSystem(AlignedBufferPool? pool = null) : IFileSystem
 {
     internal const FileOptions NoBuffering = (FileOptions)0x20000000; // FILE_FLAG_NO_BUFFERING
     internal static readonly TimeSpan DisposeTimeout = TimeSpan.FromSeconds(5);
@@ -66,8 +66,9 @@ public sealed class WindowsFileSystem(AlignedBufferPool? pool = null) : IFileSys
             var p = Normalize(path);
             var options = FileOptions.Asynchronous | (unbuffered ? NoBuffering | FileOptions.WriteThrough : FileOptions.None);
 
-            // CreateNew: never truncate or replace something that already exists.
-            var handle = File.OpenHandle(p, FileMode.CreateNew, FileAccess.Write, FileShare.None, options);
+            // CREATE_NEW: never truncate or replace something that already exists. Opened with DELETE access so a part file can be removed
+            // through this very handle (never by name again) when it turns out to sit somewhere it must not.
+            var handle = CreatePartHandle(p, unbuffered);
             try
             {
                 if (preallocate > 0)
@@ -81,8 +82,8 @@ public sealed class WindowsFileSystem(AlignedBufferPool? pool = null) : IFileSys
             }
             catch
             {
+                NativeFileApi.TrySetDeleteDisposition(handle); // we created it a moment ago; don't leave a stub behind
                 handle.Dispose();
-                TryDeleteOwnFile(p); // we created it a moment ago; don't leave a stub behind
                 throw;
             }
         }
@@ -151,13 +152,13 @@ public sealed class WindowsFileSystem(AlignedBufferPool? pool = null) : IFileSys
         {
             var f = Normalize(source);
             var t = Normalize(destination);
-            if (Directory.Exists(f))
+
+            // MoveFileEx WITHOUT MOVEFILE_COPY_ALLOWED: a pure rename. Across volumes Windows refuses with ERROR_NOT_SAME_DEVICE instead of
+            // quietly copying and deleting (an unverified copy). Folders are never replaced.
+            var replace = overwrite && !Directory.Exists(f);
+            if (!PInvoke.MoveFileEx(f, t, replace ? MOVE_FILE_FLAGS.MOVEFILE_REPLACE_EXISTING : 0))
             {
-                Directory.Move(f, t); // never overwrites
-            }
-            else
-            {
-                File.Move(f, t, overwrite);
+                throw new Win32Exception(Marshal.GetLastWin32Error());
             }
         }
         catch (Exception ex) when (IsTranslatable(ex))
@@ -228,74 +229,6 @@ public sealed class WindowsFileSystem(AlignedBufferPool? pool = null) : IFileSys
         catch (Exception ex) when (IsTranslatable(ex))
         {
             throw ErrorKinds.Translate(path, ex);
-        }
-    }
-
-    public void CopySecurity(string source, string target)
-    {
-        try
-        {
-            var f = Normalize(source);
-            var t = Normalize(target);
-            var isDirectory = Directory.Exists(f);
-            var original = ReadSecurity(f, isDirectory, AccessControlSections.Access | AccessControlSections.Owner);
-
-            // The access list first (explicit entries plus "block inheritance"); inherited entries are recomputed from the new parent.
-            var access = isDirectory ? (FileSystemSecurity)new DirectorySecurity() : new FileSecurity();
-            access.SetSecurityDescriptorBinaryForm(original.GetSecurityDescriptorBinaryForm(), AccessControlSections.Access);
-            WriteSecurity(t, isDirectory, access);
-
-            // The owner only when it differs: setting someone else as owner needs the restore privilege (administrator).
-            var owner = original.GetOwner(typeof(SecurityIdentifier));
-            var current = ReadSecurity(t, isDirectory, AccessControlSections.Owner).GetOwner(typeof(SecurityIdentifier));
-            if (owner is not null && !owner.Equals(current))
-            {
-                var ownerOnly = isDirectory ? (FileSystemSecurity)new DirectorySecurity() : new FileSecurity();
-                ownerOnly.SetOwner(owner);
-                WriteSecurity(t, isDirectory, ownerOnly);
-            }
-        }
-        catch (Exception ex) when (ex is PrivilegeNotHeldException or InvalidOperationException)
-        {
-            // Not allowed to set that owner: only an administrator can.
-            throw new FileSystemException(target, IoErrorKind.AccessDenied, ex);
-        }
-        catch (Exception ex) when (IsTranslatable(ex))
-        {
-            throw ErrorKinds.Translate(target, ex);
-        }
-    }
-
-    public void CopyAlternateStreams(string source, string target)
-    {
-        try
-        {
-            var f = Normalize(source);
-            var t = Normalize(target);
-            foreach (var stream in NamedStreams(f))
-            {
-                using var reader = File.OpenHandle(f + stream, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-                using var writer = File.OpenHandle(t + stream, FileMode.Create, FileAccess.Write, FileShare.None);
-                var buffer = ArrayPool<byte>.Shared.Rent(64 * 1024);
-                try
-                {
-                    long offset = 0;
-                    int n;
-                    while ((n = RandomAccess.Read(reader, buffer, offset)) > 0)
-                    {
-                        RandomAccess.Write(writer, buffer.AsSpan(0, n), offset);
-                        offset += n;
-                    }
-                }
-                finally
-                {
-                    ArrayPool<byte>.Shared.Return(buffer);
-                }
-            }
-        }
-        catch (Exception ex) when (IsTranslatable(ex))
-        {
-            throw ErrorKinds.Translate(target, ex);
         }
     }
 
@@ -667,6 +600,11 @@ public sealed class WindowsFileSystem(AlignedBufferPool? pool = null) : IFileSys
     private static FileEntry QueryEntry(string longForm, bool followLinks = false)
     {
         using var handle = OpenQuery(longForm, FileReadAttributes, openReparsePoint: !followLinks);
+        return EntryFromHandle(handle, longForm);
+    }
+
+    private static FileEntry EntryFromHandle(SafeFileHandle handle, string longForm)
+    {
         if (!PInvoke.GetFileInformationByHandle(handle, out var info))
         {
             throw new Win32Exception(Marshal.GetLastWin32Error());

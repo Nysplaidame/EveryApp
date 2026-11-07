@@ -24,7 +24,7 @@ public sealed class TreeCopierResumeTests : TreeCopierTestBase
         Assert.Equal(2, first.Copied);
         _rig.Fs.ClearLog();
 
-        var resumed = await _rig.NewCopier().ResumeAsync(id, new PauseGate(), new ListProgress(), Ct);
+        var resumed = await _rig.ResumeAsync(id);
 
         Assert.Equal(3, resumed.Copied);
         Assert.Equal(0, resumed.Failed);
@@ -47,7 +47,7 @@ public sealed class TreeCopierResumeTests : TreeCopierTestBase
         await _rig.RunAsync([@"C:\src"], @"D:\dst", jobId: id);
         _rig.Fs.ClearLog();
 
-        var again = await _rig.NewCopier().ResumeAsync(id, new PauseGate(), new ListProgress(), Ct);
+        var again = await _rig.ResumeAsync(id);
 
         Assert.Equal(0, again.Copied);
         Assert.Empty(_rig.Fs.Log);
@@ -90,7 +90,7 @@ public sealed class TreeCopierResumeTests : TreeCopierTestBase
         Assert.Equal(1, first.Copied); // C:\a\photos moved as a whole (journaled done as one folder)
         Assert.True(first.Stopped);
 
-        var resumed = await _rig.NewCopier().ResumeAsync(id, new PauseGate(), new ListProgress(), Ct);
+        var resumed = await _rig.ResumeAsync(id);
 
         Assert.Equal(1, resumed.Copied);
         Assert.Equal("from C", Text(@"C:\dst\photos\x.jpg"));
@@ -116,12 +116,12 @@ public sealed class TreeCopierResumeTests : TreeCopierTestBase
         _rig.Fs.BeforeSetMetadata = null;
         _rig.Fs.ClearLog();
 
-        var resumed = await _rig.NewCopier().ResumeAsync(id, new PauseGate(), new ListProgress(), Ct);
+        var resumed = await _rig.ResumeAsync(id);
 
         Assert.Equal(1, resumed.Copied);
         Assert.Equal(0, _rig.Fs.Count("CreateWrite"));
         Assert.Contains(_rig.Fs.Log, l => l == @"OpenRead D:\dst\src\a.bin unbuffered"); // the content was checked first
-        Assert.Contains(@"Delete C:\src\a.bin", _rig.Fs.Log);
+        Assert.Contains(@"DeleteVerified C:\src\a.bin", _rig.Fs.Log);
         Assert.False(_rig.Mem.Exists(@"C:\src\a.bin"));
         Assert.Equal(data, _rig.Mem.ReadAllBytes(@"D:\dst\src\a.bin"));
     }
@@ -144,9 +144,9 @@ public sealed class TreeCopierResumeTests : TreeCopierTestBase
         _rig.Mem.AddFile(@"D:\dst\src\a.bin", Bytes(300, 99)); // same size, other data
         _rig.Fs.ClearLog();
 
-        var resumed = await _rig.NewCopier().ResumeAsync(id, new PauseGate(), new ListProgress(), Ct);
+        var resumed = await _rig.ResumeAsync(id);
 
-        Assert.DoesNotContain(@"Delete C:\src\a.bin", _rig.Fs.Log);
+        Assert.DoesNotContain(@"DeleteVerified C:\src\a.bin", _rig.Fs.Log);
         Assert.Equal(1, resumed.Skipped); // not recognised as ours: the conflict rule (Ask, answered Skip) decides
         Assert.True(_rig.Mem.Exists(@"C:\src\a.bin"));
     }
@@ -170,7 +170,7 @@ public sealed class TreeCopierResumeTests : TreeCopierTestBase
         _rig.Fs.BeforeSetMetadata = null;
         _rig.Fs.ClearLog();
 
-        var resumed = await _rig.NewCopier().ResumeAsync(id, new PauseGate(), new ListProgress(), Ct);
+        var resumed = await _rig.ResumeAsync(id);
 
         Assert.Equal(1, resumed.Copied);
         Assert.Equal(0, resumed.Skipped);
@@ -199,7 +199,7 @@ public sealed class TreeCopierResumeTests : TreeCopierTestBase
         _rig.Fs.AfterCreateWrite = null;
         _rig.Fs.OnDelete = null;
 
-        var resumed = await _rig.NewCopier().ResumeAsync(id, new PauseGate(), new ListProgress(), Ct);
+        var resumed = await _rig.ResumeAsync(id);
 
         Assert.Equal(1, resumed.Copied);
         Assert.False(_rig.Mem.Exists(leftover));
@@ -228,7 +228,7 @@ public sealed class TreeCopierResumeTests : TreeCopierTestBase
         _rig.Fs.BeforeSetMetadata = null;
         _rig.Fs.ClearLog();
 
-        var resumed = await _rig.NewCopier().ResumeAsync(id, new PauseGate(), new ListProgress(), Ct);
+        var resumed = await _rig.ResumeAsync(id);
 
         Assert.Equal(1, resumed.Copied);
         Assert.Equal(0, _rig.Fs.Count("CreateWrite"));

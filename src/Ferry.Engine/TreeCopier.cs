@@ -17,12 +17,15 @@ namespace Ferry.Engine;
 /// <para>
 /// Safety rules: the real name only ever holds complete data (and, when verify is on, data that was read back unbuffered and matched); an
 /// existing destination is replaced only by renaming the finished copy over it, never deleted first; a move deletes the original only after its
-/// copy matched; only part files named in the journal are ever deleted on resume; links are never followed by a move.
+/// copy matched, and only through a handle that proved it is still the same file; only part files named in the journal are ever deleted on
+/// resume; links are never followed by a move; nothing is written through a folder link already in the destination, and a part file whose
+/// final path leaves the destination is deleted through its own handle; the "downloaded from the internet" marker always travels with a
+/// file; the engine refuses to run elevated.
 /// </para>
 /// <para>
-/// Links: with FollowReparsePoints off, a link to a folder is skipped (and listed) when copying, and a link to a file is copied as the contents
-/// of the file it points to (a link-keeping mode may come later). A move never follows links: on the same drive a link is moved as itself;
-/// to another drive it is left in place and listed.
+/// Links: with FollowReparsePoints off, a link to a folder or to a file is skipped (and listed) when copying, never followed; with it on,
+/// file links are copied as the contents they point to. Other reparse files (cloud placeholders, deduplicated files) are ordinary data. A
+/// move never follows links: on the same volume a link is moved as itself; to another volume it is left in place and listed.
 /// </para>
 /// <para>
 /// Resume and metadata: a file is journaled done only after its metadata and permissions are applied. On resume, a file that has a part
@@ -55,6 +58,8 @@ public sealed class TreeCopier
 
     internal FileCopier Copier { get; }
 
+    internal IElevationCheck Elevation { get; }
+
     public TreeCopier(IFileSystem fs, DriveAwareScheduler scheduler, IConflictResolver resolver, string jobsDir)
         : this(fs, scheduler, resolver, jobsDir, null)
     {
@@ -74,7 +79,8 @@ public sealed class TreeCopier
         string jobsDir,
         ISleepBlocker? sleepBlocker,
         IDestinationInfo? destinationInfo = null,
-        TimeProvider? time = null)
+        TimeProvider? time = null,
+        IElevationCheck? elevation = null)
     {
         ArgumentNullException.ThrowIfNull(fs);
         ArgumentNullException.ThrowIfNull(scheduler);
@@ -88,6 +94,7 @@ public sealed class TreeCopier
         DestinationInfo = destinationInfo ?? WindowsDestinationInfo.Instance;
         Time = time ?? TimeProvider.System;
         Copier = new FileCopier(fs, BufferPool.Shared, Time);
+        Elevation = elevation ?? WindowsElevationCheck.Instance;
     }
 
     /// <summary>
@@ -109,30 +116,54 @@ public sealed class TreeCopier
             throw new ArgumentException("Sources and destination must be full paths, with at least one source, and the options must be valid.", nameof(sources));
         }
 
+        if (Elevation.IsElevated)
+        {
+            // An elevated copier walking user-controlled paths is a privilege-escalation risk (planted links): refuse, never advise elevating.
+            return Task.FromResult(JobOutcome.Refused(destination, CopyMessages.RunningElevated));
+        }
+
         return new TreeJob(this, jobId, spec, null, pause, progress, ct).RunAsync();
     }
 
-    /// <summary>Continues a job from its journal: done files are skipped and part files the journal names are removed first.</summary>
-    public Task<CopyResult> ResumeAsync(Guid jobId, PauseGate pause, IProgress<JobProgress> progress, CancellationToken ct)
+    /// <summary>
+    /// Continues a job from its journal: done files are skipped and part files the journal names are removed first. The saved job is
+    /// untrusted (anyone who can write the jobs folder can edit it), so <paramref name="confirmation"/> is shown its sources, destination and
+    /// mode first, and nothing runs unless it says yes.
+    /// </summary>
+    public async Task<CopyResult> ResumeAsync(Guid jobId, IResumeConfirmation confirmation, PauseGate pause, IProgress<JobProgress> progress, CancellationToken ct)
     {
+        ArgumentNullException.ThrowIfNull(confirmation);
         ArgumentNullException.ThrowIfNull(pause);
         ArgumentNullException.ThrowIfNull(progress);
+        if (Elevation.IsElevated)
+        {
+            return JobOutcome.Refused(string.Empty, CopyMessages.RunningElevated);
+        }
+
         var journal = JobJournal.Open(JobsDir, jobId, Time);
+        var handedOver = false;
         try
         {
             if (journal.IsFinished)
             {
-                journal.Dispose();
-                return Task.FromResult(new CopyResult(0, 0, 0, [], [], AllVerified: false)); // nothing was verified in this run
+                return new CopyResult(0, 0, 0, [], [], AllVerified: false); // nothing was verified in this run
             }
 
             var spec = JobSpec.Parse(journal.OptionsJson);
-            return new TreeJob(this, jobId, spec, journal, pause, progress, ct).RunAsync();
+            if (!await confirmation.ConfirmAsync(new ResumeRequest(spec.Sources, spec.Destination, spec.Mode), ct).ConfigureAwait(false))
+            {
+                return JobOutcome.Refused(spec.Destination, CopyMessages.ResumeNotConfirmed);
+            }
+
+            handedOver = true; // the job disposes the journal from here on
+            return await new TreeJob(this, jobId, spec, journal, pause, progress, ct).RunAsync().ConfigureAwait(false);
         }
-        catch
+        finally
         {
-            journal.Dispose();
-            throw;
+            if (!handedOver)
+            {
+                journal.Dispose();
+            }
         }
     }
 }

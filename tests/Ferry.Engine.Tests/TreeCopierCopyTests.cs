@@ -104,14 +104,41 @@ public sealed class TreeCopierCopyTests : TreeCopierTestBase
     }
 
     [Fact]
-    public async Task Copy_FileSymlink_CopiedAsTargetContents()
+    public async Task Copy_FileSymlink_SkippedAndListed_NeverFollowed()
     {
         _rig.Mem.AddFile(@"C:\src\shortcut.txt", Encoding.UTF8.GetBytes("target data"), reparseTag: 0xA000000C);
+        AddText(@"C:\src\a.txt", "a");
 
         var result = await _rig.RunAsync([@"C:\src"], @"D:\dst");
 
         Assert.Equal(1, result.Copied);
+        var problem = Assert.Single(result.Problems);
+        Assert.Equal(CopyMessages.FileLinkSkipped, problem.Message);
+        Assert.Equal(IoErrorKind.None, problem.Kind);
+        Assert.False(_rig.Mem.Exists(@"D:\dst\src\shortcut.txt"));
+        Assert.DoesNotContain(_rig.Fs.Log, l => l.Contains("shortcut", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task Copy_FileSymlink_FollowLinksOn_CopiedAsContents()
+    {
+        _rig.Mem.AddFile(@"C:\src\shortcut.txt", Encoding.UTF8.GetBytes("target data"), reparseTag: 0xA000000C);
+
+        var result = await _rig.RunAsync([@"C:\src"], @"D:\dst", new CopyOptions { FollowReparsePoints = true });
+
+        Assert.Equal(1, result.Copied);
         Assert.Equal("target data", Text(@"D:\dst\src\shortcut.txt"));
-        Assert.False(_rig.Mem.GetEntry(@"D:\dst\src\shortcut.txt").IsReparsePoint, "The copy is an ordinary file, not a link.");
+        Assert.False(_rig.Mem.GetEntry(@"D:\dst\src\shortcut.txt").IsReparsePoint);
+    }
+
+    [Fact]
+    public async Task Copy_CloudPlaceholderFile_IsOrdinaryData()
+    {
+        _rig.Mem.AddFile(@"C:\src\cloud.docx", Encoding.UTF8.GetBytes("cloud data"), reparseTag: 0x9000601A); // not a name surrogate
+
+        var result = await _rig.RunAsync([@"C:\src"], @"D:\dst");
+
+        Assert.Equal(1, result.Copied);
+        Assert.Equal("cloud data", Text(@"D:\dst\src\cloud.docx"));
     }
 }

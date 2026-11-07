@@ -81,7 +81,7 @@ public sealed class WindowsFileSystemExtrasTests : IDisposable
         File.WriteAllText(src + ":Zone.Identifier", "[ZoneTransfer]\r\nZoneId=3\r\n");
         File.WriteAllBytes(src + ":big", Enumerable.Range(0, 200_000).Select(i => (byte)i).ToArray());
 
-        _fs.CopyAlternateStreams(src, dst);
+        _fs.CopyAlternateStreams(src, dst, allStreams: true, TestContext.Current.CancellationToken);
 
         Assert.Equal("[ZoneTransfer]\r\nZoneId=3\r\n", File.ReadAllText(dst + ":Zone.Identifier"));
         Assert.Equal(File.ReadAllBytes(src + ":big"), File.ReadAllBytes(dst + ":big"));
@@ -96,7 +96,7 @@ public sealed class WindowsFileSystemExtrasTests : IDisposable
         File.WriteAllText(src, "main");
         File.WriteAllText(dst, "other");
 
-        _fs.CopyAlternateStreams(src, dst);
+        _fs.CopyAlternateStreams(src, dst, allStreams: true, TestContext.Current.CancellationToken);
 
         Assert.Equal("other", File.ReadAllText(dst));
     }

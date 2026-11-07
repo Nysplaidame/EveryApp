@@ -36,7 +36,15 @@ internal sealed class TreeCopierRig : IDisposable
 
     public ScriptedResolver Resolver { get; } = new();
 
-    public TreeCopier NewCopier() => new(Fs, Scheduler, Resolver, JobsDir, Sleep, Destination, new AutoAdvancingTime());
+    public FakeElevation Elevation { get; } = new();
+
+    public FakeConfirmation Confirmation { get; } = new();
+
+    public TreeCopier NewCopier() => new(Fs, Scheduler, Resolver, JobsDir, Sleep, Destination, new AutoAdvancingTime(), Elevation);
+
+    /// <summary>Resumes the job with <see cref="Confirmation"/> answering the question.</summary>
+    public Task<CopyResult> ResumeAsync(Guid jobId, IProgress<JobProgress>? progress = null) =>
+        NewCopier().ResumeAsync(jobId, Confirmation, new PauseGate(), progress ?? new ListProgress(), TestContext.Current.CancellationToken);
 
     public Task<CopyResult> RunAsync(
         string[] sources, string destination, CopyOptions? options = null, CopyMode mode = CopyMode.Copy, IProgress<JobProgress>? progress = null,
@@ -161,7 +169,35 @@ internal sealed class FakeDestinationInfo : IDestinationInfo
 
     public bool LongPathsEnabled { get; set; } = true;
 
+    public bool FixedLocal { get; set; } = true;
+
+    /// <summary>Free bytes reported for the jobs folder's drive (null: unknown).</summary>
+    public long? JobsFreeBytes { get; set; } = 1L << 40;
+
     public string FileSystemOf(string path) => FileSystem;
+
+    public bool IsFixedLocalDrive(string path) => FixedLocal;
+
+    public long? FreeBytes(string path) => JobsFreeBytes;
+}
+
+internal sealed class FakeElevation : IElevationCheck
+{
+    public bool IsElevated { get; set; }
+}
+
+/// <summary>Answers the resume question with <see cref="Answer"/> and keeps what it was shown.</summary>
+internal sealed class FakeConfirmation : IResumeConfirmation
+{
+    public bool Answer { get; set; } = true;
+
+    public List<ResumeRequest> Asked { get; } = [];
+
+    public ValueTask<bool> ConfirmAsync(ResumeRequest request, CancellationToken ct)
+    {
+        Asked.Add(request);
+        return ValueTask.FromResult(Answer);
+    }
 }
 
 /// <summary>Answers every conflict question with <see cref="Answer"/> and records the questions.</summary>
@@ -214,6 +250,15 @@ internal sealed class RecordingFileSystem(IFileSystem inner) : IFileSystem
 
     /// <summary>Returns an exception to throw for opening (path, unbuffered) to read, or null.</summary>
     public Func<string, bool, Exception?>? OnOpenRead { get; set; }
+
+    /// <summary>Runs just before CreateWrite (e.g. to swap a folder for a link after the folder was checked).</summary>
+    public Action<string>? BeforeCreateWrite { get; set; }
+
+    /// <summary>Runs just before a verified delete is attempted (to change the item under the job's feet).</summary>
+    public Action<string>? BeforeDeleteVerified { get; set; }
+
+    /// <summary>Returns a volume id to report instead of the real one, or null to ask the inner file system.</summary>
+    public Func<string, string?>? VolumeIdOverride { get; set; }
 
     /// <summary>Runs after a file is created by CreateWrite.</summary>
     public Action<string>? AfterCreateWrite { get; set; }
@@ -273,6 +318,7 @@ internal sealed class RecordingFileSystem(IFileSystem inner) : IFileSystem
     public IWriteHandle CreateWrite(string path, long preallocate, bool unbuffered)
     {
         Add($"CreateWrite {Plain(path)}");
+        BeforeCreateWrite?.Invoke(path);
         var handle = new WriteHandle(this, path, inner.CreateWrite(path, preallocate, unbuffered));
         AfterCreateWrite?.Invoke(path);
         return handle;
@@ -318,16 +364,34 @@ internal sealed class RecordingFileSystem(IFileSystem inner) : IFileSystem
 
     public int GetSectorSize(string path) => inner.GetSectorSize(path);
 
-    public void CopySecurity(string source, string target)
+    public SecurityCopyResult CopySecurity(string source, string target)
     {
         Add($"CopySecurity {Plain(source)} -> {Plain(target)}");
-        inner.CopySecurity(source, target);
+        return inner.CopySecurity(source, target);
     }
 
-    public void CopyAlternateStreams(string source, string target)
+    public void CopyAlternateStreams(string source, string target, bool allStreams, CancellationToken ct)
     {
-        Add($"CopyStreams {Plain(source)} -> {Plain(target)}");
-        inner.CopyAlternateStreams(source, target);
+        Add($"CopyStreams {Plain(source)} -> {Plain(target)}{(allStreams ? " all" : " marker")}");
+        inner.CopyAlternateStreams(source, target, allStreams, ct);
+    }
+
+    public string GetFinalPath(string path) => inner.GetFinalPath(path);
+
+    public string? GetVolumeId(string path) => VolumeIdOverride?.Invoke(path) ?? inner.GetVolumeId(path);
+
+    public bool DeleteVerified(string path, UInt128 expectedFileId, ulong expectedVolumeSerial, long expectedLength, DateTime expectedLastWriteUtc, string? mustBeUnder)
+    {
+        Add($"DeleteVerified {Plain(path)}");
+        BeforeDeleteVerified?.Invoke(path);
+        return inner.DeleteVerified(path, expectedFileId, expectedVolumeSerial, expectedLength, expectedLastWriteUtc, mustBeUnder);
+    }
+
+    public bool DeleteEmptyFolderVerified(string path, UInt128 expectedFileId, ulong expectedVolumeSerial, string? mustBeUnder)
+    {
+        Add($"DeleteFolderVerified {Plain(path)}");
+        BeforeDeleteVerified?.Invoke(path);
+        return inner.DeleteEmptyFolderVerified(path, expectedFileId, expectedVolumeSerial, mustBeUnder);
     }
 
     public bool TryCloneBlocks(string source, string target)
@@ -365,5 +429,9 @@ internal sealed class RecordingFileSystem(IFileSystem inner) : IFileSystem
         public ValueTask FlushAsync() => inner.FlushAsync();
 
         public ValueTask DisposeAsync() => inner.DisposeAsync();
+
+        public string GetFinalPath() => inner.GetFinalPath();
+
+        public void DeleteOnClose() => inner.DeleteOnClose();
     }
 }

@@ -87,4 +87,35 @@ internal static class TreePaths
     }
 
     public static string Display(string path) => PathDisplay.ToDisplayPath(path);
+
+    /// <summary>
+    /// Joins a path read from the journal (untrusted) to <paramref name="root"/> and checks the result is still inside the root, after full
+    /// resolution of <c>..</c> and rooted parts. False means the record is corrupt and must not be used.
+    /// </summary>
+    public static bool TryContain(string root, string relative, out string full)
+    {
+        full = string.Empty;
+        if (string.IsNullOrEmpty(relative) || Path.IsPathRooted(relative) || relative.Contains(':', StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        try
+        {
+            var (prefix, plainRoot) = root.StartsWith(@"\\?\", StringComparison.Ordinal) ? (@"\\?\", root[4..]) : (string.Empty, root);
+            var r = Path.GetFullPath(plainRoot).TrimEnd('\\');
+            var candidate = Path.GetFullPath(Path.Combine(r, relative));
+            if (!candidate.Equals(r, StringComparison.OrdinalIgnoreCase) && !candidate.StartsWith(r + "\\", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            full = prefix + candidate;
+            return true;
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return false;
+        }
+    }
 }

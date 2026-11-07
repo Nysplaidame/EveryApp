@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using EveryApp.Core.FileSystem;
 using EveryApp.Core.Hashing;
 using EveryApp.Core.Jobs;
@@ -7,8 +8,10 @@ namespace Ferry.Engine;
 /// <summary>
 /// Resume after a crash: deletes exactly the part files the journal names (never by pattern), and recognises a file that was renamed into
 /// place just before the crash (part record, no done record, destination holding the source's exact data) so it is finished, not recopied.
+/// The journal is untrusted: every path it names must stay inside the destination after full resolution, and a part file must have the
+/// name shape Ferry gives part files and sit next to its target; anything else is ignored as corruption.
 /// </summary>
-internal sealed class ResumeRecovery
+internal sealed partial class ResumeRecovery
 {
     private readonly IFileSystem _fs;
     private readonly string _destination;
@@ -34,7 +37,10 @@ internal sealed class ResumeRecovery
     /// <summary>Keys journaled as done (copied, or moved as a whole folder).</summary>
     public IReadOnlySet<string> Completed => _completed;
 
-    /// <summary>Removes the journaled part files of files that are not done yet.</summary>
+    /// <summary>The name shape <see cref="FileCopier.NewPartPath"/> produces: something, a dot, 8 lowercase hex digits, ".ferrypart".</summary>
+    public static bool LooksLikeOurPart(string name) => PartName().IsMatch(name);
+
+    /// <summary>Removes the journaled part files of files that are not done yet (only those that pass every check).</summary>
     public void DeleteJournaledParts()
     {
         foreach (var (key, parts) in _partsByKey)
@@ -46,7 +52,10 @@ internal sealed class ResumeRecovery
 
             foreach (var part in parts)
             {
-                TreePaths.TryDelete(_fs, Path.Combine(_destination, part.PartRelativePath));
+                if (IsTrustworthy(part, out var partPath, out _))
+                {
+                    TreePaths.TryDelete(_fs, partPath);
+                }
             }
         }
     }
@@ -62,10 +71,16 @@ internal sealed class ResumeRecovery
             return null;
         }
 
-        foreach (var targetKey in parts.Select(p => p.TargetRelativePath).Distinct(StringComparer.OrdinalIgnoreCase))
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var part in parts)
         {
-            var target = Path.Combine(_destination, targetKey);
-            if (TreePaths.TryGet(_fs, target, follow: false) is not { } existing || existing.Attributes.HasFlag(FileAttributes.Directory) || existing.Length != item.Entry.Length)
+            if (!IsTrustworthy(part, out _, out var target) || !seen.Add(target))
+            {
+                continue;
+            }
+
+            if (TreePaths.TryGet(_fs, target, follow: false) is not { } existing
+                || existing.Attributes.HasFlag(FileAttributes.Directory) || existing.IsReparsePoint || existing.Length != item.Entry.Length)
             {
                 continue;
             }
@@ -75,7 +90,7 @@ internal sealed class ResumeRecovery
                 var source = await Verifier.HashAsync(_fs, item.Entry.FullPath, unbuffered: false, algorithm, ct).ConfigureAwait(false);
                 if (await Verifier.MatchesAsync(_fs, target, source, algorithm, ct).ConfigureAwait(false))
                 {
-                    return (targetKey, source);
+                    return (part.TargetRelativePath, source);
                 }
             }
             catch (FileSystemException)
@@ -86,5 +101,16 @@ internal sealed class ResumeRecovery
 
         return null;
     }
-}
 
+    private bool IsTrustworthy(JournalPart part, out string partPath, out string targetPath)
+    {
+        targetPath = string.Empty;
+        return TreePaths.TryContain(_destination, part.PartRelativePath, out partPath)
+            && TreePaths.TryContain(_destination, part.TargetRelativePath, out targetPath)
+            && LooksLikeOurPart(Path.GetFileName(part.PartRelativePath))
+            && string.Equals(Path.GetDirectoryName(partPath), Path.GetDirectoryName(targetPath), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [GeneratedRegex(@"^.+\.[0-9a-f]{8}\.ferrypart$", RegexOptions.CultureInvariant)]
+    private static partial Regex PartName();
+}

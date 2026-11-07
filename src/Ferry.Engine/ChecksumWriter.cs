@@ -11,7 +11,7 @@ internal sealed class ChecksumWriter(IFileSystem fs, string destination, HashAlg
 
     public void Add(string hashHex, string targetKey) => _lines.Add($"{hashHex}  {targetKey}");
 
-    public void Write(CancellationToken ct)
+    public void Write(string? mustBeUnder, CancellationToken ct)
     {
         if (_lines.Count == 0)
         {
@@ -26,13 +26,27 @@ internal sealed class ChecksumWriter(IFileSystem fs, string destination, HashAlg
         }
 
         var part = FileCopier.NewPartPath(target);
-        journal.Append(new JournalRecord(JournalRecordKind.FilePartStarted, Path.GetFileName(target), 0, DateTime.UtcNow, null, Path.GetFileName(part), Path.GetFileName(target)));
+        if (!journal.TryAppend(new JournalRecord(JournalRecordKind.FilePartStarted, Path.GetFileName(target), 0, DateTime.UtcNow, null, Path.GetFileName(part), Path.GetFileName(target))))
+        {
+            outcome.Problems.Add(new Problem(TreePaths.Display(target), IoErrorKind.Other, CopyMessages.ChecksumsNotWritten));
+            return;
+        }
+
         var data = System.Text.Encoding.UTF8.GetBytes(string.Join('\n', _lines) + "\n");
         var created = false;
         try
         {
             var writer = fs.CreateWrite(part, 0, unbuffered: false);
             created = true;
+            if (mustBeUnder is not null && !EveryApp.Core.Paths.PathSafety.IsSameOrUnderFinal(mustBeUnder, writer.GetFinalPath()))
+            {
+                writer.DeleteOnClose(); // through the handle, never by name
+                created = false;
+                writer.DisposeAsync().AsTask().GetAwaiter().GetResult();
+                outcome.Problems.Add(new Problem(TreePaths.Display(target), IoErrorKind.InvalidName, CopyMessages.PartOutsideDestination));
+                return;
+            }
+
             try
             {
                 writer.WriteAsync(data, 0, ct).AsTask().GetAwaiter().GetResult();

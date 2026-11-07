@@ -44,6 +44,9 @@ public sealed record CopyResult(
 
     /// <summary>True when the job stopped early because of a problem (failure rule Stop) or a blocking pre-flight issue.</summary>
     public bool Stopped { get; init; }
+
+    /// <summary>Problems beyond the first <see cref="JobOutcome.DefaultMaxProblems"/>, counted but not listed (keeps memory bounded on hostile trees).</summary>
+    public int MoreProblems { get; init; }
 }
 
 /// <summary>What a dry run says would happen to one item.</summary>
@@ -64,6 +67,15 @@ public enum PlannedAction
 
 /// <summary>One line of a dry-run plan. Paths are for display.</summary>
 public sealed record PlannedItem(string Source, string Destination, PlannedAction Action);
+
+/// <summary>What a resume will do, shown to the person before it runs. The saved job is untrusted input, so it is never resumed unasked.</summary>
+public sealed record ResumeRequest(IReadOnlyList<string> Sources, string Destination, CopyMode Mode);
+
+/// <summary>Asks the person to confirm a resume (the CLI shows sources, destination and mode, or takes --yes).</summary>
+public interface IResumeConfirmation
+{
+    ValueTask<bool> ConfirmAsync(ResumeRequest request, CancellationToken ct);
+}
 
 /// <summary>Decides what to do when a file already exists at the destination and the job's rule is <see cref="ConflictRule.Ask"/>.</summary>
 public interface IConflictResolver

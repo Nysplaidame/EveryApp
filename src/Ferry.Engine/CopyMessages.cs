@@ -23,8 +23,17 @@ public static class CopyMessages
     public const string DatesAndAttributesNotKept = "The file was copied, but its dates and attributes couldn't be kept";
 
     // Tree copy (job level).
-    public const string NeedsAdministrator = "Needs administrator: restart this job as administrator";
+    public const string RunningElevated = "Ferry won't copy with administrator rights, to keep your system safe. Start Ferry normally and try again.";
+    public const string OwnerNotKept = "Permissions were copied, but the owner couldn't be kept";
     public const string PermissionsNotCopied = "The file was copied, but its permissions couldn't be copied";
+    public const string PermissionsReverted = "The permissions couldn't be copied without locking you out of the copy, so it uses the destination folder's permissions";
+    public const string PermissionsNotLocal = "Permissions are only copied between this PC's own drives, so the copies use the destination folder's permissions";
+    public const string DestinationFolderIsLink = "This folder in the destination is a shortcut to somewhere else, so it was skipped";
+    public const string PartOutsideDestination = "The copy would have been saved outside the destination folder, so it was stopped";
+    public const string OriginalChanged = "The original changed before it could be removed, so it was kept";
+    public const string FileLinkSkipped = "This file is a shortcut to somewhere else, so it was skipped";
+    public const string StreamsNotCopiedOriginalKept = "The file's hidden extra data couldn't be copied, so the original was kept";
+    public const string ResumeNotConfirmed = "The job wasn't resumed because it wasn't confirmed";
     public const string StreamsNotCopied = "The file was copied, but its hidden extra data couldn't be copied";
     public const string VerifyMismatch = "The copy didn't match the original when it was checked, so it wasn't kept";
     public const string VerifyCouldNotRead = "The copy couldn't be read back to check it, so it wasn't kept";
@@ -32,7 +41,6 @@ public static class CopyMessages
     public const string FolderInTheWay = "A folder with this name is already there";
     public const string FileInTheWay = "A file with this name is already there, so the folder couldn't be created";
     public const string LinkNotMovedAcrossDrives = "This is a link to another folder. Links can't be moved to another drive, so it was left where it is";
-    public const string FileLinkNotMovedAcrossDrives = "This is a link to a file. Links can't be moved to another drive, so it was left where it is";
     public const string LinkSkipped = "Skipped: this is a link to another folder.";
     public const string DestinationInsideSource = "The destination is inside the folder being copied, which would copy it into itself";
     public const string SameAsSource = "This is already in the folder you chose";
@@ -40,6 +48,10 @@ public static class CopyMessages
     public const string ChecksumsNotWritten = "The list of checksums couldn't be saved";
     public const string NoFreeName = "Couldn't find a free name for the copy";
     public const string NotRecorded = "This file couldn't be added to the job's record, so it wasn't copied (nothing was written)";
+
+    /// <summary>Free space the job's record needs before a job starts.</summary>
+    public static string JournalNoSpace(string drive) =>
+        $"There isn't enough free space on {drive} to keep track of this job (Ferry needs at least 50 MB there), so nothing was copied";
 
     /// <summary>Destination drive (or share) of a path, as people know it, e.g. "D:".</summary>
     public static string DriveOf(string path)

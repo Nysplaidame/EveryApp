@@ -16,7 +16,7 @@ internal sealed class TreePlanner(IFileSystem fs, JobSpec spec, IReadOnlySet<str
 
     /// <summary>Warnings let the copy go ahead: Ferry can still write the item, other programs may struggle with it.</summary>
     public static bool IsBlocking(PreflightIssue issue) =>
-        issue.Code is not (PreflightCode.PathTooLong or PreflightCode.TrailingDotOrSpace or PreflightCode.FreeSpaceUnknown);
+        issue.Code is not (PreflightCode.PathTooLong or PreflightCode.TrailingDotOrSpace or PreflightCode.FreeSpaceUnknown or PreflightCode.ZoneMarkerNotKept);
 
     /// <summary>Refuses a destination inside a folder being copied, or an item that is already where it would go. Judged by on-disk identity.</summary>
     public void CheckOverlap()
@@ -61,8 +61,11 @@ internal sealed class TreePlanner(IFileSystem fs, JobSpec spec, IReadOnlySet<str
         return false;
     }
 
-    /// <summary>Lists every source and puts the work in order: each folder before its contents, small files first within a folder.</summary>
-    public List<TreeRoot> Plan(FileEntry? destinationEntry)
+    /// <summary>
+    /// Lists every source and puts the work in order: each folder before its contents, small files first within a folder. "Same volume" is
+    /// decided by volume GUID (<paramref name="destinationVolume"/>), never by drive letter or serial number; unknown means another volume.
+    /// </summary>
+    public List<TreeRoot> Plan(string? destinationVolume)
     {
         var roots = new List<TreeRoot>();
         for (var index = 0; index < spec.Sources.Count; index++)
@@ -93,7 +96,8 @@ internal sealed class TreePlanner(IFileSystem fs, JobSpec spec, IReadOnlySet<str
                 continue; // moved as a whole before a crash
             }
 
-            var sameVolume = destinationEntry is not null && entry.VolumeSerial == destinationEntry.VolumeSerial;
+            var sameVolume = destinationVolume is not null
+                && string.Equals(fs.GetVolumeId(source), destinationVolume, StringComparison.OrdinalIgnoreCase);
             if (_isMove && isFolder && !sameVolume && TreePaths.IsNameSurrogate(entry))
             {
                 outcome.Problems.Add(new Problem(TreePaths.Display(source), IoErrorKind.None, CopyMessages.LinkNotMovedAcrossDrives));
@@ -110,9 +114,14 @@ internal sealed class TreePlanner(IFileSystem fs, JobSpec spec, IReadOnlySet<str
 
                 items.AddRange(Walk(source, key, index));
             }
+            else if (FileKind(entry) is { } kind)
+            {
+                items.Add(new TreeItem(kind, entry, key, rootJournalKey));
+            }
             else
             {
-                items.Add(new TreeItem(TreeItemKind.File, entry, key, rootJournalKey));
+                outcome.Problems.Add(new Problem(TreePaths.Display(source), IoErrorKind.None, CopyMessages.FileLinkSkipped));
+                continue;
             }
 
             var byRename = _isMove && sameVolume && isFolder && key.Length > 0 && _options.Exclude.Count == 0
@@ -155,9 +164,13 @@ internal sealed class TreePlanner(IFileSystem fs, JobSpec spec, IReadOnlySet<str
             {
                 folders.Add(Item(TreeItemKind.Folder, w));
             }
+            else if (FileKind(w.Entry) is { } kind)
+            {
+                AddTo(kind == TreeItemKind.Link ? links : files, Item(kind, w));
+            }
             else
             {
-                AddTo(files, Item(TreeItemKind.File, w));
+                outcome.Problems.Add(new Problem(TreePaths.Display(w.Entry.FullPath), IoErrorKind.None, CopyMessages.FileLinkSkipped));
             }
         }
 
@@ -183,6 +196,26 @@ internal sealed class TreePlanner(IFileSystem fs, JobSpec spec, IReadOnlySet<str
         }
 
         return ordered;
+    }
+
+    /// <summary>
+    /// How a file is handled. A link to a file (name surrogate) is never followed by a move (it moves as the link itself) and is skipped by a
+    /// copy unless the person asked to follow links (null = skip and list). Other reparse files, such as cloud placeholders and deduplicated
+    /// files, are ordinary data.
+    /// </summary>
+    private TreeItemKind? FileKind(FileEntry entry)
+    {
+        if (!TreePaths.IsNameSurrogate(entry))
+        {
+            return TreeItemKind.File;
+        }
+
+        if (_isMove)
+        {
+            return TreeItemKind.Link;
+        }
+
+        return _options.FollowReparsePoints ? TreeItemKind.File : null;
     }
 
     private void OnSkip(WalkSkip skip) =>
@@ -255,7 +288,7 @@ internal sealed class TreePlanner(IFileSystem fs, JobSpec spec, IReadOnlySet<str
             }
         }
 
-        return new CopyResult(copied, skipped, outcome.Failed, [.. outcome.Problems], [.. outcome.Issues], AllVerified: false) { Plan = plan };
+        return new CopyResult(copied, skipped, outcome.Failed, outcome.Problems.Items, [.. outcome.Issues], AllVerified: false) { Plan = plan, MoreProblems = outcome.Problems.More };
     }
 
     private (PlannedAction Action, string Target) PlanFile(FileEntry source, string target)

@@ -21,6 +21,9 @@ public enum PreflightCode
     /// folder being copied or moved, or is the very item being copied, judged by on-disk identity rather than by path text.
     /// </summary>
     DestinationInsideSource,
+
+    /// <summary>A warning (once per job): the destination drive (FAT or exFAT) can't keep the "downloaded from the internet" marker on files.</summary>
+    ZoneMarkerNotKept,
 }
 
 /// <summary>One problem found before copying. <paramref name="Message"/> is plain language for non-technical people.</summary>

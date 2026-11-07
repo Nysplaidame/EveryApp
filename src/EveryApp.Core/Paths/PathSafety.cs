@@ -15,6 +15,23 @@ public static class PathSafety
     /// directory. <c>\\?\</c> input is never resolved, so it also returns false when it holds a <c>.</c> or <c>..</c> segment, an empty segment or
     /// a <c>/</c>. This is a text check: it does not look at links on disk.
     /// </summary>
+    /// <summary>
+    /// For two final paths (as Windows resolved them): true when <paramref name="candidate"/> is <paramref name="root"/> or inside it, with the
+    /// comparison stopping at a separator so <c>C:\dst2</c> is not inside <c>C:\dst</c>. Case-insensitive; no other normalisation.
+    /// </summary>
+    public static bool IsSameOrUnderFinal(string root, string candidate)
+    {
+        ArgumentNullException.ThrowIfNull(root);
+        ArgumentNullException.ThrowIfNull(candidate);
+        var r = root.TrimEnd('\\');
+        if (candidate.Length == r.Length)
+        {
+            return candidate.Equals(r, StringComparison.OrdinalIgnoreCase);
+        }
+
+        return candidate.Length > r.Length && candidate[r.Length] == '\\' && candidate.StartsWith(r, StringComparison.OrdinalIgnoreCase);
+    }
+
     public static bool IsWithin(string root, string candidate)
     {
         if (root is null || candidate is null)

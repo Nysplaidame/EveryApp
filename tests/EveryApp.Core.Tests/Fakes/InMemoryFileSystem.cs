@@ -11,6 +11,7 @@ public sealed class InMemoryFileSystem : IFileSystem
 {
     private readonly object _lock = new();
     private readonly Dictionary<string, Node> _nodes = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, HashSet<string>> _children = new(StringComparer.OrdinalIgnoreCase);
     private ulong _nextId = 1;
     private const string LongPrefix = @"\\?\";
 
@@ -36,6 +37,18 @@ public sealed class InMemoryFileSystem : IFileSystem
 
     /// <summary>When set, <see cref="CopySecurity"/> throws it (e.g. AccessDenied to simulate a missing privilege).</summary>
     public FileSystemException? CopySecurityException { get; set; }
+
+    /// <summary>What <see cref="CopySecurity"/> reports when it succeeds (to simulate a missing privilege or a lock-out revert).</summary>
+    public SecurityCopyResult CopySecurityResult { get; set; } = SecurityCopyResult.Copied;
+
+    /// <summary>When set, <see cref="CopyAlternateStreams"/> throws it.</summary>
+    public FileSystemException? CopyStreamsException { get; set; }
+
+    /// <summary>Volume GUID per drive letter. A letter not listed has a volume of its own; two letters with the same id are one volume (like SUBST).</summary>
+    public Dictionary<char, string> VolumeIds { get; } = [];
+
+    /// <summary>Returns an exception to throw for a rename (after the volume check), or null to let it through.</summary>
+    public Func<string, string, Exception?>? OnMove { get; set; }
 
     /// <summary>Test helper: sets a file's or folder's permissions, modelled as an opaque text.</summary>
     public void SetSecurity(string path, string security)
@@ -89,7 +102,7 @@ public sealed class InMemoryFileSystem : IFileSystem
                 node.Attributes |= FileAttributes.ReparsePoint;
             }
 
-            _nodes[key] = node;
+            Put(key, node);
         }
     }
 
@@ -113,7 +126,7 @@ public sealed class InMemoryFileSystem : IFileSystem
             node.Attributes = FileAttributes.Directory | FileAttributes.ReparsePoint;
             node.Tag = reparseTag;
             node.TargetKey = targetDirectory is null ? null : Key(targetDirectory);
-            _nodes[key] = node;
+            Put(key, node);
         }
     }
 
@@ -179,7 +192,7 @@ public sealed class InMemoryFileSystem : IFileSystem
         ArgumentOutOfRangeException.ThrowIfNegative(preallocate);
         lock (_lock)
         {
-            var key = Key(path);
+            var key = ResolveKey(Key(path)); // through junctions, like Windows
             RequireParent(path, key);
             if (_nodes.ContainsKey(key))
             {
@@ -192,7 +205,7 @@ public sealed class InMemoryFileSystem : IFileSystem
             }
 
             var node = NewNode(key, isDirectory: false);
-            _nodes[key] = node;
+            Put(key, node);
             return new WriteHandle(this, node, unbuffered, preallocate);
         }
     }
@@ -233,10 +246,8 @@ public sealed class InMemoryFileSystem : IFileSystem
             var shown = requested.EndsWith('\\') ? requested : requested + "\\";
             var source = dir.TargetKey is null ? dir : Get(dir.TargetKey);
             var prefix = source.Key.EndsWith('\\') ? source.Key : source.Key + "\\";
-            var list = _nodes.Values
-                .Where(n => n.Key.Length > prefix.Length
-                    && n.Key.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
-                    && n.Key.IndexOf('\\', prefix.Length) < 0)
+            var list = (_children.TryGetValue(source.Key.TrimEnd('\\').Length == 2 ? source.Key.TrimEnd('\\') + "\\" : source.Key, out var keys) ? keys : [])
+                .Select(k => _nodes[k])
                 .OrderBy(n => n.Key, StringComparer.OrdinalIgnoreCase)
                 .Select(n => ToEntry(n, shown + n.Key[prefix.Length..]))
                 .Concat(dir.Injected)
@@ -267,7 +278,7 @@ public sealed class InMemoryFileSystem : IFileSystem
     {
         lock (_lock)
         {
-            EnsureDirectories(Key(path));
+            EnsureDirectories(ResolveKey(Key(path)));
         }
     }
 
@@ -278,6 +289,15 @@ public sealed class InMemoryFileSystem : IFileSystem
             var src = Get(source);
             var toKey = Key(destination);
             RequireParent(destination, toKey);
+            if (!string.Equals(VolumeIdOf(src.Key), VolumeIdOf(toKey), StringComparison.OrdinalIgnoreCase))
+            {
+                throw Fail(destination, IoErrorKind.NotSameDevice); // a rename never crosses volumes
+            }
+
+            if (OnMove?.Invoke(source, destination) is { } injected)
+            {
+                throw injected;
+            }
             if (_nodes.TryGetValue(toKey, out var target))
             {
                 if (!overwrite || target.IsDirectory || src.IsDirectory)
@@ -287,19 +307,31 @@ public sealed class InMemoryFileSystem : IFileSystem
             }
 
             var fromKey = src.Key; // captured: the loop below renames src itself
-            var moved = _nodes.Where(kv => kv.Key.Equals(fromKey, StringComparison.OrdinalIgnoreCase)
-                    || kv.Key.StartsWith(fromKey + "\\", StringComparison.OrdinalIgnoreCase))
-                .ToList();
+            var moved = new List<KeyValuePair<string, Node>>();
+            var pending = new Stack<string>([fromKey]);
+            while (pending.Count > 0)
+            {
+                var k = pending.Pop();
+                moved.Add(new(k, _nodes[k]));
+                if (_children.TryGetValue(k, out var kids))
+                {
+                    foreach (var kid in kids)
+                    {
+                        pending.Push(kid);
+                    }
+                }
+            }
+
             foreach (var kv in moved)
             {
-                _nodes.Remove(kv.Key);
+                RemoveKey(kv.Key);
             }
 
             foreach (var kv in moved)
             {
                 var newKey = toKey + kv.Key[fromKey.Length..];
                 kv.Value.Key = newKey;
-                _nodes[newKey] = kv.Value;
+                Put(newKey, kv.Value);
             }
         }
     }
@@ -314,7 +346,7 @@ public sealed class InMemoryFileSystem : IFileSystem
                 throw Fail(path, IoErrorKind.Other);
             }
 
-            _nodes.Remove(node.Key);
+            RemoveKey(node.Key);
         }
     }
 
@@ -333,7 +365,7 @@ public sealed class InMemoryFileSystem : IFileSystem
 
     public int GetSectorSize(string path) => SectorSize;
 
-    public void CopySecurity(string source, string target)
+    public SecurityCopyResult CopySecurity(string source, string target)
     {
         lock (_lock)
         {
@@ -344,22 +376,91 @@ public sealed class InMemoryFileSystem : IFileSystem
                 throw ex;
             }
 
-            to.Security = from.Security;
+            to.Security = CopySecurityResult == SecurityCopyResult.Reverted ? null : from.Security;
+            return CopySecurityResult;
         }
     }
 
-    public void CopyAlternateStreams(string source, string target)
+    public void CopyAlternateStreams(string source, string target, bool allStreams, CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
         lock (_lock)
         {
             var from = Get(source);
             var to = Get(target);
+            if (CopyStreamsException is { } ex)
+            {
+                throw ex;
+            }
+
             foreach (var (name, data) in from.Streams)
             {
-                to.Streams[name] = data.ToArray();
+                var accepted = System.Text.RegularExpressions.Regex.IsMatch(name, @"^:[^:\\/]+:\$DATA$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                if (accepted && (allStreams || name.Equals(":Zone.Identifier:$DATA", StringComparison.OrdinalIgnoreCase)))
+                {
+                    to.Streams[name] = data.ToArray();
+                }
             }
         }
     }
+
+    public string GetFinalPath(string path)
+    {
+        lock (_lock)
+        {
+            var node = Get(path);
+            return LongForm(ResolveKey(node.Key));
+        }
+    }
+
+    public string? GetVolumeId(string path) => VolumeIdOf(Key(path));
+
+    public bool DeleteVerified(
+        string path, UInt128 expectedFileId, ulong expectedVolumeSerial, long expectedLength, DateTime expectedLastWriteUtc, string? mustBeUnder)
+    {
+        lock (_lock)
+        {
+            var node = Get(path);
+            if (node.IsDirectory || node.FileId != expectedFileId || node.VolumeSerial != expectedVolumeSerial || node.Length != expectedLength
+                || node.LastWriteTimeUtc != expectedLastWriteUtc || !IsUnder(node, mustBeUnder))
+            {
+                return false;
+            }
+
+            RemoveKey(node.Key);
+            return true;
+        }
+    }
+
+    public bool DeleteEmptyFolderVerified(string path, UInt128 expectedFileId, ulong expectedVolumeSerial, string? mustBeUnder)
+    {
+        lock (_lock)
+        {
+            var node = Get(path);
+            if (!node.IsDirectory || node.FileId != expectedFileId || node.VolumeSerial != expectedVolumeSerial || !IsUnder(node, mustBeUnder)
+                || (node.TargetKey is null && _children.TryGetValue(node.Key, out var kids) && kids.Count > 0))
+            {
+                return false;
+            }
+
+            RemoveKey(node.Key);
+            return true;
+        }
+    }
+
+    private bool IsUnder(Node node, string? root)
+    {
+        if (root is null)
+        {
+            return true;
+        }
+
+        var r = ResolveKey(Get(root).Key).TrimEnd('\\');
+        var k = node.TargetKey is null ? ResolveKey(node.Key) : node.Key; // a link is judged by where it sits, not where it points
+        return k.Equals(r, StringComparison.OrdinalIgnoreCase) || k.StartsWith(r + "\\", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string LongForm(string key) => key.StartsWith(@"\\", StringComparison.Ordinal) ? @"\\?\UNC\" + key[2..] : @"\\?\" + key;
 
     public bool TryCloneBlocks(string source, string target)
     {
@@ -398,12 +499,70 @@ public sealed class InMemoryFileSystem : IFileSystem
             var node = NewNode(key, isDirectory: false);
             node.Data = from.Data.AsSpan(0, from.Length).ToArray();
             node.Length = from.Length;
-            _nodes[key] = node;
+            Put(key, node);
             return true;
         }
     }
 
     private static bool SameDrive(string a, string b) => a.Length > 0 && b.Length > 0 && char.ToUpperInvariant(a[0]) == char.ToUpperInvariant(b[0]);
+
+    private void Put(string key, Node node)
+    {
+        _nodes[key] = node;
+        var parent = ParentOf(key);
+        if (parent.Length > 0 && !parent.Equals(key, StringComparison.OrdinalIgnoreCase))
+        {
+            if (!_children.TryGetValue(parent, out var set))
+            {
+                _children[parent] = set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            }
+
+            set.Add(key);
+        }
+    }
+
+    private void RemoveKey(string key)
+    {
+        _nodes.Remove(key);
+        if (_children.TryGetValue(ParentOf(key), out var set))
+        {
+            set.Remove(key);
+        }
+    }
+
+    /// <summary>The key with every junction on the way replaced by its target (what Windows would call the final path).</summary>
+    private string ResolveKey(string key)
+    {
+        for (var depth = 0; depth < 40; depth++)
+        {
+            var changed = false;
+            for (var cut = key.IndexOf('\\', 3); ; cut = key.IndexOf('\\', cut + 1))
+            {
+                var prefix = cut < 0 ? key : key[..cut];
+                if (_nodes.TryGetValue(prefix, out var n) && n.TargetKey is not null)
+                {
+                    key = n.TargetKey + key[prefix.Length..];
+                    changed = true;
+                    break;
+                }
+
+                if (cut < 0)
+                {
+                    break;
+                }
+            }
+
+            if (!changed)
+            {
+                return key;
+            }
+        }
+
+        throw Fail(key, IoErrorKind.NotFound);
+    }
+
+    private string VolumeIdOf(string key) =>
+        key.Length > 0 && VolumeIds.TryGetValue(char.ToUpperInvariant(key[0]), out var id) ? id : $@"\\?\Volume{{fake-{char.ToUpperInvariant(key.Length > 0 ? key[0] : '?')}}}\";
 
     private static string Key(string path)
     {
@@ -462,7 +621,7 @@ public sealed class InMemoryFileSystem : IFileSystem
         if (IsRoot(key))
         {
             node = NewNode(key.EndsWith('\\') ? key : key + "\\", isDirectory: true);
-            _nodes[key] = node;
+            Put(key, node);
             return node;
         }
 
@@ -516,7 +675,7 @@ public sealed class InMemoryFileSystem : IFileSystem
         }
 
         EnsureDirectories(ParentOf(key));
-        _nodes[key] = NewNode(key, isDirectory: true);
+        Put(key, NewNode(key, isDirectory: true));
     }
 
     private static FileEntry ToEntry(Node n) => ToEntry(n, n.Key);
@@ -592,6 +751,7 @@ public sealed class InMemoryFileSystem : IFileSystem
         private bool _disposed;
         private int _logical; // end of the data written so far
         private bool _needsTrim;
+        private bool _deleteOnClose;
 
         public WriteHandle(InMemoryFileSystem fs, Node node, bool unbuffered, long preallocate)
         {
@@ -676,10 +836,30 @@ public sealed class InMemoryFileSystem : IFileSystem
             {
                 Trim();
                 _disposed = true;
+                if (_deleteOnClose)
+                {
+                    lock (fs._lock)
+                    {
+                        if (fs._nodes.TryGetValue(node.Key, out var current) && ReferenceEquals(current, node))
+                        {
+                            fs.RemoveKey(node.Key);
+                        }
+                    }
+                }
             }
 
             return ValueTask.CompletedTask;
         }
+
+        public string GetFinalPath()
+        {
+            lock (fs._lock)
+            {
+                return LongForm(node.Key);
+            }
+        }
+
+        public void DeleteOnClose() => _deleteOnClose = true;
 
         private void Trim()
         {

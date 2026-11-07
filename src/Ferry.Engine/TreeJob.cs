@@ -10,6 +10,9 @@ namespace Ferry.Engine;
 /// </summary>
 internal sealed class TreeJob
 {
+    /// <summary>Free space the journal's drive must have before a job starts.</summary>
+    internal const long JournalSpaceFloor = 50L * 1024 * 1024;
+
     private readonly TreeCopier _owner;
     private readonly Guid _jobId;
     private readonly JobSpec _spec;
@@ -25,9 +28,13 @@ internal sealed class TreeJob
     private readonly ResumeRecovery _recovery;
     private readonly TreeMover _mover;
     private readonly ChecksumWriter _checksums;
-    private readonly List<(FileEntry Source, string Target)> _createdFolders = [];
-    private readonly List<string> _sourceFolders = [];
+    private readonly List<(FileEntry Source, string Target, bool LocalDrives)> _createdFolders = [];
+    private readonly List<(FileEntry Entry, string Root)> _sourceFolders = [];
+    private string? _destinationFinal;
+    private bool _keepsStreams;
     private bool _clone;
+    private bool _sameVolume;
+    private bool _localDrives;
 
     public TreeJob(TreeCopier owner, Guid jobId, JobSpec spec, JobJournal? journal, PauseGate pause, IProgress<JobProgress> sink, CancellationToken ct)
     {
@@ -70,14 +77,14 @@ internal sealed class TreeJob
 
         // ---- Checking: overlap, walk, pre-flight. Nothing is written in this phase.
         var planner = new TreePlanner(_fs, _spec, _recovery.Completed, _outcome);
-        var destinationEntry = TreePaths.NearestExisting(_fs, _destination);
+        var destinationVolume = _fs.GetVolumeId(_destination);
         planner.CheckOverlap();
         if (_outcome.Issues.Count > 0)
         {
             return _outcome.ToResult(stopped: true, refused: true);
         }
 
-        var roots = planner.Plan(destinationEntry);
+        var roots = planner.Plan(destinationVolume);
         planner.RunPreflight(roots, _progress, _owner.DestinationInfo);
         if (_outcome.Issues.Any(TreePlanner.IsBlocking))
         {
@@ -88,6 +95,14 @@ internal sealed class TreeJob
         if (_options.DryRun)
         {
             return planner.DryRun(roots);
+        }
+
+        // ---- The job's record needs room: refuse up front rather than fail half way with a journal that cannot grow.
+        if (_owner.DestinationInfo.FreeBytes(_owner.JobsDir) is { } free && free < JournalSpaceFloor)
+        {
+            var drive = (Path.GetPathRoot(Path.GetFullPath(_owner.JobsDir)) ?? _owner.JobsDir).TrimEnd('\\');
+            _outcome.Problems.Add(new Problem(drive, IoErrorKind.DiskFull, CopyMessages.JournalNoSpace(drive)));
+            return _outcome.ToResult(stopped: true, refused: true);
         }
 
         // ---- Wait for every drive involved (all sources and the destination), keep awake, journal: all before the first write.
@@ -107,6 +122,7 @@ internal sealed class TreeJob
             try
             {
                 _fs.CreateDirectory(_destination);
+                _destinationFinal = _fs.GetFinalPath(_destination); // every part file must end up under this
             }
             catch (FileSystemException ex)
             {
@@ -114,6 +130,8 @@ internal sealed class TreeJob
                 return _outcome.ToResult(stopped: true, refused: true);
             }
 
+            _keepsStreams = !(fileSystem.Equals("FAT32", StringComparison.OrdinalIgnoreCase) || fileSystem.Equals("exFAT", StringComparison.OrdinalIgnoreCase)
+                || fileSystem.Equals("FAT", StringComparison.OrdinalIgnoreCase));
             _recovery.DeleteJournaledParts();
             _progress.SetPhase("Copying");
 
@@ -124,15 +142,18 @@ internal sealed class TreeJob
                     break;
                 }
 
-                _clone = !_isMove && fileSystem.Equals("ReFS", StringComparison.OrdinalIgnoreCase)
-                    && destinationEntry is not null && root.Entry.VolumeSerial == destinationEntry.VolumeSerial;
+                var rootOnDestinationVolume = destinationVolume is not null
+                    && string.Equals(_fs.GetVolumeId(root.Path), destinationVolume, StringComparison.OrdinalIgnoreCase);
+                _clone = !_isMove && rootOnDestinationVolume && fileSystem.Equals("ReFS", StringComparison.OrdinalIgnoreCase);
+                _sameVolume = root.SameVolume;
+                _localDrives = _owner.DestinationInfo.IsFixedLocalDrive(root.Path) && _owner.DestinationInfo.IsFixedLocalDrive(_destination);
                 await ProcessRootAsync(root).ConfigureAwait(false);
             }
 
             FinishFolders();
             if (_options.ExportChecksums)
             {
-                _checksums.Write(_ct);
+                _checksums.Write(_destinationFinal, _ct);
             }
 
             if (!_outcome.Stopped)
@@ -155,11 +176,17 @@ internal sealed class TreeJob
         if (root.MoveByRename)
         {
             var files = root.Items.Where(i => i.Kind == TreeItemKind.File).ToList();
-            _mover.MoveWhole(root.Entry.FullPath, root.Key, root.JournalKey, files.Count, files.Sum(i => i.Entry.Length));
-            return;
+            if (_mover.MoveWhole(root.Entry.FullPath, root.Key, root.JournalKey, files.Count, files.Sum(i => i.Entry.Length)) != MoveOutcome.NotSameDevice)
+            {
+                return;
+            }
+
+            _sameVolume = false; // Windows says another volume after all: copy and verify item by item
         }
 
-        var skipUnder = new List<string>();
+        // Counted once per root (not once per folder), and skipped folders kept in a set: no quadratic work on huge trees.
+        var counts = CountFiles(root);
+        var skipped = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var item in root.Items)
         {
             if (_outcome.Stopped)
@@ -168,7 +195,7 @@ internal sealed class TreeJob
             }
 
             _ct.ThrowIfCancellationRequested();
-            if (skipUnder.Exists(prefix => item.Key.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)))
+            if (IsInside(item.Key, skipped))
             {
                 continue;
             }
@@ -176,14 +203,14 @@ internal sealed class TreeJob
             switch (item.Kind)
             {
                 case TreeItemKind.Folder:
-                    if (!ProcessFolder(root, item))
+                    if (!ProcessFolder(root, item, counts))
                     {
-                        skipUnder.Add(item.Key + "\\");
+                        skipped.Add(item.Key);
                     }
 
                     break;
                 case TreeItemKind.Link:
-                    _mover.MoveLink(root, item);
+                    _mover.MoveLink(_sameVolume, item);
                     break;
                 default:
                     await ProcessFileAsync(root, item).ConfigureAwait(false);
@@ -192,12 +219,60 @@ internal sealed class TreeJob
         }
     }
 
-    /// <summary>Returns false when the folder's contents must be skipped (they moved with it, or it could not be created).</summary>
-    private bool ProcessFolder(TreeRoot root, TreeItem item)
+    /// <summary>Files and bytes under every folder key of the root (each file adds to each of its ancestors).</summary>
+    private static Dictionary<string, (int Files, long Bytes)> CountFiles(TreeRoot root)
+    {
+        var counts = new Dictionary<string, (int Files, long Bytes)>(StringComparer.OrdinalIgnoreCase);
+        foreach (var item in root.Items)
+        {
+            if (item.Kind != TreeItemKind.File)
+            {
+                continue;
+            }
+
+            for (var folder = Path.GetDirectoryName(item.Key); !string.IsNullOrEmpty(folder); folder = Path.GetDirectoryName(folder))
+            {
+                var (files, bytes) = counts.GetValueOrDefault(folder);
+                counts[folder] = (files + 1, bytes + item.Entry.Length);
+            }
+        }
+
+        return counts;
+    }
+
+    private static bool IsInside(string key, HashSet<string> folders)
+    {
+        if (folders.Count == 0)
+        {
+            return false;
+        }
+
+        for (var folder = Path.GetDirectoryName(key); !string.IsNullOrEmpty(folder); folder = Path.GetDirectoryName(folder))
+        {
+            if (folders.Contains(folder))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>Returns false when the folder's contents must be skipped (they moved with it, it is a link, or it could not be created).</summary>
+    private bool ProcessFolder(TreeRoot root, TreeItem item, Dictionary<string, (int Files, long Bytes)> counts)
     {
         var target = Path.Combine(_destination, item.Key);
         var existing = TreePaths.TryGet(_fs, target, follow: false);
-        var (files, bytes) = CountUnder(root, item.Key);
+        var (files, bytes) = counts.GetValueOrDefault(item.Key);
+        if (existing is not null && TreePaths.IsNameSurrogate(existing))
+        {
+            // Never write through a link that is already in the destination: it could lead anywhere.
+            _outcome.Failed += files;
+            _outcome.Problems.Add(new Problem(TreePaths.Display(target), IoErrorKind.None, CopyMessages.DestinationFolderIsLink));
+            _progress.CompleteFiles(files, bytes);
+            return false;
+        }
+
         if (existing is not null && !existing.Attributes.HasFlag(FileAttributes.Directory))
         {
             _outcome.Failed += files;
@@ -206,15 +281,19 @@ internal sealed class TreeJob
             return false;
         }
 
-        if (existing is null && root.SameVolume && _options.Exclude.Count == 0 && item.Key != root.Key)
+        if (existing is null && _sameVolume && _options.Exclude.Count == 0 && item.Key != root.Key)
         {
-            _mover.MoveWhole(item.Entry.FullPath, item.Key, item.JournalKey, files, bytes);
-            return false;
+            if (_mover.MoveWhole(item.Entry.FullPath, item.Key, item.JournalKey, files, bytes) != MoveOutcome.NotSameDevice)
+            {
+                return false;
+            }
+
+            _sameVolume = false; // copy and verify from here on
         }
 
         if (_isMove)
         {
-            _sourceFolders.Insert(0, item.Entry.FullPath); // deepest first when removing emptied folders
+            _sourceFolders.Add((item.Entry, root.Path)); // removed deepest first at the end, only if empty and still the same folder
         }
 
         if (existing is not null)
@@ -225,7 +304,7 @@ internal sealed class TreeJob
         try
         {
             _fs.CreateDirectory(target);
-            _createdFolders.Add((item.Entry, target));
+            _createdFolders.Add((item.Entry, target, _localDrives));
             return true;
         }
         catch (FileSystemException ex)
@@ -235,13 +314,6 @@ internal sealed class TreeJob
             _progress.CompleteFiles(files, bytes);
             return false;
         }
-    }
-
-    private static (int Files, long Bytes) CountUnder(TreeRoot root, string folderKey)
-    {
-        var prefix = folderKey + "\\";
-        var files = root.Items.Where(i => i.Kind == TreeItemKind.File && i.Key.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)).ToList();
-        return (files.Count, files.Sum(i => i.Entry.Length));
     }
 
     private async Task ProcessFileAsync(TreeRoot root, TreeItem item)
@@ -256,13 +328,7 @@ internal sealed class TreeJob
         _progress.StartFile(item.Key);
         try
         {
-            if (_isMove && !root.SameVolume && TreePaths.IsNameSurrogate(entry))
-            {
-                _outcome.Problems.Add(new Problem(TreePaths.Display(entry.FullPath), IoErrorKind.None, CopyMessages.FileLinkNotMovedAcrossDrives));
-                return;
-            }
-
-            if (!root.SameVolume && await TryRecoverAsync(item).ConfigureAwait(false))
+            if (!_sameVolume && await TryRecoverAsync(item, root).ConfigureAwait(false))
             {
                 return;
             }
@@ -302,14 +368,17 @@ internal sealed class TreeJob
                 }
             }
 
-            if (root.SameVolume)
+            if (_sameVolume)
             {
-                _mover.MoveFile(item, target, replace);
+                if (_mover.MoveFile(item, target, replace) != MoveOutcome.NotSameDevice)
+                {
+                    return;
+                }
+
+                _sameVolume = false; // the rename was refused as crossing volumes: copy and verify instead (never an unverified copy)
             }
-            else
-            {
-                await CopyFileAsync(item, target, targetKey, replace).ConfigureAwait(false);
-            }
+
+            await CopyFileAsync(root, item, target, targetKey, replace).ConfigureAwait(false);
         }
         finally
         {
@@ -318,12 +387,28 @@ internal sealed class TreeJob
     }
 
     /// <summary>Copies one file with retries; on success applies permissions, deletes the source of a move, and journals it done.</summary>
-    private async Task CopyFileAsync(TreeItem item, string target, string targetKey, bool replace)
+    private async Task CopyFileAsync(TreeRoot root, TreeItem item, string target, string targetKey, bool replace)
     {
         var entry = item.Entry;
         var source = entry.FullPath;
         var options = CopierOptions;
         var targetFolderKey = Path.GetDirectoryName(targetKey) ?? string.Empty;
+
+        // For a move: the source as it is right now (from its handle); it is deleted later only if it is still exactly this.
+        FileEntry? expected = null;
+        if (_isMove)
+        {
+            try
+            {
+                expected = _fs.GetEntry(source);
+            }
+            catch (FileSystemException ex)
+            {
+                Fail(item, new Problem(TreePaths.Display(source), ex.Kind, CopyMessages.For(ex.Kind, whileWriting: false, CopyMessages.DriveOf(_destination))));
+                return;
+            }
+        }
+
         FileCopyOutcome outcome;
         var verifyFailed = false;
         var warnings = new List<Problem>();
@@ -339,6 +424,7 @@ internal sealed class TreeJob
                     TreePaths.Combine(targetFolderKey, Path.GetFileName(part)), targetKey)),
                 ReplaceExisting = replace,
                 TryBlockClone = _clone,
+                MustBeUnder = _destinationFinal,
                 BeforeCommit = async (part, hash, token) =>
                 {
                     if (options.Verify)
@@ -363,14 +449,20 @@ internal sealed class TreeJob
                         }
                     }
 
-                    if (_options.CopyAlternateStreams)
+                    // The "downloaded from the internet" marker always travels with the file; other streams only when asked.
+                    if (_keepsStreams)
                     {
                         try
                         {
-                            _fs.CopyAlternateStreams(source, part);
+                            _fs.CopyAlternateStreams(source, part, allStreams: _options.CopyAlternateStreams, token);
                         }
                         catch (FileSystemException ex)
                         {
+                            if (_isMove)
+                            {
+                                return new Problem(source, ex.Kind, CopyMessages.StreamsNotCopiedOriginalKept); // never lose the marker by moving
+                            }
+
                             warnings.Add(new Problem(TreePaths.Display(source), ex.Kind, CopyMessages.StreamsNotCopied));
                         }
                     }
@@ -408,21 +500,10 @@ internal sealed class TreeJob
             _outcome.Problems.Add(warning with { Path = TreePaths.Display(warning.Path) });
         }
 
-        if (_options.CopyPermissions)
+        CopyPermissions(source, target);
+        if (expected is not null)
         {
-            CopyPermissions(source, target);
-        }
-
-        if (_isMove)
-        {
-            try
-            {
-                _fs.Delete(source); // only now: the copy is complete and matched
-            }
-            catch (FileSystemException ex)
-            {
-                _outcome.Problems.Add(new Problem(TreePaths.Display(source), ex.Kind, CopyMessages.OriginalNotRemoved));
-            }
+            DeleteSource(source, expected, root.Path); // only now: the copy is complete and matched
         }
 
         var hex = outcome.SourceHash is null ? null : Convert.ToHexStringLower(outcome.SourceHash);
@@ -438,12 +519,38 @@ internal sealed class TreeJob
     private static bool IsWorthRetrying(IoErrorKind kind) =>
         kind is IoErrorKind.BadBlock or IoErrorKind.NetworkLost or IoErrorKind.SharingViolation or IoErrorKind.Other;
 
+    /// <summary>Deletes a moved file's source through a handle, only if it is still the very file that was copied and verified.</summary>
+    private void DeleteSource(string source, FileEntry expected, string sourceRoot)
+    {
+        try
+        {
+            if (!_fs.DeleteVerified(source, expected.FileId, expected.VolumeSerial, expected.Length, expected.LastWriteTimeUtc, sourceRoot))
+            {
+                _outcome.Problems.Add(new Problem(TreePaths.Display(source), IoErrorKind.None, CopyMessages.OriginalChanged));
+            }
+        }
+        catch (FileSystemException ex)
+        {
+            _outcome.Problems.Add(new Problem(TreePaths.Display(source), ex.Kind, CopyMessages.OriginalNotRemoved));
+        }
+    }
+
     /// <summary>
     /// A file renamed into place just before a crash (its recorded target holds exactly the source's data): re-apply metadata and
     /// permissions, finish a move, journal it done.
     /// </summary>
-    private async Task<bool> TryRecoverAsync(TreeItem item)
+    private async Task<bool> TryRecoverAsync(TreeItem item, TreeRoot root)
     {
+        FileEntry before;
+        try
+        {
+            before = _fs.GetEntry(item.Entry.FullPath);
+        }
+        catch (FileSystemException)
+        {
+            return false;
+        }
+
         if (await _recovery.FindCommittedAsync(item, _options.HashAlgorithm, _ct).ConfigureAwait(false) is not { } found)
         {
             return false;
@@ -464,14 +571,10 @@ internal sealed class TreeJob
             return false;
         }
 
-        if (_options.CopyPermissions)
-        {
-            CopyPermissions(item.Entry.FullPath, target);
-        }
-
+        CopyPermissions(item.Entry.FullPath, target);
         if (_isMove)
         {
-            TreePaths.TryDelete(_fs, item.Entry.FullPath); // the content was just checked against the recorded target
+            DeleteSource(item.Entry.FullPath, before, root.Path); // the content was just checked against the recorded target
         }
 
         var hex = Convert.ToHexStringLower(found.Hash);
@@ -486,11 +589,23 @@ internal sealed class TreeJob
         return true;
     }
 
-    private void CopyPermissions(string source, string target)
+    /// <summary>Copies permissions when asked, only between this PC's fixed drives (elsewhere they could widen access or mean nothing).</summary>
+    private void CopyPermissions(string source, string target, bool? localDrives = null)
     {
+        if (!_options.CopyPermissions)
+        {
+            return;
+        }
+
+        if (!(localDrives ?? _localDrives))
+        {
+            _outcome.PermissionsNotLocal(target);
+            return;
+        }
+
         try
         {
-            _fs.CopySecurity(source, target);
+            _outcome.PermissionOutcome(target, _fs.CopySecurity(source, target));
         }
         catch (FileSystemException ex)
         {
@@ -522,7 +637,7 @@ internal sealed class TreeJob
     {
         for (var i = _createdFolders.Count - 1; i >= 0; i--)
         {
-            var (source, target) = _createdFolders[i];
+            var (source, target, localDrives) = _createdFolders[i];
             if (_options.KeepDatesAndAttributes)
             {
                 var attributes = (source.Attributes & FileCopier.CopiedAttributes & ~FileAttributes.ReadOnly) | FileAttributes.Directory;
@@ -536,16 +651,22 @@ internal sealed class TreeJob
                 }
             }
 
-            if (_options.CopyPermissions)
-            {
-                CopyPermissions(source.FullPath, target);
-            }
+            CopyPermissions(source.FullPath, target, localDrives);
         }
 
-        foreach (var folder in _sourceFolders)
+        // Deepest first. Only an empty folder that is still the one walked goes (checked and deleted through one handle); anything
+        // excluded, failed or left as a link keeps its folder.
+        for (var i = _sourceFolders.Count - 1; i >= 0; i--)
         {
-            // Only empty folders go (Delete never removes contents): anything excluded, failed or left as a link keeps its folder.
-            TreePaths.TryDelete(_fs, folder);
+            var (entry, root) = _sourceFolders[i];
+            try
+            {
+                _fs.DeleteEmptyFolderVerified(entry.FullPath, entry.FileId, entry.VolumeSerial, root);
+            }
+            catch (FileSystemException)
+            {
+                // Already gone or not ours to remove: nothing to do.
+            }
         }
     }
 

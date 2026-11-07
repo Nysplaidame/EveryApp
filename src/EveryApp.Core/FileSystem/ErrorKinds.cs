@@ -24,6 +24,7 @@ public static class ErrorKinds
             23 or 27 or 29 or 30 or 483 or 1117 or 1392 or 1393 => IoErrorKind.BadBlock, // CRC, sector, write/read fault, device errors, corrupt file/disk
             53 or 55 or 59 or 64 or 67 or 121 or 1231 or 1236 => IoErrorKind.NetworkLost,
             80 or 183 => IoErrorKind.AlreadyExists,                // file exists / already exists
+            17 => IoErrorKind.NotSameDevice,                       // a rename cannot cross volumes
             206 => IoErrorKind.PathTooLong,
             123 or 161 or 267 => IoErrorKind.InvalidName,
             _ => IoErrorKind.Other,

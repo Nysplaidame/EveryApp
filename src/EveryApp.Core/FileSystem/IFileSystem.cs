@@ -21,6 +21,28 @@ public interface IWriteHandle : IAsyncDisposable
     ValueTask SetLengthAsync(long length);
 
     ValueTask FlushAsync();
+
+    /// <summary>Where this open file really is, as Windows resolved it (every link followed), in the canonical <c>\\?\</c> form.</summary>
+    string GetFinalPath();
+
+    /// <summary>
+    /// Deletes the file through this handle when it closes (the handle carries delete access). The name is never looked up again, so a link
+    /// swapped in meanwhile cannot redirect the delete.
+    /// </summary>
+    void DeleteOnClose();
+}
+
+/// <summary>How <see cref="IFileSystem.CopySecurity"/> went. Every outcome leaves the file readable and changeable by the current user.</summary>
+public enum SecurityCopyResult
+{
+    /// <summary>The (filtered) permissions and the owner were copied.</summary>
+    Copied,
+
+    /// <summary>The (filtered) permissions were copied, but the owner could not be set (that needs rights the user does not have).</summary>
+    OwnerNotKept,
+
+    /// <summary>The copied permissions would have locked the user out, so the file was put back to the permissions its folder passes down.</summary>
+    Reverted,
 }
 
 /// <summary>
@@ -52,6 +74,10 @@ public interface IFileSystem
 
     void CreateDirectory(string path);
 
+    /// <summary>
+    /// Renames a file or folder (a link is renamed itself, never followed). Never copies: across volumes it throws
+    /// <see cref="IoErrorKind.NotSameDevice"/> and changes nothing.
+    /// </summary>
     void Move(string source, string destination, bool overwrite);
 
     /// <summary>Deletes a file or an empty directory (a junction or symlink is removed itself, never followed). Throws NotFound when missing.</summary>
@@ -64,17 +90,41 @@ public interface IFileSystem
     int GetSectorSize(string path);
 
     /// <summary>
-    /// Gives <paramref name="target"/> the permissions of <paramref name="source"/>: its explicit access entries, whether it blocks inheritance,
-    /// and its owner when that differs. Entries inherited from the new parent folder stay as Windows computes them. Throws
-    /// <see cref="IoErrorKind.AccessDenied"/> when this needs rights the user does not have (for example setting another owner).
+    /// Gives <paramref name="target"/> the permissions of <paramref name="source"/>, filtered so they can never be wider than safe: explicit
+    /// entries for unknown or foreign accounts, OWNER RIGHTS, and allow entries that let Everyone, Users, Authenticated Users or Anonymous
+    /// change the item are left out. Owner and access list are written in one step (never half applied); if the owner cannot be set the
+    /// access list alone is written. If the result would lock the current user out, the item is put back to inherited permissions.
     /// </summary>
-    void CopySecurity(string source, string target);
+    SecurityCopyResult CopySecurity(string source, string target);
 
     /// <summary>
-    /// Copies every extra named data stream (alternate data stream) of the file <paramref name="source"/> onto the file <paramref name="target"/>.
-    /// <paramref name="target"/> must be a file this job created (a part file): an existing stream of the same name on it is replaced.
+    /// Copies named data streams of the file <paramref name="source"/> onto the file <paramref name="target"/> (a part file this job created;
+    /// a stream of the same name on it is replaced). With <paramref name="allStreams"/> false only the "downloaded from the internet" marker
+    /// (<c>Zone.Identifier</c>) is copied. Only names of the form <c>:name:$DATA</c> are accepted; anything else is ignored.
     /// </summary>
-    void CopyAlternateStreams(string source, string target);
+    void CopyAlternateStreams(string source, string target, bool allStreams, CancellationToken ct);
+
+    /// <summary>Where the item really is (every link followed), in the canonical <c>\\?\</c> form. Throws when it does not exist.</summary>
+    string GetFinalPath(string path);
+
+    /// <summary>
+    /// The volume GUID path (<c>\\?\Volume{...}\</c>) of the volume holding <paramref name="path"/> (which need not exist yet), or null when
+    /// it cannot be told (network share, SUBST drive): callers must then treat it as another volume.
+    /// </summary>
+    string? GetVolumeId(string path);
+
+    /// <summary>
+    /// Deletes a file only if it is still the one expected: opened without following links, its id, volume, length and last-write time must
+    /// match, and its final path must be under <paramref name="mustBeUnder"/> (when given). Deletes through that same handle. Returns false,
+    /// deleting nothing, on any mismatch; throws for I/O failures.
+    /// </summary>
+    bool DeleteVerified(string path, UInt128 expectedFileId, ulong expectedVolumeSerial, long expectedLength, DateTime expectedLastWriteUtc, string? mustBeUnder);
+
+    /// <summary>
+    /// Deletes a folder only if it is empty and still the one expected (id and volume, under <paramref name="mustBeUnder"/>), through the
+    /// handle that checked it. A link is removed itself, never followed. Returns false, deleting nothing, otherwise.
+    /// </summary>
+    bool DeleteEmptyFolderVerified(string path, UInt128 expectedFileId, ulong expectedVolumeSerial, string? mustBeUnder);
 
     /// <summary>
     /// Creates the NEW file <paramref name="target"/> sharing the data blocks of <paramref name="source"/> (block cloning: ReFS, same volume only).
