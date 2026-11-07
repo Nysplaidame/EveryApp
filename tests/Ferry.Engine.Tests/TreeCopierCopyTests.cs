@@ -38,7 +38,7 @@ public sealed class TreeCopierCopyTests : TreeCopierTestBase
         using var journal = JobJournal.Open(_rig.JobsDir, id);
         Assert.True(journal.IsFinished);
         Assert.Equal(3, journal.CompletedPaths.Count);
-        Assert.Contains(@"src\sub\deep\c.bin", journal.CompletedPaths);
+        Assert.Contains(@"0\src\sub\deep\c.bin", journal.CompletedPaths); // keyed by source index, then the path in the destination
     }
 
     [Fact]

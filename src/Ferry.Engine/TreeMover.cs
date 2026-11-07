@@ -10,12 +10,12 @@ internal sealed class TreeMover(
     IFileSystem fs, string destination, JobOutcome outcome, JobJournalWriter journal, ProgressTracker progress, Action<TreeItem, Problem> fail)
 {
     /// <summary>One rename for a whole folder. Its files then count as moved.</summary>
-    public void MoveWhole(string source, string key, int files, long bytes)
+    public void MoveWhole(string source, string key, string journalKey, int files, long bytes)
     {
         try
         {
             fs.Move(source, Path.Combine(destination, key), overwrite: false);
-            journal.Done(key, 0, DateTime.UtcNow, null);
+            journal.Done(journalKey, 0, DateTime.UtcNow, null);
             outcome.Copied += files;
         }
         catch (FileSystemException ex)
@@ -52,26 +52,16 @@ internal sealed class TreeMover(
         }
     }
 
-    /// <summary>Same-drive move of one file to <paramref name="target"/>, replacing an existing file when <paramref name="replace"/> (ReadOnly cleared first).</summary>
-    public void MoveFile(TreeItem item, string target, bool replace, string? keepOldAs)
+    /// <summary>
+    /// Same-drive move of one file to <paramref name="target"/>, replacing an existing file when <paramref name="replace"/> (ReadOnly cleared
+    /// first). An existing file is otherwise never touched (KeepBoth and Rename give the incoming file a new name instead).
+    /// </summary>
+    public void MoveFile(TreeItem item, string target, bool replace)
     {
         var source = item.Entry.FullPath;
         try
         {
-            if (keepOldAs is not null)
-            {
-                fs.Move(target, keepOldAs, overwrite: false);
-                try
-                {
-                    fs.Move(source, target, overwrite: false);
-                }
-                catch (FileSystemException)
-                {
-                    TryMoveBack(keepOldAs, target);
-                    throw;
-                }
-            }
-            else if (replace)
+            if (replace)
             {
                 var old = fs.GetEntry(target);
                 if (old.Attributes.HasFlag(FileAttributes.ReadOnly))
@@ -95,24 +85,11 @@ internal sealed class TreeMover(
             }
 
             outcome.Copied++;
-            journal.Done(item.Key, item.Entry.Length, item.Entry.LastWriteTimeUtc, null);
+            journal.Done(item.JournalKey, item.Entry.Length, item.Entry.LastWriteTimeUtc, null);
         }
         catch (FileSystemException ex)
         {
             fail(item, new Problem(TreePaths.Display(source), ex.Kind, WriteMessage(ex.Kind)));
-        }
-    }
-
-    /// <summary>Puts a file back where it was; a failure is listed (nothing is lost, only the name is different).</summary>
-    public void TryMoveBack(string from, string to)
-    {
-        try
-        {
-            fs.Move(from, to, overwrite: false);
-        }
-        catch (FileSystemException ex)
-        {
-            outcome.Problems.Add(new Problem(TreePaths.Display(from), ex.Kind, WriteMessage(ex.Kind)));
         }
     }
 

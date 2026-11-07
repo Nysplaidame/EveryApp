@@ -172,6 +172,10 @@ public sealed class FileCopier
         {
             return Failed(source, IoErrorKind.Other, CopyMessages.SourceChanged, part);
         }
+        catch (PartNotRecordedException)
+        {
+            return Failed(source, IoErrorKind.InvalidName, CopyMessages.NotRecorded, null); // nothing was created; retrying cannot help
+        }
         catch (FileSystemException ex) when (!ct.IsCancellationRequested)
         {
             var atPart = part is not null && SamePath(ex.Path, part);
@@ -262,7 +266,7 @@ public sealed class FileCopier
     private string? TryClone(string source, string destination, FileCopyHooks hooks)
     {
         var part = NewPartPath(destination);
-        hooks.PartChosen?.Invoke(part);
+        Announce(hooks, part);
         return _fs.TryCloneBlocks(source, part) ? part : null;
     }
 
@@ -359,6 +363,15 @@ public sealed class FileCopier
         return p.StartsWith(@"\\?\", StringComparison.Ordinal) ? p[4..] : p;
     }
 
+    /// <summary>Tells the caller the part name before the file exists; a refusal stops the copy before anything is created.</summary>
+    private static void Announce(FileCopyHooks? hooks, string part)
+    {
+        if (hooks?.PartChosen is { } chosen && !chosen(part))
+        {
+            throw new PartNotRecordedException();
+        }
+    }
+
     /// <summary>
     /// Creates this attempt's part file, <c>&lt;destination&gt;.&lt;8 random hex&gt;.ferrypart</c>. The random name means a concurrent job or a
     /// crashed earlier attempt can never share it, and nothing that already exists is ever deleted or reused (stale parts are cleaned up from
@@ -370,7 +383,7 @@ public sealed class FileCopier
         for (var attempt = 1; ; attempt++)
         {
             var part = NewPartPath(destination);
-            hooks?.PartChosen?.Invoke(part); // the job journals the name before the file exists
+            Announce(hooks, part); // the job journals the name before the file exists
             try
             {
                 return (_fs.CreateWrite(part, length, unbuffered), part);
@@ -460,6 +473,15 @@ public sealed class FileCopier
     }
 
     private readonly record struct Chunk(AlignedBuffer Buffer, long Offset, int Length);
+
+    /// <summary>The caller refused a part-file name (it could not journal it), so no part file may be created.</summary>
+    private sealed class PartNotRecordedException : Exception
+    {
+        public PartNotRecordedException()
+            : base(CopyMessages.NotRecorded)
+        {
+        }
+    }
 
     /// <summary>The source ended early or grew while it was read.</summary>
     private sealed class SourceChangedException : Exception

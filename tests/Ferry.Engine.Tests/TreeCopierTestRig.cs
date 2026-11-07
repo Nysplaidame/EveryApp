@@ -212,6 +212,9 @@ internal sealed class RecordingFileSystem(IFileSystem inner) : IFileSystem
     /// <summary>Returns an exception to throw for a write to (path, offset), or null.</summary>
     public Func<string, long, Exception?>? OnWrite { get; set; }
 
+    /// <summary>Returns an exception to throw for opening (path, unbuffered) to read, or null.</summary>
+    public Func<string, bool, Exception?>? OnOpenRead { get; set; }
+
     /// <summary>Runs after a file is created by CreateWrite.</summary>
     public Action<string>? AfterCreateWrite { get; set; }
 
@@ -259,6 +262,11 @@ internal sealed class RecordingFileSystem(IFileSystem inner) : IFileSystem
     public IReadHandle OpenRead(string path, bool unbuffered)
     {
         Add($"OpenRead {Plain(path)}{(unbuffered ? " unbuffered" : string.Empty)}");
+        if (OnOpenRead?.Invoke(path, unbuffered) is { } ex)
+        {
+            throw ex;
+        }
+
         return inner.OpenRead(path, unbuffered);
     }
 

@@ -43,7 +43,11 @@ public enum ConflictRule
     Overwrite,
     OverwriteIfNewer,
     Skip,
+
+    /// <summary>The incoming file gets the next free name, "name (2).ext"; the existing file is never touched.</summary>
     Rename,
+
+    /// <summary>Same as <see cref="Rename"/> (Explorer's "keep both files"): the existing file keeps its name and content, the copy gets "name (2).ext".</summary>
     KeepBoth,
 }
 

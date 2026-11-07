@@ -67,6 +67,32 @@ public sealed class TreeCopierProgressTests : TreeCopierTestBase
     }
 
     [Fact]
+    public async Task Scheduler_CoversEverySource_NotJustTheFirst()
+    {
+        AddText(@"C:\a\x.txt", "x");
+        AddText(@"E:\b\y.txt", "y");
+        _rig.Devices.Map(@"C:\a", "disk-c").Map(@"E:\b", "disk-e").Map(@"D:\dst", "disk-d").Map(@"E:\other", "disk-e");
+        var other = await _rig.Scheduler.AcquireAsync(@"E:\other", @"E:\other", Ct); // another job busy on the second source's disk only
+        var progress = new ListProgress();
+        var waiting = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        progress.OnReport = p =>
+        {
+            if (p.Phase == "Waiting")
+            {
+                waiting.TrySetResult();
+            }
+        };
+
+        var run = Task.Run(() => _rig.RunAsync([@"C:\a", @"E:\b"], @"D:\dst", progress: progress), Ct);
+        await waiting.Task.WaitAsync(TimeSpan.FromSeconds(10), Ct);
+        Assert.Equal(0, _rig.Fs.Count("CreateWrite"));
+        await other.DisposeAsync();
+        var result = await run.WaitAsync(TimeSpan.FromSeconds(10), Ct);
+
+        Assert.Equal(2, result.Copied);
+    }
+
+    [Fact]
     public async Task Run_PreventsSleepWhileActive()
     {
         Add(@"C:\src\a.bin", 100);

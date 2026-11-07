@@ -16,8 +16,11 @@ public sealed record FileCopyOutcome(bool Success, byte[]? SourceHash, Problem? 
 /// <summary>Optional hooks for <see cref="FileCopier.CopyAsync(string, string, CopyOptions, Jobs.PauseGate, IProgress{FileProgress}, FileCopyHooks?, CancellationToken)"/>.</summary>
 public sealed class FileCopyHooks
 {
-    /// <summary>Called with each part-file path BEFORE that file is created (a name clash means more than one call), so a job can journal it.</summary>
-    public Action<string>? PartChosen { get; init; }
+    /// <summary>
+    /// Called with each part-file path BEFORE that file is created (a name clash means more than one call), so a job can journal it. Return
+    /// false when the name could not be recorded: the copy then fails with <see cref="CopyMessages.NotRecorded"/> and no part file is created.
+    /// </summary>
+    public Func<string, bool>? PartChosen { get; init; }
 
     /// <summary>
     /// Called once the part file is complete, flushed and the right size, just before it takes the real name, with the source hash (null when

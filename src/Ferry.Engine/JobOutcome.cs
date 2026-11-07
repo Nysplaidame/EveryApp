@@ -15,7 +15,11 @@ internal sealed class JobOutcome(bool verifyOn)
 
     public int Failed { get; set; }
 
-    public bool VerifyMismatch { get; set; }
+    /// <summary>Files whose copy was read back and matched (or, on resume, found to match).</summary>
+    public int Verified { get; set; }
+
+    /// <summary>A copy failed its check, or could not be read back to check it.</summary>
+    public bool VerifyFailed { get; set; }
 
     public bool Stopped { get; set; }
 
@@ -23,9 +27,12 @@ internal sealed class JobOutcome(bool verifyOn)
 
     public List<PreflightIssue> Issues { get; } = [];
 
-    /// <summary>AllVerified: verification was on, no copy failed its check, and the job got past its checks (a refused job verified nothing).</summary>
+    /// <summary>
+    /// AllVerified: verification was on, the job got past its checks, nothing failed its check or could not be read back, and every file
+    /// copied this run was verified (at least one). Same-drive moves are renames that read nothing back, so they do not count as verified.
+    /// </summary>
     public CopyResult ToResult(bool stopped, bool refused = false) =>
-        new(Copied, Skipped, Failed, [.. Problems], [.. Issues], AllVerified: verifyOn && !VerifyMismatch && !refused)
+        new(Copied, Skipped, Failed, [.. Problems], [.. Issues], AllVerified: verifyOn && !refused && !VerifyFailed && Verified > 0 && Verified == Copied)
         {
             Stopped = stopped,
         };
@@ -59,6 +66,28 @@ internal sealed class JobJournalWriter(JobJournal? journal)
         catch (ArgumentException)
         {
             // A name the journal cannot hold safely: the file is simply redone on resume (copies never land half-written).
+        }
+    }
+
+    /// <summary>
+    /// Appends a record that MUST be in the journal before the caller goes on (a part-file name). False when the journal refused it (an unsafe
+    /// name, or a journal that failed earlier): the caller must then not create the file.
+    /// </summary>
+    public bool TryAppend(JournalRecord record)
+    {
+        if (Journal is null)
+        {
+            return true;
+        }
+
+        try
+        {
+            Journal.Append(record);
+            return true;
+        }
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException)
+        {
+            return false;
         }
     }
 

@@ -14,34 +14,105 @@ public sealed class TreeCopierMoveTests : TreeCopierTestBase
     public async Task Move_SameVolume_UsesRenameNotCopy()
     {
         var a = Bytes(100, 1);
+        var b = Bytes(50, 2);
         _rig.Mem.AddFile(@"C:\src\a.bin", a);
-        Add(@"C:\src\sub\b.bin", 50);
+        _rig.Mem.AddFile(@"C:\src\sub\b.bin", b);
 
         var result = await _rig.RunAsync([@"C:\src"], @"C:\dst", mode: CopyMode.Move);
 
         Assert.Equal(2, result.Copied);
-        Assert.True(result.AllVerified);
+        Assert.False(result.AllVerified, "A rename reads nothing back, so nothing was verified.");
         Assert.Equal(0, _rig.Fs.Count("CreateWrite"));
         Assert.Equal(a, _rig.Mem.ReadAllBytes(@"C:\dst\src\a.bin"));
-        Assert.True(_rig.Mem.Exists(@"C:\dst\src\sub\b.bin"));
+        Assert.Equal(b, _rig.Mem.ReadAllBytes(@"C:\dst\src\sub\b.bin"));
         Assert.False(_rig.Mem.Exists(@"C:\src"));
     }
 
     [Fact]
     public async Task Move_SameVolume_IntoExistingFolder_RenamesEachItem()
     {
-        Add(@"C:\src\a.bin", 100);
-        Add(@"C:\src\sub\b.bin", 50);
-        Add(@"C:\dst\src\keep.bin", 10);
+        var a = Bytes(100, 1);
+        var b = Bytes(50, 2);
+        var keep = Bytes(10, 3);
+        _rig.Mem.AddFile(@"C:\src\a.bin", a);
+        _rig.Mem.AddFile(@"C:\src\sub\b.bin", b);
+        _rig.Mem.AddFile(@"C:\dst\src\keep.bin", keep);
 
         var result = await _rig.RunAsync([@"C:\src"], @"C:\dst", mode: CopyMode.Move);
 
         Assert.Equal(2, result.Copied);
         Assert.Equal(0, _rig.Fs.Count("CreateWrite"));
-        Assert.True(_rig.Mem.Exists(@"C:\dst\src\a.bin"));
-        Assert.True(_rig.Mem.Exists(@"C:\dst\src\sub\b.bin"));
-        Assert.True(_rig.Mem.Exists(@"C:\dst\src\keep.bin"));
+        Assert.Equal(a, _rig.Mem.ReadAllBytes(@"C:\dst\src\a.bin"));
+        Assert.Equal(b, _rig.Mem.ReadAllBytes(@"C:\dst\src\sub\b.bin"));
+        Assert.Equal(keep, _rig.Mem.ReadAllBytes(@"C:\dst\src\keep.bin"));
         Assert.False(_rig.Mem.Exists(@"C:\src"), "Emptied source folders are removed.");
+    }
+
+    // ---- moves combined with conflict rules (same drive: C: to C:, other drive: C: to D:)
+
+    [Theory]
+    [InlineData(@"C:\dst")]
+    [InlineData(@"D:\dst")]
+    public async Task Move_ConflictSkip_KeepsSourceAndExisting(string destination)
+    {
+        AddText(@"C:\src\f.txt", "new");
+        AddText(destination + @"\src\f.txt", "old");
+
+        var result = await _rig.RunAsync([@"C:\src"], destination, new CopyOptions { IfExists = ConflictRule.Skip }, CopyMode.Move);
+
+        Assert.Equal(1, result.Skipped);
+        Assert.Equal("new", Text(@"C:\src\f.txt"));
+        Assert.Equal("old", Text(destination + @"\src\f.txt"));
+    }
+
+    [Theory]
+    [InlineData(@"C:\dst")]
+    [InlineData(@"D:\dst")]
+    public async Task Move_ConflictOverwrite_ReplacesExistingAndRemovesSource(string destination)
+    {
+        AddText(@"C:\src\f.txt", "new");
+        AddText(destination + @"\src\f.txt", "old");
+
+        var result = await _rig.RunAsync([@"C:\src"], destination, new CopyOptions { IfExists = ConflictRule.Overwrite }, CopyMode.Move);
+
+        Assert.Equal(1, result.Copied);
+        Assert.Equal("new", Text(destination + @"\src\f.txt"));
+        Assert.False(_rig.Mem.Exists(@"C:\src\f.txt"));
+    }
+
+    [Theory]
+    [InlineData(@"C:\dst", ConflictRule.KeepBoth)]
+    [InlineData(@"D:\dst", ConflictRule.KeepBoth)]
+    [InlineData(@"C:\dst", ConflictRule.Rename)]
+    [InlineData(@"D:\dst", ConflictRule.Rename)]
+    public async Task Move_ConflictKeepBoth_ExistingUntouched_IncomingGetsNumber(string destination, ConflictRule rule)
+    {
+        AddText(@"C:\src\f.txt", "new");
+        AddText(destination + @"\src\f.txt", "old");
+        var existingId = _rig.Mem.GetEntry(destination + @"\src\f.txt").FileId;
+
+        var result = await _rig.RunAsync([@"C:\src"], destination, new CopyOptions { IfExists = rule }, CopyMode.Move);
+
+        Assert.Equal(1, result.Copied);
+        Assert.Equal("old", Text(destination + @"\src\f.txt"));
+        Assert.Equal(existingId, _rig.Mem.GetEntry(destination + @"\src\f.txt").FileId);
+        Assert.Equal("new", Text(destination + @"\src\f (2).txt"));
+        Assert.False(_rig.Mem.Exists(@"C:\src\f.txt"));
+    }
+
+    // TODO(round 2): a cross-drive move of a file link will change behaviour in fix round 2 (security items); this pins today's behaviour.
+    [Fact]
+    public async Task Move_CrossVolume_FileSymlink_CurrentlyLeftInPlace()
+    {
+        _rig.Mem.AddFile(@"C:\src\link.txt", Encoding.UTF8.GetBytes("target data"), reparseTag: 0xA000000C);
+        AddText(@"C:\src\a.txt", "a");
+
+        var result = await _rig.RunAsync([@"C:\src"], @"D:\dst", mode: CopyMode.Move);
+
+        Assert.Equal(1, result.Copied);
+        Assert.Equal(CopyMessages.FileLinkNotMovedAcrossDrives, Assert.Single(result.Problems).Message);
+        Assert.True(_rig.Mem.Exists(@"C:\src\link.txt"));
+        Assert.False(_rig.Mem.Exists(@"D:\dst\src\link.txt"));
     }
 
     [Fact]

@@ -13,7 +13,7 @@ internal sealed class ResumeRecovery
     private readonly IFileSystem _fs;
     private readonly string _destination;
     private readonly IReadOnlySet<string> _completed;
-    private readonly Dictionary<string, List<string>> _partsByKey = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, List<JournalPart>> _partsByKey = new(StringComparer.OrdinalIgnoreCase);
 
     public ResumeRecovery(IFileSystem fs, string destination, JobJournal? journal)
     {
@@ -27,7 +27,7 @@ internal sealed class ResumeRecovery
                 _partsByKey[part.RelativePath] = list = [];
             }
 
-            list.Add(part.PartRelativePath);
+            list.Add(part);
         }
     }
 
@@ -46,31 +46,24 @@ internal sealed class ResumeRecovery
 
             foreach (var part in parts)
             {
-                TreePaths.TryDelete(_fs, Path.Combine(_destination, part));
+                TreePaths.TryDelete(_fs, Path.Combine(_destination, part.PartRelativePath));
             }
         }
     }
 
     /// <summary>
-    /// When this file has a part record and the destination named by it already holds exactly the source's data, returns that destination's
-    /// key and the hash; otherwise null (copy normally).
+    /// When this file has a part record and the target recorded in it (never a name guessed from the part file, which may be shortened)
+    /// already holds exactly the source's data, returns that target's key and the hash; otherwise null (copy normally).
     /// </summary>
     public async Task<(string TargetKey, byte[] Hash)?> FindCommittedAsync(TreeItem item, HashAlgorithmKind algorithm, CancellationToken ct)
     {
-        if (!_partsByKey.TryGetValue(item.Key, out var parts))
+        if (!_partsByKey.TryGetValue(item.JournalKey, out var parts))
         {
             return null;
         }
 
-        const int PartTail = 1 + 8 + 10; // ".<8 hex>.ferrypart"
-        foreach (var part in parts.Distinct(StringComparer.OrdinalIgnoreCase))
+        foreach (var targetKey in parts.Select(p => p.TargetRelativePath).Distinct(StringComparer.OrdinalIgnoreCase))
         {
-            if (part.Length <= PartTail)
-            {
-                continue;
-            }
-
-            var targetKey = part[..^PartTail];
             var target = Path.Combine(_destination, targetKey);
             if (TreePaths.TryGet(_fs, target, follow: false) is not { } existing || existing.Attributes.HasFlag(FileAttributes.Directory) || existing.Length != item.Entry.Length)
             {

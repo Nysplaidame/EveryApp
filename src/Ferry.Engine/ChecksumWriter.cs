@@ -26,7 +26,7 @@ internal sealed class ChecksumWriter(IFileSystem fs, string destination, HashAlg
         }
 
         var part = FileCopier.NewPartPath(target);
-        journal.Append(new JournalRecord(JournalRecordKind.FilePartStarted, Path.GetFileName(target), 0, DateTime.UtcNow, null, Path.GetFileName(part)));
+        journal.Append(new JournalRecord(JournalRecordKind.FilePartStarted, Path.GetFileName(target), 0, DateTime.UtcNow, null, Path.GetFileName(part), Path.GetFileName(target)));
         var data = System.Text.Encoding.UTF8.GetBytes(string.Join('\n', _lines) + "\n");
         var created = false;
         try

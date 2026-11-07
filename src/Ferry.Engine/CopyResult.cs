@@ -55,11 +55,8 @@ public enum PlannedAction
     Replace,
     Skip,
 
-    /// <summary>The copy gets a new name such as "name (2).ext".</summary>
+    /// <summary>The copy gets a new name such as "name (2).ext" (rules Rename and KeepBoth); the existing file is left alone.</summary>
     CopyWithNewName,
-
-    /// <summary>The existing file is renamed to "name (2).ext" and the copy takes the original name.</summary>
-    KeepBoth,
 
     /// <summary>The conflict rule is Ask: the person will be asked.</summary>
     Ask,

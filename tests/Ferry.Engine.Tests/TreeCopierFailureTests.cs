@@ -139,6 +139,50 @@ public sealed class TreeCopierFailureTests : TreeCopierTestBase
     }
 
     [Fact]
+    public async Task Verify_CouldNotReadBack_NotAllVerified()
+    {
+        Add(@"C:\src\a.bin", 300, seed: 1);
+        Add(@"C:\src\b.bin", 400, seed: 2);
+        _rig.Fs.OnOpenRead = (path, unbuffered) =>
+            unbuffered && IsPartOf(path, "b.bin") ? new FileSystemException(path, IoErrorKind.BadBlock, null) : null;
+
+        var result = await _rig.RunAsync([@"C:\src"], @"D:\dst");
+
+        Assert.Equal(1, result.Copied);
+        Assert.Equal(1, result.Failed);
+        Assert.Equal(CopyMessages.VerifyCouldNotRead, Assert.Single(result.Problems).Message);
+        Assert.False(result.AllVerified);
+    }
+
+    [Fact]
+    public async Task Verify_NothingCopied_NotAllVerified()
+    {
+        AddText(@"C:\src\f.txt", "new");
+        AddText(@"D:\dst\src\f.txt", "old");
+
+        var result = await _rig.RunAsync([@"C:\src"], @"D:\dst", new CopyOptions { IfExists = ConflictRule.Skip });
+
+        Assert.Equal(1, result.Skipped);
+        Assert.False(result.AllVerified, "Nothing was read back, so nothing was verified.");
+    }
+
+    [Fact]
+    public async Task PartRecordRefused_FileFails_AndNoPartFileIsWritten()
+    {
+        AddText(@"C:\src\ok.txt", "ok");
+        AddText(@"C:\src\bad:name.txt", "x"); // the journal refuses this name (':'), so its part file must never be created
+
+        var result = await _rig.RunAsync([@"C:\src"], @"D:\dst");
+
+        Assert.Equal(1, result.Copied);
+        Assert.Equal(1, result.Failed);
+        var problem = Assert.Single(result.Problems);
+        Assert.Equal(CopyMessages.NotRecorded, problem.Message);
+        Assert.DoesNotContain(_rig.Fs.Log, l => l.StartsWith("CreateWrite ", StringComparison.Ordinal) && l.Contains("bad:name", StringComparison.Ordinal));
+        Assert.Empty(_rig.PartFiles(@"D:\dst"));
+    }
+
+    [Fact]
     public async Task Verify_ReadsDestinationUnbuffered()
     {
         Add(@"C:\src\a.bin", 3000);

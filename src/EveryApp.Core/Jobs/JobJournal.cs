@@ -234,6 +234,11 @@ public sealed class JobJournal : IDisposable
             return record.Kind == JournalRecordKind.JobStarted && record.Detail is not null && record.RelativePath is null;
         }
 
+        if (record.Kind != JournalRecordKind.FilePartStarted && record.TargetPath is not null)
+        {
+            return false;
+        }
+
         switch (record.Kind)
         {
             case JournalRecordKind.JobStarted:
@@ -245,7 +250,9 @@ public sealed class JobJournal : IDisposable
             case JournalRecordKind.FilePartStarted:
                 return record.RelativePath is not null && IsSafeRelativePath(record.RelativePath)
                     && record.Detail is not null && IsSafeRelativePath(record.Detail)
-                    && record.Detail.EndsWith(PartSuffix, StringComparison.OrdinalIgnoreCase);
+                    && record.Detail.EndsWith(PartSuffix, StringComparison.OrdinalIgnoreCase)
+                    && record.TargetPath is not null && IsSafeRelativePath(record.TargetPath)
+                    && string.Equals(FolderOf(record.Detail), FolderOf(record.TargetPath), StringComparison.OrdinalIgnoreCase);
             default: // JobFinished
                 return record.RelativePath is null || IsSafeRelativePath(record.RelativePath);
         }
@@ -312,7 +319,7 @@ public sealed class JobJournal : IDisposable
             }
             else if (record.Kind == JournalRecordKind.FilePartStarted)
             {
-                _parts.Add(new JournalPart(Normalize(record.RelativePath!), Normalize(record.Detail!)));
+                _parts.Add(new JournalPart(Normalize(record.RelativePath!), Normalize(record.Detail!), Normalize(record.TargetPath!)));
             }
             else if (record.Kind == JournalRecordKind.JobFinished)
             {
@@ -341,6 +348,14 @@ public sealed class JobJournal : IDisposable
         Path.Combine(jobsDir, jobId.ToString("N") + ".journal");
 
     private static string Normalize(string path) => path.Replace('/', '\\');
+
+    /// <summary>The folder part of a relative path ("" for a bare name), with either slash.</summary>
+    private static string FolderOf(string path)
+    {
+        var normal = Normalize(path);
+        var cut = normal.LastIndexOf('\\');
+        return cut < 0 ? string.Empty : normal[..cut];
+    }
 
     private static byte[] BuildLine(JournalRecord record)
     {
@@ -425,7 +440,7 @@ public sealed class JobJournal : IDisposable
                         finished = true;
                         break;
                     case JournalRecordKind.FilePartStarted:
-                        parts.Add(new JournalPart(Normalize(record.RelativePath!), Normalize(record.Detail!)));
+                        parts.Add(new JournalPart(Normalize(record.RelativePath!), Normalize(record.Detail!), Normalize(record.TargetPath!)));
                         break;
                     default:
                         break;

@@ -9,11 +9,14 @@ internal enum TreeItemKind
     Link,
 }
 
-/// <summary>One thing to do. <see cref="Key"/> is the path relative to the destination folder (also the journal key).</summary>
-internal sealed record TreeItem(TreeItemKind Kind, FileEntry Entry, string Key);
+/// <summary>
+/// One thing to do. <see cref="Key"/> is the path relative to the destination folder. <see cref="JournalKey"/> is the same path prefixed with
+/// the source's index (<c>0\photos\a.jpg</c>), so two sources with the same name never share journal records.
+/// </summary>
+internal sealed record TreeItem(TreeItemKind Kind, FileEntry Entry, string Key, string JournalKey);
 
 /// <summary>One source item (file or folder) given by the caller, with its work in order.</summary>
-internal sealed record TreeRoot(string Path, FileEntry Entry, string Key, bool SameVolume, bool MoveByRename, List<TreeItem> Items);
+internal sealed record TreeRoot(string Path, FileEntry Entry, string Key, string JournalKey, bool SameVolume, bool MoveByRename, List<TreeItem> Items);
 
 /// <summary>Small path and file-system helpers shared by the tree-copy components. Lookups never throw.</summary>
 internal static class TreePaths
@@ -75,6 +78,13 @@ internal static class TreePaths
     }
 
     public static string Combine(string folderKey, string relative) => folderKey.Length == 0 ? relative : folderKey + "\\" + relative;
+
+    /// <summary>The journal key of a destination-relative key: the source index first (a drive root's own key is just the index).</summary>
+    public static string JournalKey(int sourceIndex, string key)
+    {
+        var index = sourceIndex.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        return key.Length == 0 ? index : index + "\\" + key;
+    }
 
     public static string Display(string path) => PathDisplay.ToDisplayPath(path);
 }

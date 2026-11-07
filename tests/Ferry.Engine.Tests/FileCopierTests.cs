@@ -369,16 +369,11 @@ public sealed class FileCopierTests
         var dataB = Bytes((6 * MiB) + 5, seed: 31);
         b.AddFile(srcA, dataA);
         b.AddFile(srcB, dataB);
-        using var bothAtMove = new CountdownEvent(2);
         var partsSeenAtMove = 0;
-        b.Hooks.BeforeMove = (_, _) =>
-        {
-            bothAtMove.Signal();
-            if (bothAtMove.Wait(TimeSpan.FromSeconds(10)))
-            {
-                Interlocked.Exchange(ref partsSeenAtMove, b.PartFiles().Count); // both parts are complete and closed right now
-            }
-        };
+
+        // The barrier's post-phase action runs once both copies have arrived and before either is released, so the count cannot race a move.
+        using var bothAtMove = new Barrier(2, _ => partsSeenAtMove = b.PartFiles().Count);
+        b.Hooks.BeforeMove = (_, _) => bothAtMove.SignalAndWait(TimeSpan.FromSeconds(10));
         var copier = new FileCopier(b.Fs, pool);
         var options = new CopyOptions { BufferSizeBytes = 256 * KiB };
 
@@ -563,7 +558,7 @@ public sealed class FileCopierPartNameTests
         var parts = new List<string>();
 
         var outcome = await new FileCopier(b.Fs, pool).CopyAsync(
-            src, dst, new CopyOptions(), new PauseGate(), new LatestProgress(), new FileCopyHooks { PartChosen = parts.Add }, Ct);
+            src, dst, new CopyOptions(), new PauseGate(), new LatestProgress(), new FileCopyHooks { PartChosen = p => { parts.Add(p); return true; } }, Ct);
 
         Assert.True(outcome.Success, outcome.Problem?.Message);
         var part = Assert.Single(parts);
@@ -588,6 +583,24 @@ public sealed class FileCopierPartNameTests
     }
 
     [Fact]
+    public async Task Copy_PartChosenRefuses_NothingIsCreated_AndTheCopyFails()
+    {
+        using var b = Backend.Create(Backend.InMemory);
+        using var pool = new BufferPool();
+        var src = b.PathOf("src.bin");
+        var dst = b.PathOf("dst.bin");
+        b.AddFile(src, [1, 2, 3]);
+
+        var outcome = await new FileCopier(b.Fs, pool).CopyAsync(
+            src, dst, new CopyOptions(), new PauseGate(), new LatestProgress(), new FileCopyHooks { PartChosen = _ => false }, Ct);
+
+        Assert.False(outcome.Success);
+        Assert.Equal(CopyMessages.NotRecorded, outcome.Problem!.Message);
+        Assert.False(b.Exists(dst));
+        Assert.Empty(b.PartFiles());
+    }
+
+    [Fact]
     public async Task Copy_PartChosen_IsCalledBeforeThePartExists()
     {
         using var b = Backend.Create(Backend.InMemory);
@@ -598,7 +611,7 @@ public sealed class FileCopierPartNameTests
 
         await new FileCopier(b.Fs, pool).CopyAsync(
             src, b.PathOf("dst.bin"), new CopyOptions(), new PauseGate(), new LatestProgress(),
-            new FileCopyHooks { PartChosen = p => existedWhenAnnounced = b.Exists(p) }, Ct);
+            new FileCopyHooks { PartChosen = p => { existedWhenAnnounced = b.Exists(p); return true; } }, Ct);
 
         Assert.False(existedWhenAnnounced);
     }

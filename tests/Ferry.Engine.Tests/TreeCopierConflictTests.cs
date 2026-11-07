@@ -103,16 +103,34 @@ public sealed class TreeCopierConflictTests : TreeCopierTestBase
     }
 
     [Fact]
-    public async Task Conflict_KeepBoth_RenamesExistingAndCopies()
+    public async Task Conflict_KeepBoth_ExistingUntouched_IncomingGetsNumber()
     {
         AddText(@"C:\src\f.txt", "new");
         AddText(@"D:\dst\src\f.txt", "old");
+        var existingId = _rig.Mem.GetEntry(@"D:\dst\src\f.txt").FileId;
 
         var result = await _rig.RunAsync([@"C:\src"], @"D:\dst", new CopyOptions { IfExists = ConflictRule.KeepBoth });
 
         Assert.Equal(1, result.Copied);
-        Assert.Equal("new", Text(@"D:\dst\src\f.txt"));
-        Assert.Equal("old", Text(@"D:\dst\src\f (2).txt"));
+        Assert.Equal("old", Text(@"D:\dst\src\f.txt"));
+        Assert.Equal(existingId, _rig.Mem.GetEntry(@"D:\dst\src\f.txt").FileId);
+        Assert.Equal("new", Text(@"D:\dst\src\f (2).txt"));
+        Assert.DoesNotContain(_rig.Fs.Log, l => l.StartsWith(@"Move D:\dst\src\f.txt ", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Conflict_KeepBoth_CancelledMidCopy_ExistingNeverRenamed()
+    {
+        AddText(@"C:\src\f.txt", "new");
+        AddText(@"D:\dst\src\f.txt", "old");
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(Ct);
+        _rig.Fs.AfterCreateWrite = _ => cts.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => _rig.RunAsync([@"C:\src"], @"D:\dst", new CopyOptions { IfExists = ConflictRule.KeepBoth }, ct: cts.Token));
+
+        Assert.Equal("old", Text(@"D:\dst\src\f.txt"));
+        Assert.False(_rig.Mem.Exists(@"D:\dst\src\f (2).txt"));
     }
 
     [Fact]

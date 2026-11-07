@@ -8,7 +8,7 @@ namespace EveryApp.Core.Tests.Jobs;
 /// <summary>Builds well-formed, correctly checksummed journal lines the way a tamperer who knows the format would.</summary>
 internal static class JournalTestHelper
 {
-    public static byte[] ForgeLine(JournalRecordKind kind, string? relativePath, string? detail = null)
+    public static byte[] ForgeLine(JournalRecordKind kind, string? relativePath, string? detail = null, string? targetPath = null)
     {
         var r = JsonSerializer.SerializeToUtf8Bytes(new Dictionary<string, object?>
         {
@@ -18,6 +18,7 @@ internal static class JournalTestHelper
             ["SourceLastWriteUtc"] = DateTime.UnixEpoch,
             ["Hash"] = null,
             ["Detail"] = detail,
+            ["TargetPath"] = targetPath,
         });
         var crc = Crc32.HashToUInt32(r);
         var prefix = Encoding.UTF8.GetBytes("{\"crc\":" + crc + ",\"r\":");

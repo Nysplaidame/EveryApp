@@ -123,7 +123,7 @@ public sealed class TreeCopier
             if (journal.IsFinished)
             {
                 journal.Dispose();
-                return Task.FromResult(new CopyResult(0, 0, 0, [], [], AllVerified: true));
+                return Task.FromResult(new CopyResult(0, 0, 0, [], [], AllVerified: false)); // nothing was verified in this run
             }
 
             var spec = JobSpec.Parse(journal.OptionsJson);

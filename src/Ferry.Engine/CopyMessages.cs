@@ -39,6 +39,7 @@ public static class CopyMessages
     public const string StoppedAfterProblem = "Stopped after a problem, as the settings ask";
     public const string ChecksumsNotWritten = "The list of checksums couldn't be saved";
     public const string NoFreeName = "Couldn't find a free name for the copy";
+    public const string NotRecorded = "This file couldn't be added to the job's record, so it wasn't copied (nothing was written)";
 
     /// <summary>Destination drive (or share) of a path, as people know it, e.g. "D:".</summary>
     public static string DriveOf(string path)

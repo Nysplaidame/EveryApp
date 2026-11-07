@@ -90,8 +90,10 @@ internal sealed class TreeJob
             return planner.DryRun(roots);
         }
 
-        // ---- Wait for the drive, keep awake, journal: all before the first write.
-        var acquire = _owner.Scheduler.AcquireAsync(_spec.Sources[0], _destination, _ct);
+        // ---- Wait for every drive involved (all sources and the destination), keep awake, journal: all before the first write.
+        var devices = _owner.Scheduler.DevicesOf([.. _spec.Sources, _destination]);
+        var label = _spec.Sources.Count == 1 ? $"{_spec.Sources[0]} to {_destination}" : $"{_spec.Sources.Count} items to {_destination}";
+        var acquire = _owner.Scheduler.AcquireAsync(devices, label, _ct);
         if (!acquire.IsCompleted)
         {
             _progress.SetPhase("Waiting");
@@ -153,7 +155,7 @@ internal sealed class TreeJob
         if (root.MoveByRename)
         {
             var files = root.Items.Where(i => i.Kind == TreeItemKind.File).ToList();
-            _mover.MoveWhole(root.Entry.FullPath, root.Key, files.Count, files.Sum(i => i.Entry.Length));
+            _mover.MoveWhole(root.Entry.FullPath, root.Key, root.JournalKey, files.Count, files.Sum(i => i.Entry.Length));
             return;
         }
 
@@ -206,7 +208,7 @@ internal sealed class TreeJob
 
         if (existing is null && root.SameVolume && _options.Exclude.Count == 0 && item.Key != root.Key)
         {
-            _mover.MoveWhole(item.Entry.FullPath, item.Key, files, bytes);
+            _mover.MoveWhole(item.Entry.FullPath, item.Key, item.JournalKey, files, bytes);
             return false;
         }
 
@@ -245,7 +247,7 @@ internal sealed class TreeJob
     private async Task ProcessFileAsync(TreeRoot root, TreeItem item)
     {
         var entry = item.Entry;
-        if (_recovery.Completed.Contains(item.Key))
+        if (_recovery.Completed.Contains(item.JournalKey))
         {
             return;
         }
@@ -269,7 +271,6 @@ internal sealed class TreeJob
             var targetKey = item.Key;
             var existing = TreePaths.TryGet(_fs, target, follow: false);
             var replace = false;
-            string? keepOldAs = null;
             if (existing is not null)
             {
                 if (existing.Attributes.HasFlag(FileAttributes.Directory))
@@ -283,7 +284,7 @@ internal sealed class TreeJob
                     case ConflictRule.Overwrite:
                         replace = true;
                         break;
-                    case ConflictRule.Rename:
+                    case ConflictRule.Rename: // also KeepBoth (R30): the incoming file gets the new name, the existing file is never touched
                         var renamed = NameAllocator.NextFreeName(_fs, target);
                         if (renamed is null)
                         {
@@ -294,29 +295,20 @@ internal sealed class TreeJob
                         target = renamed;
                         targetKey = TreePaths.Combine(Path.GetDirectoryName(item.Key) ?? string.Empty, Path.GetFileName(renamed));
                         break;
-                    case ConflictRule.KeepBoth:
-                        keepOldAs = NameAllocator.NextFreeName(_fs, target);
-                        if (keepOldAs is null)
-                        {
-                            Fail(item, new Problem(TreePaths.Display(entry.FullPath), IoErrorKind.AlreadyExists, CopyMessages.NoFreeName));
-                            return;
-                        }
-
-                        break;
                     default:
                         _outcome.Skipped++;
-                        _journal.Append(new JournalRecord(JournalRecordKind.FileSkipped, item.Key, entry.Length, entry.LastWriteTimeUtc, null, null));
+                        _journal.Append(new JournalRecord(JournalRecordKind.FileSkipped, item.JournalKey, entry.Length, entry.LastWriteTimeUtc, null, null));
                         return;
                 }
             }
 
             if (root.SameVolume)
             {
-                _mover.MoveFile(item, target, replace, keepOldAs);
+                _mover.MoveFile(item, target, replace);
             }
             else
             {
-                await CopyFileAsync(item, target, targetKey, replace, keepOldAs).ConfigureAwait(false);
+                await CopyFileAsync(item, target, targetKey, replace).ConfigureAwait(false);
             }
         }
         finally
@@ -326,24 +318,25 @@ internal sealed class TreeJob
     }
 
     /// <summary>Copies one file with retries; on success applies permissions, deletes the source of a move, and journals it done.</summary>
-    private async Task CopyFileAsync(TreeItem item, string target, string targetKey, bool replace, string? keepOldAs)
+    private async Task CopyFileAsync(TreeItem item, string target, string targetKey, bool replace)
     {
         var entry = item.Entry;
         var source = entry.FullPath;
         var options = CopierOptions;
         var targetFolderKey = Path.GetDirectoryName(targetKey) ?? string.Empty;
         FileCopyOutcome outcome;
-        var mismatch = false;
+        var verifyFailed = false;
         var warnings = new List<Problem>();
         for (var attempt = 0; ; attempt++)
         {
-            mismatch = false;
+            verifyFailed = false;
             warnings.Clear();
-            var oldMoved = false;
             var hooks = new FileCopyHooks
             {
-                PartChosen = part => _journal.Append(new JournalRecord(
-                    JournalRecordKind.FilePartStarted, item.Key, entry.Length, entry.LastWriteTimeUtc, null, TreePaths.Combine(targetFolderKey, Path.GetFileName(part)))),
+                // R29: the part name (and the real name it is for) must be in the journal before the part exists; if it cannot be, no part is made.
+                PartChosen = part => _journal.TryAppend(new JournalRecord(
+                    JournalRecordKind.FilePartStarted, item.JournalKey, entry.Length, entry.LastWriteTimeUtc, null,
+                    TreePaths.Combine(targetFolderKey, Path.GetFileName(part)), targetKey)),
                 ReplaceExisting = replace,
                 TryBlockClone = _clone,
                 BeforeCommit = async (part, hash, token) =>
@@ -355,12 +348,13 @@ internal sealed class TreeJob
                         {
                             if (hash is null || !await Verifier.MatchesAsync(_fs, part, hash, options.HashAlgorithm, token).ConfigureAwait(false))
                             {
-                                mismatch = true;
+                                verifyFailed = true;
                                 return new Problem(source, IoErrorKind.Other, CopyMessages.VerifyMismatch);
                             }
                         }
                         catch (FileSystemException ex)
                         {
+                            verifyFailed = true;
                             return new Problem(source, ex.Kind, CopyMessages.VerifyCouldNotRead);
                         }
                         finally
@@ -381,22 +375,11 @@ internal sealed class TreeJob
                         }
                     }
 
-                    if (keepOldAs is not null)
-                    {
-                        _fs.Move(target, keepOldAs, overwrite: false); // the old file steps aside only once the new one is complete
-                        oldMoved = true;
-                    }
-
                     return null;
                 },
             };
 
             outcome = await _owner.Copier.CopyAsync(source, target, options, _pause, _progress.FileSink(), hooks, _ct).ConfigureAwait(false);
-            if (!outcome.Success && oldMoved)
-            {
-                _mover.TryMoveBack(keepOldAs!, target); // the new copy did not land: the old file gets its name back
-            }
-
             if (outcome.Success || attempt >= TreeCopier.RetryDelays.Length || !IsWorthRetrying(outcome.Problem!.Kind))
             {
                 break;
@@ -408,10 +391,15 @@ internal sealed class TreeJob
 
         if (!outcome.Success)
         {
-            _outcome.VerifyMismatch |= mismatch;
+            _outcome.VerifyFailed |= verifyFailed;
             var p = outcome.Problem!;
             Fail(item, p with { Path = TreePaths.Display(p.Path) });
             return;
+        }
+
+        if (options.Verify)
+        {
+            _outcome.Verified++; // BeforeCommit only lets a matching copy through
         }
 
         _outcome.Problems.AddRange(warnings);
@@ -444,13 +432,16 @@ internal sealed class TreeJob
         }
 
         _outcome.Copied++;
-        _journal.Done(item.Key, entry.Length, entry.LastWriteTimeUtc, hex);
+        _journal.Done(item.JournalKey, entry.Length, entry.LastWriteTimeUtc, hex);
     }
 
     private static bool IsWorthRetrying(IoErrorKind kind) =>
         kind is IoErrorKind.BadBlock or IoErrorKind.NetworkLost or IoErrorKind.SharingViolation or IoErrorKind.Other;
 
-    /// <summary>A file renamed into place just before a crash: re-apply metadata and permissions, finish a move, journal it done.</summary>
+    /// <summary>
+    /// A file renamed into place just before a crash (its recorded target holds exactly the source's data): re-apply metadata and
+    /// permissions, finish a move, journal it done.
+    /// </summary>
     private async Task<bool> TryRecoverAsync(TreeItem item)
     {
         if (await _recovery.FindCommittedAsync(item, _options.HashAlgorithm, _ct).ConfigureAwait(false) is not { } found)
@@ -480,7 +471,7 @@ internal sealed class TreeJob
 
         if (_isMove)
         {
-            TreePaths.TryDelete(_fs, item.Entry.FullPath);
+            TreePaths.TryDelete(_fs, item.Entry.FullPath); // the content was just checked against the recorded target
         }
 
         var hex = Convert.ToHexStringLower(found.Hash);
@@ -490,7 +481,8 @@ internal sealed class TreeJob
         }
 
         _outcome.Copied++;
-        _journal.Done(item.Key, item.Entry.Length, item.Entry.LastWriteTimeUtc, hex);
+        _outcome.Verified++;
+        _journal.Done(item.JournalKey, item.Entry.Length, item.Entry.LastWriteTimeUtc, hex);
         return true;
     }
 
@@ -510,12 +502,18 @@ internal sealed class TreeJob
     {
         _outcome.Failed++;
         _outcome.Problems.Add(problem);
-        _journal.Append(new JournalRecord(JournalRecordKind.FileFailed, item.Key, item.Entry.Length, item.Entry.LastWriteTimeUtc, null, problem.Message));
-        if (_options.IfUnreadable == FailureRule.Stop)
+        _journal.Append(new JournalRecord(JournalRecordKind.FileFailed, item.JournalKey, item.Entry.Length, item.Entry.LastWriteTimeUtc, null, problem.Message));
+        switch (_options.IfUnreadable)
         {
-            // FailureRule.Ask has no question interface yet (M2 UI): it behaves like RetryThenSkipAndList.
-            _outcome.Stopped = true;
-            _outcome.Problems.Add(new Problem(problem.Path, IoErrorKind.None, CopyMessages.StoppedAfterProblem));
+            case FailureRule.Stop:
+                _outcome.Stopped = true;
+                _outcome.Problems.Add(new Problem(problem.Path, IoErrorKind.None, CopyMessages.StoppedAfterProblem));
+                break;
+            case FailureRule.Ask:
+                // No question interface yet (M2 UI): Ask behaves like RetryThenSkipAndList, so the file is listed and the job goes on.
+                break;
+            default:
+                break; // RetryThenSkipAndList: retried already, now listed; the job goes on
         }
     }
 

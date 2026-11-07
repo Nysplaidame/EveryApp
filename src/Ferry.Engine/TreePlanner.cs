@@ -65,8 +65,9 @@ internal sealed class TreePlanner(IFileSystem fs, JobSpec spec, IReadOnlySet<str
     public List<TreeRoot> Plan(FileEntry? destinationEntry)
     {
         var roots = new List<TreeRoot>();
-        foreach (var source in spec.Sources)
+        for (var index = 0; index < spec.Sources.Count; index++)
         {
+            var source = spec.Sources[index];
             FileEntry entry;
             try
             {
@@ -86,7 +87,8 @@ internal sealed class TreePlanner(IFileSystem fs, JobSpec spec, IReadOnlySet<str
                 continue;
             }
 
-            if (key.Length > 0 && completed.Contains(key))
+            var rootJournalKey = TreePaths.JournalKey(index, key);
+            if (key.Length > 0 && completed.Contains(rootJournalKey))
             {
                 continue; // moved as a whole before a crash
             }
@@ -103,25 +105,25 @@ internal sealed class TreePlanner(IFileSystem fs, JobSpec spec, IReadOnlySet<str
             {
                 if (key.Length > 0)
                 {
-                    items.Add(new TreeItem(TreeItemKind.Folder, entry, key));
+                    items.Add(new TreeItem(TreeItemKind.Folder, entry, key, rootJournalKey));
                 }
 
-                items.AddRange(Walk(source, key));
+                items.AddRange(Walk(source, key, index));
             }
             else
             {
-                items.Add(new TreeItem(TreeItemKind.File, entry, key));
+                items.Add(new TreeItem(TreeItemKind.File, entry, key, rootJournalKey));
             }
 
             var byRename = _isMove && sameVolume && isFolder && key.Length > 0 && _options.Exclude.Count == 0
                 && TreePaths.TryGet(fs, Path.Combine(_destination, key), follow: false) is null;
-            roots.Add(new TreeRoot(entry.FullPath, entry, key, _isMove && sameVolume, byRename, items));
+            roots.Add(new TreeRoot(entry.FullPath, entry, key, rootJournalKey, _isMove && sameVolume, byRename, items));
         }
 
         return roots;
     }
 
-    private List<TreeItem> Walk(string root, string rootKey)
+    private List<TreeItem> Walk(string root, string rootKey, int index)
     {
         // A move never follows links, whatever the option says.
         var walker = new TreeWalker(fs, followReparsePoints: !_isMove && _options.FollowReparsePoints, _options.Exclude);
@@ -140,17 +142,22 @@ internal sealed class TreePlanner(IFileSystem fs, JobSpec spec, IReadOnlySet<str
             list.Add(item);
         }
 
-        Action<WalkItem>? onLink = _isMove ? link => AddTo(links, new TreeItem(TreeItemKind.Link, link.Entry, TreePaths.Combine(rootKey, link.RelativePath))) : null;
-        foreach (var w in walker.Walk(root, OnSkip, onLink))
+        TreeItem Item(TreeItemKind kind, WalkItem w)
         {
             var key = TreePaths.Combine(rootKey, w.RelativePath);
+            return new TreeItem(kind, w.Entry, key, TreePaths.JournalKey(index, key));
+        }
+
+        Action<WalkItem>? onLink = _isMove ? link => AddTo(links, Item(TreeItemKind.Link, link)) : null;
+        foreach (var w in walker.Walk(root, OnSkip, onLink))
+        {
             if (w.Entry.Attributes.HasFlag(FileAttributes.Directory))
             {
-                folders.Add(new TreeItem(TreeItemKind.Folder, w.Entry, key));
+                folders.Add(Item(TreeItemKind.Folder, w));
             }
             else
             {
-                AddTo(files, new TreeItem(TreeItemKind.File, w.Entry, key));
+                AddTo(files, Item(TreeItemKind.File, w));
             }
         }
 
@@ -189,7 +196,7 @@ internal sealed class TreePlanner(IFileSystem fs, JobSpec spec, IReadOnlySet<str
         {
             foreach (var item in root.Items)
             {
-                if (item.Kind != TreeItemKind.Link && !completed.Contains(item.Key))
+                if (item.Kind != TreeItemKind.Link && !completed.Contains(item.JournalKey))
                 {
                     items.Add(new WalkItem(item.Entry, item.Key));
                 }
@@ -198,7 +205,7 @@ internal sealed class TreePlanner(IFileSystem fs, JobSpec spec, IReadOnlySet<str
 
         foreach (var root in roots)
         {
-            foreach (var item in root.Items.Where(i => i.Kind == TreeItemKind.File && !completed.Contains(i.Key)))
+            foreach (var item in root.Items.Where(i => i.Kind == TreeItemKind.File && !completed.Contains(i.JournalKey)))
             {
                 progress.AddToTotal(1, item.Entry.Length);
             }
@@ -264,8 +271,7 @@ internal sealed class TreePlanner(IFileSystem fs, JobSpec spec, IReadOnlySet<str
             ConflictRule.Ask => (PlannedAction.Ask, target),
             ConflictRule.Overwrite => (PlannedAction.Replace, target),
             ConflictRule.OverwriteIfNewer => source.LastWriteTimeUtc > existing.LastWriteTimeUtc ? (PlannedAction.Replace, target) : (PlannedAction.Skip, target),
-            ConflictRule.Rename => (PlannedAction.CopyWithNewName, NameAllocator.NextFreeName(fs, target) ?? target),
-            ConflictRule.KeepBoth => (PlannedAction.KeepBoth, target),
+            ConflictRule.Rename or ConflictRule.KeepBoth => (PlannedAction.CopyWithNewName, NameAllocator.NextFreeName(fs, target) ?? target),
             _ => (PlannedAction.Skip, target),
         };
     }

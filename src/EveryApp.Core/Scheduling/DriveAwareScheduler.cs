@@ -39,8 +39,38 @@ public sealed class DriveAwareScheduler
         ArgumentNullException.ThrowIfNull(destination);
         ct.ThrowIfCancellationRequested();
 
-        // Resolved before taking the lock: resolution never runs under it.
-        var devices = _resolver.Resolve(source).Union(_resolver.Resolve(destination));
+        // Resolved before queueing (and never under the lock), so queue order is call order.
+        return await AcquireAsync(DevicesOf([source, destination]), $"{source} to {destination}", ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// The devices behind every path, as one set (for a job with several sources: all sources plus the destination). Resolve before calling
+    /// <see cref="AcquireAsync(DeviceSet, string, CancellationToken)"/> so queue order is call order; the first call for a volume can take a moment.
+    /// </summary>
+    public DeviceSet DevicesOf(IEnumerable<string> paths)
+    {
+        ArgumentNullException.ThrowIfNull(paths);
+        DeviceSet? all = null;
+        foreach (var path in paths)
+        {
+            ArgumentNullException.ThrowIfNull(path);
+            var devices = _resolver.Resolve(path);
+            all = all is null ? devices : all.Union(devices);
+        }
+
+        return all ?? throw new ArgumentException("At least one path is needed.", nameof(paths));
+    }
+
+    /// <summary>
+    /// As the path overload, for an already resolved device set. <paramref name="label"/> is shown when the job has to wait. Same fairness,
+    /// cancellation and disposal rules.
+    /// </summary>
+    public async Task<IAsyncDisposable> AcquireAsync(DeviceSet devices, string label, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(devices);
+        ArgumentNullException.ThrowIfNull(label);
+        ct.ThrowIfCancellationRequested();
+
         var entry = new Entry(devices);
         lock (_gate)
         {
@@ -50,7 +80,7 @@ public sealed class DriveAwareScheduler
 
         if (!entry.Started.Task.IsCompleted)
         {
-            RaiseWaiting($"{source} to {destination}");
+            RaiseWaiting(label);
             if (ct.CanBeCanceled)
             {
                 // Registered after queueing; a token cancelled in between fires the callback immediately.
