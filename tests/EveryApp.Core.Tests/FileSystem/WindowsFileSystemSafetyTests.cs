@@ -284,6 +284,101 @@ public sealed class WindowsFileSystemSafetyTests : IDisposable
         Assert.Empty(Explicit(dst));
     }
 
+    /// <summary>Adds an allow entry with a raw access mask (managed rules refuse generic masks, but the file system stores them).</summary>
+    private static void AddRawAllowAce(FileSystemSecurity security, SecurityIdentifier sid, uint mask, AceFlags flags)
+    {
+        var descriptor = new RawSecurityDescriptor(security.GetSecurityDescriptorBinaryForm(), 0);
+        var acl = descriptor.DiscretionaryAcl ?? new RawAcl(GenericAcl.AclRevision, 1);
+        acl.InsertAce(0, new CommonAce(flags, AceQualifier.AccessAllowed, unchecked((int)mask), sid, false, null));
+        descriptor.DiscretionaryAcl = acl;
+        var bytes = new byte[descriptor.BinaryLength];
+        descriptor.GetBinaryForm(bytes, 0);
+        security.SetSecurityDescriptorBinaryForm(bytes, AccessControlSections.Access);
+    }
+
+    [Theory]
+    [InlineData(0x10000000u)] // GENERIC_ALL
+    [InlineData(0x40000000u)] // GENERIC_WRITE
+    [InlineData(0x02000000u)] // MAXIMUM_ALLOWED
+    public void CopySecurity_GenericRightsForEveryone_AreLeftOut_OnAFile(uint mask)
+    {
+        var src = Path.Combine(_root, "g-src.txt");
+        var dst = Path.Combine(_root, "g-dst.txt");
+        File.WriteAllText(src, "a");
+        File.WriteAllText(dst, "b");
+        var info = new FileInfo(src);
+        var security = info.GetAccessControl(AccessControlSections.Access);
+        AddRawAllowAce(security, Everyone, mask, AceFlags.None);
+        info.SetAccessControl(security);
+
+        _fs.CopySecurity(src, dst);
+
+        Assert.DoesNotContain(Explicit(dst), r => r.IdentityReference.Equals(Everyone));
+    }
+
+    [Theory]
+    [InlineData(0x10000000u)]
+    [InlineData(0x40000000u)]
+    [InlineData(0x02000000u)]
+    public void CopySecurity_GenericRightsForEveryone_AreLeftOut_OnAnInheritOnlyFolderEntry(uint mask)
+    {
+        var src = Path.Combine(_root, "g-srcdir");
+        var dst = Path.Combine(_root, "g-dstdir");
+        Directory.CreateDirectory(src);
+        Directory.CreateDirectory(dst);
+        var info = new DirectoryInfo(src);
+        var security = info.GetAccessControl(AccessControlSections.Access);
+        AddRawAllowAce(security, Everyone, mask, AceFlags.ContainerInherit | AceFlags.ObjectInherit | AceFlags.InheritOnly);
+        info.SetAccessControl(security);
+
+        _fs.CopySecurity(src, dst);
+
+        Assert.DoesNotContain(
+            new DirectoryInfo(dst).GetAccessControl().GetAccessRules(true, false, typeof(SecurityIdentifier)).Cast<FileSystemAccessRule>(),
+            r => r.IdentityReference.Equals(Everyone));
+    }
+
+    [Theory]
+    [InlineData("S-1-5-4")] // INTERACTIVE
+    [InlineData("S-1-5-32-546")] // Guests
+    [InlineData("S-1-5-21-1111-2222-3333-513")] // Domain Users
+    public void BroadGroups_IncludeInteractiveGuestsAndDomainUsers(string sid) =>
+        Assert.True(WindowsFileSystem.IsBroadGroup(new SecurityIdentifier(sid)));
+
+    [Theory]
+    [InlineData("S-1-5-21-1111-2222-3333-1001")]
+    [InlineData("S-1-5-18")]
+    [InlineData("S-1-5-32-544")]
+    public void BroadGroups_DoNotIncludeOrdinaryAccounts(string sid) =>
+        Assert.False(WindowsFileSystem.IsBroadGroup(new SecurityIdentifier(sid)));
+
+    [Fact]
+    public void CopySecurity_RevertStillLocksTheUserOut_ReturnsAWarning()
+    {
+        var folder = Path.Combine(_root, "denied-parent");
+        Directory.CreateDirectory(folder);
+        var dst = Path.Combine(folder, "dst.txt");
+        File.WriteAllText(dst, "b");
+        var src = Path.Combine(_root, "src2.txt");
+        File.WriteAllText(src, "a");
+        var me = WindowsIdentity.GetCurrent().User!;
+
+        // The folder passes a deny-read entry down to files, so going back to inherited permissions cannot help.
+        var dirInfo = new DirectoryInfo(folder);
+        var dirSecurity = dirInfo.GetAccessControl();
+        dirSecurity.AddAccessRule(new FileSystemAccessRule(
+            me, FileSystemRights.ReadData, InheritanceFlags.ObjectInherit, PropagationFlags.InheritOnly, AccessControlType.Deny));
+        dirInfo.SetAccessControl(dirSecurity);
+        var srcInfo = new FileInfo(src);
+        var srcSecurity = srcInfo.GetAccessControl();
+        srcSecurity.AddAccessRule(new FileSystemAccessRule(me, FileSystemRights.ReadData, AccessControlType.Deny));
+        srcInfo.SetAccessControl(srcSecurity);
+
+        var result = _fs.CopySecurity(src, dst);
+
+        Assert.Equal(SecurityCopyResult.StillLockedOut, result);
+    }
+
     [Fact]
     public void ProcessElevation_IsReadable()
     {

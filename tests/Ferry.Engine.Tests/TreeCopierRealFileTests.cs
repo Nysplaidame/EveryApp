@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Security.AccessControl;
 using System.Security.Principal;
 using EveryApp.Core.FileSystem;
@@ -28,7 +29,7 @@ public sealed class TreeCopierRealFileTests : IDisposable
     }
 
     private Task<CopyResult> Run(string source, string destination, CopyOptions options, IFileSystem? fs = null, string? jobs = null) =>
-        new TreeCopier(fs ?? new WindowsFileSystem(), new DriveAwareScheduler(new FakeDeviceResolver()), new ScriptedResolver(), jobs ?? _jobs, new FakeSleepBlocker(), elevation: new FakeElevation())
+        new TreeCopier(fs ?? new WindowsFileSystem(), new DriveAwareScheduler(new FakeDeviceResolver()), new ScriptedResolver(), jobs ?? _jobs, new FakeSleepBlocker(), null, null, new FakeElevation())
             .RunAsync(Guid.NewGuid(), [source], destination, CopyMode.Copy, options, new PauseGate(), new ListProgress(), Ct);
 
     private static bool HasExplicitEveryoneRule(string file) =>
@@ -163,5 +164,75 @@ public sealed class TreeCopierRealFileTests : IDisposable
         {
             Assert.True(EveryApp.Core.Power.KeepAwake.ActiveHolds >= 1);
         }
+    }
+
+    // ---- N2: a link inside the destination cannot redirect what resume deletes or rewrites
+
+    private static void MakeJunction(string link, string target)
+    {
+        using var p = Process.Start(new ProcessStartInfo("cmd.exe", $"/c mklink /J \"{link}\" \"{target}\"")
+        {
+            CreateNoWindow = true,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+        })!;
+        p.WaitForExit();
+        Assert.True(Directory.Exists(link), "Could not create a junction for the test.");
+    }
+
+    /// <summary>A saved job with one part record; the part and its target sit in <paramref name="folder"/> of the destination.</summary>
+    private Guid SavedJobWithPartRecord(string src, string destination, string folder)
+    {
+        var id = Guid.NewGuid();
+        var spec = new JobSpec(JobSpec.CurrentVersion, [src], destination, CopyMode.Copy, new CopyOptions());
+        Directory.CreateDirectory(_jobs);
+        using var journal = JobJournal.Create(_jobs, id, spec.ToJson());
+        journal.Append(new JournalRecord(
+            JournalRecordKind.FilePartStarted, @"0\src\sub\a.txt", 5, DateTime.UtcNow, null,
+            folder + @"\a.txt.0123abcd.ferrypart", folder + @"\a.txt"));
+        return id;
+    }
+
+    private Task<CopyResult> ResumeJob(Guid id) =>
+        new TreeCopier(new WindowsFileSystem(), new DriveAwareScheduler(new FakeDeviceResolver()), new ScriptedResolver(), _jobs, new FakeSleepBlocker(), null, null, new FakeElevation())
+            .ResumeAsync(id, new FakeConfirmation(), new PauseGate(), new ListProgress(), Ct);
+
+    [Fact]
+    public async Task Resume_PartFileBehindADestinationJunction_IsNotDeleted()
+    {
+        var src = Directory.CreateDirectory(Path.Combine(_root, "src")).FullName;
+        File.WriteAllText(Path.Combine(src, "x.txt"), "x");
+        var destination = Directory.CreateDirectory(Path.Combine(_root, "dst")).FullName;
+        var outside = Directory.CreateDirectory(Path.Combine(_root, "outside")).FullName;
+        MakeJunction(Path.Combine(destination, "evil"), outside);
+        var outsidePart = Path.Combine(outside, "a.txt.0123abcd.ferrypart");
+        File.WriteAllText(outsidePart, "not ours to delete");
+        var id = SavedJobWithPartRecord(src, destination, "evil");
+
+        await ResumeJob(id);
+
+        Assert.True(File.Exists(outsidePart));
+    }
+
+    [Fact]
+    public async Task Resume_RecoveredTargetBehindADestinationJunction_IsNotTouched()
+    {
+        var src = Directory.CreateDirectory(Path.Combine(_root, "src")).FullName;
+        Directory.CreateDirectory(Path.Combine(src, "sub"));
+        var sourceFile = Path.Combine(src, "sub", "a.txt");
+        File.WriteAllText(sourceFile, "hello");
+        File.SetLastWriteTimeUtc(sourceFile, new DateTime(2001, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+        var destination = Directory.CreateDirectory(Path.Combine(_root, "dst")).FullName;
+        var outside = Directory.CreateDirectory(Path.Combine(_root, "outside")).FullName;
+        MakeJunction(Path.Combine(destination, "evil"), outside); // the saved job points the finished name into a link
+        var outsideFile = Path.Combine(outside, "a.txt");
+        File.WriteAllText(outsideFile, "hello"); // same data, so it looks like a finished copy
+        var stamp = new DateTime(2020, 6, 6, 0, 0, 0, DateTimeKind.Utc);
+        File.SetLastWriteTimeUtc(outsideFile, stamp);
+        var id = SavedJobWithPartRecord(src, destination, "evil");
+
+        await ResumeJob(id);
+
+        Assert.Equal(stamp, File.GetLastWriteTimeUtc(outsideFile));
     }
 }

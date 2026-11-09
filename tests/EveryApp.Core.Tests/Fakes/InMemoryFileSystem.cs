@@ -432,6 +432,29 @@ public sealed class InMemoryFileSystem : IFileSystem
         }
     }
 
+    public bool DeleteFileContained(string path, string mustBeUnder)
+    {
+        lock (_lock)
+        {
+            var node = Get(path);
+            if (node.IsDirectory || !IsUnder(node, mustBeUnder))
+            {
+                return false;
+            }
+
+            RemoveKey(node.Key);
+            return true;
+        }
+    }
+
+    public bool IsContained(string path, string root)
+    {
+        lock (_lock)
+        {
+            return IsUnder(Get(path), root);
+        }
+    }
+
     public bool DeleteEmptyFolderVerified(string path, UInt128 expectedFileId, ulong expectedVolumeSerial, string? mustBeUnder)
     {
         lock (_lock)

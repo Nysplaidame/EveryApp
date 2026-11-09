@@ -133,6 +133,10 @@ public sealed class FaultInjectingFileSystem(IFileSystem inner) : IFileSystem
     public bool DeleteVerified(string path, UInt128 expectedFileId, ulong expectedVolumeSerial, long expectedLength, DateTime expectedLastWriteUtc, string? mustBeUnder) =>
         inner.DeleteVerified(path, expectedFileId, expectedVolumeSerial, expectedLength, expectedLastWriteUtc, mustBeUnder);
 
+    public bool DeleteFileContained(string path, string mustBeUnder) => inner.DeleteFileContained(path, mustBeUnder);
+
+    public bool IsContained(string path, string root) => inner.IsContained(path, root);
+
     public bool DeleteEmptyFolderVerified(string path, UInt128 expectedFileId, ulong expectedVolumeSerial, string? mustBeUnder) =>
         inner.DeleteEmptyFolderVerified(path, expectedFileId, expectedVolumeSerial, mustBeUnder);
 

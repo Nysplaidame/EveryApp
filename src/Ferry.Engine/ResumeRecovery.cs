@@ -15,12 +15,15 @@ internal sealed partial class ResumeRecovery
 {
     private readonly IFileSystem _fs;
     private readonly string _destination;
+    private readonly Action<Problem> _skipped;
     private readonly IReadOnlySet<string> _completed;
     private readonly Dictionary<string, List<JournalPart>> _partsByKey = new(StringComparer.OrdinalIgnoreCase);
 
-    public ResumeRecovery(IFileSystem fs, string destination, JobJournal? journal)
+    /// <param name="skipped">Told about each leftover that was left alone because it is not really inside the destination.</param>
+    public ResumeRecovery(IFileSystem fs, string destination, JobJournal? journal, Action<Problem> skipped)
     {
         _fs = fs;
+        _skipped = skipped;
         _destination = destination;
         _completed = journal?.CompletedPaths ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var part in journal?.PartFiles ?? [])
@@ -54,11 +57,33 @@ internal sealed partial class ResumeRecovery
             {
                 if (IsTrustworthy(part, out var partPath, out _))
                 {
-                    TreePaths.TryDelete(_fs, partPath);
+                    DeletePart(partPath);
                 }
             }
         }
     }
+
+    /// <summary>
+    /// Deletes through a handle opened without following links, and only if the file's final path is inside the destination: a link in
+    /// the destination (or in the path the journal names) cannot send this delete somewhere else.
+    /// </summary>
+    private void DeletePart(string partPath)
+    {
+        try
+        {
+            if (!_fs.DeleteFileContained(partPath, _destination))
+            {
+                LeftAlone(partPath);
+            }
+        }
+        catch (FileSystemException)
+        {
+            // Already gone, or in use: either way nothing to do.
+        }
+    }
+
+    private void LeftAlone(string path) =>
+        _skipped(new Problem(TreePaths.Display(path), IoErrorKind.None, CopyMessages.ResumeLeftAlone));
 
     /// <summary>
     /// When this file has a part record and the target recorded in it (never a name guessed from the part file, which may be shortened)
@@ -75,6 +100,11 @@ internal sealed partial class ResumeRecovery
         foreach (var part in parts)
         {
             if (!IsTrustworthy(part, out _, out var target) || !seen.Add(target))
+            {
+                continue;
+            }
+
+            if (!IsInsideDestination(target))
             {
                 continue;
             }
@@ -100,6 +130,26 @@ internal sealed partial class ResumeRecovery
         }
 
         return null;
+    }
+
+    /// <summary>The recovered target itself, opened without following links, must really sit inside the destination before it is touched.</summary>
+    private bool IsInsideDestination(string target)
+    {
+        try
+        {
+            if (_fs.IsContained(target, _destination))
+            {
+                return true;
+            }
+
+            LeftAlone(target);
+        }
+        catch (FileSystemException)
+        {
+            // Not there (or unreadable): nothing to recover.
+        }
+
+        return false;
     }
 
     private bool IsTrustworthy(JournalPart part, out string partPath, out string targetPath)

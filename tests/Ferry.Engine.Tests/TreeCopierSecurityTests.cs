@@ -257,4 +257,12 @@ public sealed class TreeCopierSecurityTests : TreeCopierTestBase
         Assert.Equal(100_000, result.Copied);
         Assert.True(watch.Elapsed < TimeSpan.FromSeconds(2), $"Planning took {watch.Elapsed.TotalSeconds:0.00} s.");
     }
+
+    // ---- N3: the elevation check cannot be swapped out by a host
+
+    [Fact]
+    public void NoPublicConstructor_AcceptsAnElevationCheck() =>
+        Assert.All(
+            typeof(TreeCopier).GetConstructors(BindingFlags.Public | BindingFlags.Instance),
+            c => Assert.DoesNotContain(c.GetParameters(), p => typeof(IElevationCheck).IsAssignableFrom(p.ParameterType)));
 }

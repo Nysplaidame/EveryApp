@@ -32,7 +32,7 @@ public interface IWriteHandle : IAsyncDisposable
     void DeleteOnClose();
 }
 
-/// <summary>How <see cref="IFileSystem.CopySecurity"/> went. Every outcome leaves the file readable and changeable by the current user.</summary>
+/// <summary>How <see cref="IFileSystem.CopySecurity"/> went. Every outcome but <see cref="StillLockedOut"/> leaves the file readable and changeable by the current user.</summary>
 public enum SecurityCopyResult
 {
     /// <summary>The (filtered) permissions and the owner were copied.</summary>
@@ -43,6 +43,9 @@ public enum SecurityCopyResult
 
     /// <summary>The copied permissions would have locked the user out, so the file was put back to the permissions its folder passes down.</summary>
     Reverted,
+
+    /// <summary>Even the permissions the folder passes down leave the user without access to the copy (a warning; nothing more can be done safely).</summary>
+    StillLockedOut,
 }
 
 /// <summary>
@@ -119,6 +122,19 @@ public interface IFileSystem
     /// deleting nothing, on any mismatch; throws for I/O failures.
     /// </summary>
     bool DeleteVerified(string path, UInt128 expectedFileId, ulong expectedVolumeSerial, long expectedLength, DateTime expectedLastWriteUtc, string? mustBeUnder);
+
+    /// <summary>
+    /// Deletes a file (never a folder) opened without following links, only if its final path is under <paramref name="mustBeUnder"/>,
+    /// through the handle that checked it. For files with no walked identity to compare, such as leftover part files named by a journal.
+    /// Returns false, deleting nothing, when it is a folder or sits outside; throws for I/O failures (including "not found").
+    /// </summary>
+    bool DeleteFileContained(string path, string mustBeUnder);
+
+    /// <summary>
+    /// Whether the item itself (opened without following links) has its final path under <paramref name="root"/>, so a link in between
+    /// that points elsewhere makes this false. Throws for I/O failures (including "not found").
+    /// </summary>
+    bool IsContained(string path, string root);
 
     /// <summary>
     /// Deletes a folder only if it is empty and still the one expected (id and volume, under <paramref name="mustBeUnder"/>), through the

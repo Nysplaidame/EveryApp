@@ -50,7 +50,7 @@ internal sealed class TreeJob
         _outcome = new JobOutcome(VerifyOn);
         _journal = new JobJournalWriter(journal);
         _progress = new ProgressTracker(sink, owner.Time);
-        _recovery = new ResumeRecovery(_fs, _destination, journal);
+        _recovery = new ResumeRecovery(_fs, _destination, journal, p => _outcome.Problems.Add(p));
         _mover = new TreeMover(_fs, _destination, _outcome, _journal, _progress, Fail);
         _checksums = new ChecksumWriter(_fs, _destination, _options.HashAlgorithm, _journal, _outcome);
     }

@@ -27,6 +27,8 @@ public static class CopyMessages
     public const string OwnerNotKept = "Permissions were copied, but the owner couldn't be kept";
     public const string PermissionsNotCopied = "The file was copied, but its permissions couldn't be copied";
     public const string PermissionsReverted = "The permissions couldn't be copied without locking you out of the copy, so it uses the destination folder's permissions";
+    public const string PermissionsStillLockedOut = "This copy's permissions leave you without access to it. Change them in Windows to open it";
+    public const string ResumeLeftAlone = "A leftover from an earlier run is in a folder that points somewhere else, so it was left alone";
     public const string PermissionsNotLocal = "Permissions are only copied between this PC's own drives, so the copies use the destination folder's permissions";
     public const string DestinationFolderIsLink = "This folder in the destination is a shortcut to somewhere else, so it was skipped";
     public const string PartOutsideDestination = "The copy would have been saved outside the destination folder, so it was stopped";

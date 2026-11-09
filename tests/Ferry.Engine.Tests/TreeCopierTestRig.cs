@@ -387,6 +387,14 @@ internal sealed class RecordingFileSystem(IFileSystem inner) : IFileSystem
         return inner.DeleteVerified(path, expectedFileId, expectedVolumeSerial, expectedLength, expectedLastWriteUtc, mustBeUnder);
     }
 
+    public bool DeleteFileContained(string path, string mustBeUnder)
+    {
+        Add($"DeleteContained {Plain(path)}");
+        return inner.DeleteFileContained(path, mustBeUnder);
+    }
+
+    public bool IsContained(string path, string root) => inner.IsContained(path, root);
+
     public bool DeleteEmptyFolderVerified(string path, UInt128 expectedFileId, ulong expectedVolumeSerial, string? mustBeUnder)
     {
         Add($"DeleteFolderVerified {Plain(path)}");

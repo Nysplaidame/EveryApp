@@ -79,8 +79,21 @@ public sealed class TreeCopier
         string jobsDir,
         ISleepBlocker? sleepBlocker,
         IDestinationInfo? destinationInfo = null,
-        TimeProvider? time = null,
-        IElevationCheck? elevation = null)
+        TimeProvider? time = null)
+        : this(fs, scheduler, resolver, jobsDir, sleepBlocker, destinationInfo, time, WindowsElevationCheck.Instance)
+    {
+    }
+
+    /// <summary>For tests only: the elevation check is not public, so a host cannot switch the refusal off.</summary>
+    internal TreeCopier(
+        IFileSystem fs,
+        DriveAwareScheduler scheduler,
+        IConflictResolver resolver,
+        string jobsDir,
+        ISleepBlocker? sleepBlocker,
+        IDestinationInfo? destinationInfo,
+        TimeProvider? time,
+        IElevationCheck elevation)
     {
         ArgumentNullException.ThrowIfNull(fs);
         ArgumentNullException.ThrowIfNull(scheduler);
@@ -94,7 +107,8 @@ public sealed class TreeCopier
         DestinationInfo = destinationInfo ?? WindowsDestinationInfo.Instance;
         Time = time ?? TimeProvider.System;
         Copier = new FileCopier(fs, BufferPool.Shared, Time);
-        Elevation = elevation ?? WindowsElevationCheck.Instance;
+        ArgumentNullException.ThrowIfNull(elevation);
+        Elevation = elevation;
     }
 
     /// <summary>

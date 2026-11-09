@@ -58,6 +58,10 @@ internal sealed class JobOutcome(bool verifyOn, int maxProblems = JobOutcome.Def
         {
             Problems.Add(new Problem(TreePaths.Display(target), IoErrorKind.AccessDenied, CopyMessages.PermissionsReverted));
         }
+        else if (result == SecurityCopyResult.StillLockedOut)
+        {
+            Problems.Add(new Problem(TreePaths.Display(target), IoErrorKind.AccessDenied, CopyMessages.PermissionsStillLockedOut));
+        }
     }
 
     /// <summary>Permissions could not be copied at all for one item (the data is fine).</summary>

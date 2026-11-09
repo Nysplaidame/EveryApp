@@ -24,9 +24,14 @@ public sealed partial class WindowsFileSystem
     private const int ErrorDirNotEmpty = 145;
     private const string ZoneIdentifierStream = ":Zone.Identifier:$DATA";
 
+    // Generic rights are stored raw in an entry (inherit-only folder entries often use them) and expand to change rights when applied.
+    private const FileSystemRights GenericAll = (FileSystemRights)0x10000000;
+    private const FileSystemRights GenericWriteRight = (FileSystemRights)0x40000000;
+    private const FileSystemRights MaximumAllowed = (FileSystemRights)0x02000000;
+
     // Rights that let someone change a file or its permissions.
     private const FileSystemRights ChangeRights = FileSystemRights.Write | FileSystemRights.Delete | FileSystemRights.DeleteSubdirectoriesAndFiles
-        | FileSystemRights.ChangePermissions | FileSystemRights.TakeOwnership;
+        | FileSystemRights.ChangePermissions | FileSystemRights.TakeOwnership | GenericAll | GenericWriteRight | MaximumAllowed;
 
     private static readonly ConcurrentDictionary<SecurityIdentifier, bool> KnownSids = new();
     private static readonly SecurityIdentifier OwnerRights = new("S-1-3-4");
@@ -36,6 +41,8 @@ public sealed partial class WindowsFileSystem
         new(WellKnownSidType.BuiltinUsersSid, null),
         new(WellKnownSidType.AuthenticatedUserSid, null),
         new(WellKnownSidType.AnonymousSid, null),
+        new("S-1-5-4"), // INTERACTIVE
+        new("S-1-5-32-546"), // Guests
     ];
 
     public string GetFinalPath(string path)
@@ -77,6 +84,22 @@ public sealed partial class WindowsFileSystem
             folder: false,
             e => e.FileId == expectedFileId && e.VolumeSerial == expectedVolumeSerial && e.Length == expectedLength && e.LastWriteTimeUtc == expectedLastWriteUtc,
             mustBeUnder);
+
+    public bool DeleteFileContained(string path, string mustBeUnder) =>
+        DeleteThroughHandle(path, folder: false, static _ => true, mustBeUnder);
+
+    public bool IsContained(string path, string root)
+    {
+        try
+        {
+            using var handle = OpenQuery(Normalize(path), FileReadAttributes, openReparsePoint: true);
+            return PathSafety.IsSameOrUnderFinal(GetFinalPath(root), NativeFileApi.GetFinalPath(handle));
+        }
+        catch (Exception ex) when (IsTranslatable(ex))
+        {
+            throw ErrorKinds.Translate(path, ex);
+        }
+    }
 
     public bool DeleteEmptyFolderVerified(string path, UInt128 expectedFileId, ulong expectedVolumeSerial, string? mustBeUnder) =>
         DeleteThroughHandle(path, folder: true, e => e.FileId == expectedFileId && e.VolumeSerial == expectedVolumeSerial, mustBeUnder);
@@ -123,7 +146,7 @@ public sealed partial class WindowsFileSystem
                 var reset = isDirectory ? (FileSystemSecurity)new DirectorySecurity() : new FileSecurity();
                 reset.SetAccessRuleProtection(isProtected: false, preserveInheritance: false);
                 WriteSecurity(t, isDirectory, reset);
-                return SecurityCopyResult.Reverted;
+                return CanStillUse(t, isDirectory) ? SecurityCopyResult.Reverted : SecurityCopyResult.StillLockedOut;
             }
 
             return result;
@@ -254,6 +277,11 @@ public sealed partial class WindowsFileSystem
         return copy;
     }
 
+    /// <summary>Groups nearly everyone belongs to, plus Domain Users (any domain's RID 513).</summary>
+    internal static bool IsBroadGroup(SecurityIdentifier sid) =>
+        Array.Exists(BroadGroups, g => g.Equals(sid))
+        || (sid.Value.StartsWith("S-1-5-21-", StringComparison.Ordinal) && sid.Value.EndsWith("-513", StringComparison.Ordinal));
+
     private static bool IsSafeToCopy(FileSystemAccessRule rule)
     {
         if (rule.IdentityReference is not SecurityIdentifier sid || sid.Equals(OwnerRights) || !IsKnown(sid))
@@ -262,7 +290,7 @@ public sealed partial class WindowsFileSystem
         }
 
         var widens = rule.AccessControlType == AccessControlType.Allow && (rule.FileSystemRights & ChangeRights) != 0;
-        return !(widens && Array.Exists(BroadGroups, g => g.Equals(sid)));
+        return !(widens && IsBroadGroup(sid));
     }
 
     /// <summary>An account this PC can name (local, domain it trusts, or well known). Unknown and foreign SIDs are left out.</summary>
