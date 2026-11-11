@@ -210,6 +210,31 @@ public sealed class InMemoryFileSystem : IFileSystem
         }
     }
 
+    /// <summary>Count of <see cref="OpenWriteExisting"/> calls.</summary>
+    public int OpenWriteExistingCount { get; private set; }
+
+    public IWriteHandle OpenWriteExisting(string path, bool unbuffered)
+    {
+        lock (_lock)
+        {
+            OpenWriteExistingCount++;
+            var key = Key(path);
+            var parent = ParentOf(key);
+            var resolved = ResolveKey(parent) + key[parent.Length..]; // folders above are followed, the file itself is not
+            if (!_nodes.TryGetValue(resolved, out var node))
+            {
+                throw Fail(path, IoErrorKind.NotFound);
+            }
+
+            if (node.IsDirectory || node.TargetKey is not null || node.Attributes.HasFlag(FileAttributes.ReparsePoint))
+            {
+                throw Fail(path, IoErrorKind.InvalidName);
+            }
+
+            return new WriteHandle(this, node, unbuffered, preallocate: 0, existingLength: node.Length);
+        }
+    }
+
     public FileEntry GetEntry(string path)
     {
         lock (_lock)
@@ -776,11 +801,12 @@ public sealed class InMemoryFileSystem : IFileSystem
         private bool _needsTrim;
         private bool _deleteOnClose;
 
-        public WriteHandle(InMemoryFileSystem fs, Node node, bool unbuffered, long preallocate)
+        public WriteHandle(InMemoryFileSystem fs, Node node, bool unbuffered, long preallocate, int existingLength = 0)
         {
             this.fs = fs;
             this.node = node;
             this.unbuffered = unbuffered;
+            _logical = existingLength;
             if (preallocate > 0)
             {
                 // End of file is set up front, like the real implementation; trimmed to the data written on flush/dispose.

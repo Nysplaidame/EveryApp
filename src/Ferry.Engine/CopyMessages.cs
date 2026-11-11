@@ -20,6 +20,10 @@ public static class CopyMessages
     public const string PathTooLong = "The file's location is too long for Windows";
     public const string InvalidName = "This name can't be used here";
     public const string Unknown = "Something went wrong while copying this file";
+    public const string TooMuchUnreadable = "Too much of this file is unreadable to rescue";
+    public const string RescuedOriginalKept = "Part of this file couldn't be read, so the original was kept";
+    public const string WaitingForNetwork = "Waiting for the network drive to come back…";
+    public const string WaitingForFile = "Waiting for another program to finish with this file…";
     public const string DatesAndAttributesNotKept = "The file was copied, but its dates and attributes couldn't be kept";
 
     // Tree copy (job level).

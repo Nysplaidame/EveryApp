@@ -11,7 +11,18 @@ public sealed record FileProgress(string RelativePath, long Done, long Total);
 /// after the fact, so it cannot help clean up after a crash. For that, use <see cref="FileCopyHooks.PartChosen"/>, which reports every name
 /// BEFORE the file is created. The copier itself never touches a part file it did not create.
 /// </summary>
-public sealed record FileCopyOutcome(bool Success, byte[]? SourceHash, Problem? Problem, string? PartPath = null);
+public sealed record FileCopyOutcome(bool Success, byte[]? SourceHash, Problem? Problem, string? PartPath = null)
+{
+    /// <summary>
+    /// Rescue mode only: the parts of the source that could not be read and were filled with blanks (zeros) in the copy, merged and in order.
+    /// When this is not empty the copy is NOT a clean success: <see cref="Problem"/> carries the warning, the copy must not count as
+    /// verified, and a move must keep the original.
+    /// </summary>
+    public IReadOnlyList<LostRange> Lost { get; init; } = [];
+
+    /// <summary>The copier already waited and retried (or gave up rescuing) before failing, so running the whole file again won't help.</summary>
+    public bool NoRetry { get; init; }
+}
 
 /// <summary>Optional hooks for <see cref="FileCopier.CopyAsync(string, string, CopyOptions, Jobs.PauseGate, IProgress{FileProgress}, FileCopyHooks?, CancellationToken)"/>.</summary>
 public sealed class FileCopyHooks
@@ -44,4 +55,7 @@ public sealed class FileCopyHooks
     /// <see cref="CopyMessages.PartOutsideDestination"/>. Stops a folder swapped for a link between the check and the write.
     /// </summary>
     public string? MustBeUnder { get; init; }
+
+    /// <summary>Plain status lines while the copy waits, e.g. "Waiting for the network drive to come back…". Called from copy threads.</summary>
+    public IProgress<string>? Status { get; init; }
 }

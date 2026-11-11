@@ -18,7 +18,7 @@ public sealed class TreeCopierResumeTests : TreeCopierTestBase
             Add($@"C:\src\f{i}.bin", 10 + i, seed: i);
         }
 
-        _rig.Faults.FailRead(@"C:\src\f2.bin", 0, IoErrorKind.SharingViolation, times: 3);
+        _rig.Faults.FailRead(@"C:\src\f2.bin", 0, IoErrorKind.AccessDenied, times: 1); // not a kind the copier waits out
         var id = Guid.NewGuid();
         var first = await _rig.RunAsync([@"C:\src"], @"D:\dst", new CopyOptions { IfUnreadable = FailureRule.Stop }, jobId: id);
         Assert.Equal(2, first.Copied);
