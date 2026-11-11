@@ -1,7 +1,7 @@
 ---
 id: 001
 title: Ferry task 13 — security fix round 3 (N1–N4 + threat-model corrections)
-status: proposed        # proposed → approved → running → review → done | blocked
+status: done            # proposed → approved → running → done | blocked | paused | stopped | superseded
 tier: executor
 agent: codex
 reviewer: claude
@@ -49,7 +49,8 @@ The *Do* steps below are the planner's reading of those one-liners. If the code 
 - [ ] Threat-model rows match the code exactly — reviewer checks each claim against the diff.
 - [ ] No personal paths, drive letters or machine names added (public repo).
 
-## Result (filled in by the executor)
-- Commit(s):
-- Acceptance output:
-- Notes / follow-ups:
+## Result
+- **Done outside the dispatcher** (2026-11-09): the superpowers plan run dispatched a fresh implementer per ruling R33.
+- Commit(s): `b0e4c09` fix(core): close ACL generic-rights bypass and resume link redirects (N1–N4 + threat-model corrections).
+- Acceptance: per the plan's progress log, review and security review clean after 3 fix rounds; task 13 complete (`16257e6..b0e4c09`).
+- Notes / follow-ups: deferred minors are in the progress log (review-log row order; Domain Users also matches local RID 513; DeletePart swallows access-denied).
