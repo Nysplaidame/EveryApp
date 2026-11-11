@@ -82,6 +82,10 @@ Time needed: about 20 minutes for Part A. Part C is optional and takes about 30 
     Copy `FerryTest-file3.txt`. Switch to the other tab, open `FerryTest\To`, press **Ctrl+V**.
     - Expected: `into:` shows the `To` path (the tab you are looking at, not the other tab).
     - **R5:** right tab?
+    - Close other copy tools first (e.g. Ultracopier). Ultracopier's own Ctrl+V handling pasted into the
+      left-most tab of a multi-tab window, with or without PasteCatcher running (seen 2026-11-11, quitting it fixed
+      it). Ferry will compete for the same keystroke in M2, so test with such a tool running and decide how to
+      detect and handle it.
 12. **Quick paste:** copy `FerryTest-file5.txt`, click in `FerryTest\To`, press **Ctrl+Shift+V**.
     - Expected: `Ctrl+Shift+V (quick paste)` and the "Ferry would copy with no window" line. Explorer does nothing.
     - **R7:** right?
