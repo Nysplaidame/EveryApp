@@ -4,6 +4,11 @@ Newest at the top. Each entry: `## <what> — <date> (<agent>)`, ≤10 lines, en
 Keep under ~300 lines; move older entries to `docs/archive/HANDOFF-history-<from>-<to>.md` in the same commit.
 Live state belongs in `STATE.md`; plan-execution detail in the superpowers progress log; decisions in `docs/adr/`.
 
+## Card 006 acceptance retry - 12 November 2026 (Codex)
+
+The exact acceptance command still fails at locked restore without a diagnostic; single-process locked restore succeeds. This checkout contains only the CLI stub, so the reported later build failure could not be reproduced. Task 15 remains blocked as recorded below.
+Touches: `STATE.md`, `HANDOFF.md`.
+
 ## Card 006 blocked - 12 November 2026 (Codex)
 
 Task 15 was not implemented. Task 14's rescue mode and unreadable-file Ask are incomplete; System.CommandLine is not cached and NuGet was unreachable. The acceptance command failed at locked restore without a diagnostic, although single-process restore succeeded. Resume after the prerequisites and build environment are available.

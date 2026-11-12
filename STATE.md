@@ -6,7 +6,7 @@ Only mandatory start-of-session read. Keep under ~200 lines. `/handoff` replaces
 
 - **Branch:** `agent/006-implement-the-ferry-cli-for-task-15`, based on `7f1bb7f`. Task 15 is not implemented.
 - **Blockers:** Task 14 remains incomplete: rescue mode has no engine implementation and unreadable-file Ask falls back to skip. The required System.CommandLine package is not cached and NuGet was unreachable in this session.
-- **Verification:** `build.ps1` failed at locked solution restore without a diagnostic; single-process solution restore succeeded. Re-run the full acceptance command in a working build environment.
+- **Verification:** The acceptance command again failed at locked solution restore without a diagnostic; `dotnet restore EveryApp.slnx --locked-mode -m:1` succeeded. The reported later build failure could not be reproduced in this checkout.
 - **Next step:** complete Task 14, provide the System.CommandLine dependency, then implement and test card 006.
 - **Touches:** `STATE.md`, `HANDOFF.md`.
 
