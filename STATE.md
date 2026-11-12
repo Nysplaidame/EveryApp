@@ -2,15 +2,13 @@
 
 Only mandatory start-of-session read. Keep under ~200 lines. `/handoff` replaces the ▶ START HERE block; history goes in `HANDOFF.md`.
 
-## ▶ START HERE (updated 2026-11-11, by Claude Opus 5.5 — task 14 moved to agent-ops card 002)
+## ▶ START HERE (updated 2026-11-12, by Codex - card 006 blocked)
 
-- **Branch:** `feat/m1-foundation-ferry-engine` (pushed; draft PR #1). Clean working tree. M1 tasks 1–13 complete and review-clean.
-- **Task 14 (rescue mode + network retry) is owned by agent-ops card 002** — `.agents/tasks/002-task14-rescue-retry.md`. Don't resume it through the superpowers plan run; run, stop or close the card instead (Agent Ops page or `dispatch`).
-- **Partial work** from the paused 2026-11-09 run is saved on `wip/task14-partial` (`593e293`, tests written, RED). The card's branch `agent/002-task14-rescue` starts from it.
-- **Card 001** (task 13 security round 3) is closed: done in the plan run, `b0e4c09`.
-- **Waiting on the user:** approve and run card 002. Optional: Explorer spike Part A `--swallow` (step 17+) and Part C; left-drag decision before M2; run `scripts/New-SigningCert.ps1` before the first release.
-- **Next step (tier):** card 002 (Executor, Codex at high effort; Claude reviews) → merge its branch into the feature branch → Tasks 15–17 (`ferry` CLI, benchmarks/tuning incl. R27 levers, soak + milestone security review).
-- **Touches (this update):** `STATE.md`, `.agents/tasks/002-*`; branch `wip/task14-partial`.
+- **Branch:** `agent/006-implement-the-ferry-cli-for-task-15`, based on `7f1bb7f`. Task 15 is not implemented.
+- **Blockers:** Task 14 remains incomplete: rescue mode has no engine implementation and unreadable-file Ask falls back to skip. The required System.CommandLine package is not cached and NuGet was unreachable in this session.
+- **Verification:** `build.ps1` failed at locked solution restore without a diagnostic; single-process solution restore succeeded. Re-run the full acceptance command in a working build environment.
+- **Next step:** complete Task 14, provide the System.CommandLine dependency, then implement and test card 006.
+- **Touches:** `STATE.md`, `HANDOFF.md`.
 
 ## Current state
 
