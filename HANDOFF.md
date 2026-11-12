@@ -4,6 +4,11 @@ Newest at the top. Each entry: `## <what> — <date> (<agent>)`, ≤10 lines, en
 Keep under ~300 lines; move older entries to `docs/archive/HANDOFF-history-<from>-<to>.md` in the same commit.
 Live state belongs in `STATE.md`; plan-execution detail in the superpowers progress log; decisions in `docs/adr/`.
 
+## Task 14 acceptance retry - 12 November 2026 (Codex)
+
+Implementation is committed in `3b01aa9`. The exact acceptance command failed at locked restore; single-worker restore and Release build passed. Format and the full test runner were denied named-pipe access, with zero tests run in the latter. Acceptance and the requested final feature commit remain outstanding.
+Touches: `STATE.md`, `HANDOFF.md`.
+
 ## Task 14 acceptance and commit retry - 12 November 2026 (Codex)
 
 The required build again failed at locked restore; single-worker restore and Release build passed, while format was denied named-pipe access. Direct rescue/retry tests passed 48/48, including the combined warning regression. Git denied both the worktree index lock and commit metadata, so changes remain uncommitted. Run acceptance and make the requested commits in an environment with access.

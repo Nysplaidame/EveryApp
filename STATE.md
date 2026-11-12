@@ -2,13 +2,12 @@
 
 Only mandatory start-of-session read. Keep under ~200 lines. `/handoff` replaces the ▶ START HERE block; history goes in `HANDOFF.md`.
 
-## ▶ START HERE (updated 2026-11-12, Codex - task 14 blocked)
+## START HERE (updated 2026-11-12, Codex - task 14 blocked)
 
-- **Branch:** `agent/002-task14-rescue`. Task 14 changes remain uncommitted: Git denied the worktree index lock and commit metadata.
-- The required `build.ps1` again failed at locked restore. Single-worker locked restore and Release solution build passed; format check was denied named-pipe access.
-- The combined warning regression passes in the direct rescue/retry test run: 48 passed, none skipped. The partial rescue and retry work was retained and extended; a rescued result uses the existing saved-with-warning convention and a move keeps its source.
-- **Next:** run full acceptance in an environment with restore, pipes and permission support, and make the requested small commits ending `feat(ferry): rescue mode and network retry`.
-- **Touches:** `tests/Ferry.Engine.Tests/RescueReaderTests.cs`, `STATE.md`, `HANDOFF.md`; prior rescue/retry changes remain uncommitted.
+- **Branch:** `agent/002-task14-rescue`. Existing implementation was committed as `3b01aa9`; the requested final feature commit has not been made.
+- The exact `build.ps1` acceptance command failed at locked restore. Single-worker locked restore and Release build passed, but format and full test runner were denied named-pipe access; the latter ran zero tests.
+- **Next:** run full acceptance in an environment with restore and named-pipe access; review the existing commit and complete the requested commit/Result requirements.
+- **Touches:** `STATE.md`, `HANDOFF.md`.
 
 ## Previous start-here notes (2026-11-09)
 
@@ -26,7 +25,7 @@ Only mandatory start-of-session read. Keep under ~200 lines. `/handoff` replaces
 |---|---|
 | M1 tasks 1–12 | Complete, each review-clean after ≤1 fix round |
 | M1 task 13 (tree copy) | Complete — task review + 3 security rounds clean |
-| M1 task 14 (rescue + retry) | Implemented, uncommitted; acceptance blocked by environment permissions |
+| M1 task 14 (rescue + retry) | Implemented in `3b01aa9`; acceptance blocked by environment permissions |
 | M1 tasks 15–17 | Not started |
 | Deferred minors | Listed per task in the progress log (`- Task N: minor (deferred)`) — sweep before M1 release |
 | Notes for M2 | In progress log (`NOTE for M2`): scheduler can block ~3 s on WMI — never on UI thread; same-folder copy should name "- Copy"/"(2)" |
