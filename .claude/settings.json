@@ -1,0 +1,5 @@
+{
+  "enabledPlugins": {
+    "comprehensive-review@claude-code-workflows": true
+  }
+}

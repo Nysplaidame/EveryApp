@@ -1,0 +1,18 @@
+<Project>
+
+  <!--
+    Throwaway spikes. This file deliberately does NOT import the repository's root
+    Directory.Build.props, so spike projects inherit none of the product settings
+    (artifacts path, warnings-as-errors, analyzers). Spikes are not in EveryApp.slnx,
+    so build.ps1 and CI never build them. The only thing CI looks at is that every
+    *.csproj has a committed packages.lock.json, which the setting below produces.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+  </PropertyGroup>
+
+</Project>
