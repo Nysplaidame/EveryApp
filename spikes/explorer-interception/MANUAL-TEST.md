@@ -18,6 +18,10 @@ Each result has a code (R1, R2, ...). Write what you saw next to the same code i
 
 Time needed: about 20 minutes for Part A. Part C is optional and takes about 30 more minutes (200 drags).
 
+## M2 risk: Ctrl+V hook competition
+
+Ferry's Ctrl+V hook will compete with copy tools like Ultracopier. This is **Not yet in the spec**. During M2, test with one running; decide detection/handling.
+
 ---
 
 ## Part 0: Get ready
