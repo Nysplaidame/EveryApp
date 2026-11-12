@@ -4,6 +4,14 @@ Newest at the top. Each entry: `## <what> — <date> (<agent>)`, ≤10 lines, en
 Keep under ~300 lines; move older entries to `docs/archive/HANDOFF-history-<from>-<to>.md` in the same commit.
 Live state belongs in `STATE.md`; plan-execution detail in the superpowers progress log; decisions in `docs/adr/`.
 
+## Card 006 line-ending repair - 12 November 2026 (Codex)
+
+Normalized CLI source/tests and the console-signal helper to CRLF; CLI whitespace verification passes. Git already normalizes these files to LF with CRLF checkout attributes, so the repair itself produces no committed content diff.
+Normal locked restore succeeds with one worker; Release solution build passes with zero warnings/errors. Standalone CLI tests: 33 passed, zero failures, including Ctrl+C cleanup and 2,000-file kill/resume.
+Exact acceptance was rerun and still fails at locked restore (exit 1, no diagnostic). Full solution formatting separately reports denied build-host named-pipe access. Run acceptance in an environment permitting build/test IPC; Task 15 is not yet accepted. No temporary dependency reference was used.
+Task 14, benchmark tuning and milestone soak remain untouched; rescue/unreadable Ask remain unavailable as recorded below.
+Touches: working-tree `src/Ferry.Cli/` and `tests/Ferry.Cli.Tests/` line endings, `STATE.md`, `HANDOFF.md`.
+
 ## Card 006 CLI implementation - 12 November 2026 (Codex)
 
 Implemented copy/resume/verify/jobs, JSON lines, confirmation previews, conflict prompts, rate/exclude options, graceful/forced cancellation and read-only history. Task 14 remains untouched: rescue and unreadable Ask explicitly return exit 4.
