@@ -23,8 +23,10 @@ public static class Verifier
     }
 
     /// <summary>Hashes a whole file. A file that ends early just hashes what is there (so it will not match).</summary>
-    internal static async Task<byte[]> HashAsync(IFileSystem fs, string path, bool unbuffered, HashAlgorithmKind kind, CancellationToken ct)
+    public static async Task<byte[]> HashAsync(IFileSystem fs, string path, bool unbuffered, HashAlgorithmKind kind, CancellationToken ct)
     {
+        ArgumentNullException.ThrowIfNull(fs);
+        ArgumentException.ThrowIfNullOrEmpty(path);
         var buffer = BufferPool.Shared.Rent(ChunkSize);
         try
         {

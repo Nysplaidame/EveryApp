@@ -149,6 +149,19 @@ public sealed class JobJournal : IDisposable
     public static JobJournal Open(string jobsDir, Guid jobId, TimeProvider? timeProvider = null) =>
         OpenWithIo(jobsDir, jobId, timeProvider, null);
 
+    /// <summary>Reads valid journal records for history without changing a damaged tail or locking out a running job.</summary>
+    public static JournalSummary ReadSummary(string jobsDir, Guid jobId, CancellationToken ct = default)
+    {
+        using var stream = new FileStream(JournalPath(jobsDir, jobId), FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        var load = Load(stream, collectFileState: false, ct);
+        if (load.Options is null)
+        {
+            throw new InvalidDataException("The saved job could not be read.");
+        }
+
+        return new JournalSummary(load.Options, load.StartedUtc, load.Finished, load.Result);
+    }
+
     internal static JobJournal OpenWithIo(string jobsDir, Guid jobId, TimeProvider? timeProvider, JournalIo? io)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(jobsDir);
@@ -377,15 +390,18 @@ public sealed class JobJournal : IDisposable
         return line;
     }
 
-    private readonly record struct LoadResult(string? Options, HashSet<string> Completed, List<JournalPart> Parts, bool Finished, long GoodLength);
+    private readonly record struct LoadResult(string? Options, HashSet<string> Completed, List<JournalPart> Parts, bool Finished, long GoodLength,
+        DateTime StartedUtc, string? Result);
 
     /// <summary>Reads lines from the start and stops at the first one that cannot be trusted.</summary>
-    private static LoadResult Load(FileStream stream)
+    private static LoadResult Load(FileStream stream, bool collectFileState = true, CancellationToken ct = default)
     {
         var completed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var parts = new List<JournalPart>();
         string? options = null;
         var finished = false;
+        var startedUtc = default(DateTime);
+        string? result = null;
         long goodLength = 0;
 
         stream.Seek(0, SeekOrigin.Begin);
@@ -397,6 +413,7 @@ public sealed class JobJournal : IDisposable
 
         while (!stop)
         {
+            ct.ThrowIfCancellationRequested();
             var read = stream.Read(chunk, 0, chunk.Length);
             if (read == 0)
             {
@@ -432,15 +449,23 @@ public sealed class JobJournal : IDisposable
                 {
                     case JournalRecordKind.JobStarted:
                         options = record.Detail;
+                        startedUtc = record.SourceLastWriteUtc;
                         break;
                     case JournalRecordKind.FileDone:
-                        completed.Add(Normalize(record.RelativePath!));
+                        if (collectFileState)
+                        {
+                            completed.Add(Normalize(record.RelativePath!));
+                        }
                         break;
                     case JournalRecordKind.JobFinished:
                         finished = true;
+                        result = record.Detail;
                         break;
                     case JournalRecordKind.FilePartStarted:
-                        parts.Add(new JournalPart(Normalize(record.RelativePath!), Normalize(record.Detail!), Normalize(record.TargetPath!)));
+                        if (collectFileState)
+                        {
+                            parts.Add(new JournalPart(Normalize(record.RelativePath!), Normalize(record.Detail!), Normalize(record.TargetPath!)));
+                        }
                         break;
                     default:
                         break;
@@ -451,7 +476,7 @@ public sealed class JobJournal : IDisposable
             }
         }
 
-        return new LoadResult(options, completed, parts, finished, goodLength);
+        return new LoadResult(options, completed, parts, finished, goodLength, startedUtc, result);
     }
 
     private static bool TryParseLine(ReadOnlySpan<byte> line, bool isHeader, out JournalRecord record)
