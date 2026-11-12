@@ -139,7 +139,8 @@
       "ferry": {
         "type": "Project",
         "dependencies": {
-          "Ferry.Engine": "[1.0.0, )"
+          "Ferry.Engine": "[1.0.0, )",
+          "System.CommandLine": "[2.0.2, )"
         }
       },
       "ferry.engine": {
@@ -168,6 +169,12 @@
         "dependencies": {
           "Serilog": "4.2.0"
         }
+      },
+      "System.CommandLine": {
+        "type": "CentralTransitive",
+        "requested": "[2.0.2, )",
+        "resolved": "2.0.2",
+        "contentHash": "zqn6I1IULEJaLEFKejeSFlZrf8HzIUU4qEjuYtEVRx5AsxKMLqLP+t0dQ4fk51A5CzT9Uv8wBLdMHSIYIrCKBw=="
       },
       "System.IO.Hashing": {
         "type": "CentralTransitive",
