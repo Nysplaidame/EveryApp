@@ -111,7 +111,7 @@ public sealed class RetryPolicyTests
         Assert.Equal(transient, RetryPolicy.IsTransient(kind));
 
     [Theory]
-    [InlineData(IoErrorKind.NetworkLost, "Waiting for the network drive to come back…")]
+    [InlineData(IoErrorKind.NetworkLost, "Waiting for the network drive…")]
     [InlineData(IoErrorKind.SharingViolation, "Waiting for another program to finish with this file…")]
     public async Task Retry_ShowsPlainStatusWhileWaiting(IoErrorKind kind, string expected)
     {
@@ -125,6 +125,7 @@ public sealed class RetryPolicyTests
             Ct);
 
         Assert.Contains(expected, status.Messages);
+        Assert.Equal(CopyMessages.Copying, status.Messages[^1]);
     }
 
     [Fact]
@@ -141,6 +142,71 @@ public sealed class RetryPolicyTests
             RetryPolicy.IsTransient,
             null,
             cts.Token));
+    }
+
+    [Fact]
+    public async Task Retry_AlreadyCancelled_DoesNotStartOperation()
+    {
+        using var cts = new CancellationTokenSource();
+        await cts.CancelAsync();
+        var called = false;
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => new RetryPolicy(time: new AutoAdvancingTime()).RunAsync(
+            () => { called = true; return Task.FromResult(true); }, RetryPolicy.IsTransient, null, cts.Token));
+
+        Assert.False(called);
+    }
+
+    [Fact]
+    public async Task Copy_ReopenedSourceHasChanged_StopsAndKeepsOriginal()
+    {
+        using var b = Backend.Create(Backend.InMemory);
+        using var pool = new BufferPool();
+        var src = b.PathOf("source.bin");
+        var dst = b.PathOf("copy.bin");
+        b.AddFile(src, FileCopierTests.Bytes(2 * MiB, seed: 33));
+        b.Faults.MutateDuringRead(src, MiB, () => b.Memory!.AddFile(src, FileCopierTests.Bytes(2 * MiB, seed: 34)));
+        b.Faults.FailReadRange(src, MiB, 1, IoErrorKind.NetworkLost, times: 1, handleDies: true);
+
+        var result = await new FileCopier(b.Fs, pool, new AutoAdvancingTime()).CopyAsync(
+            src, dst, new CopyOptions { BufferSizeBytes = MiB }, new PauseGate(), new LatestProgress(), Ct);
+
+        Assert.False(result.Success);
+        Assert.Equal(CopyMessages.SourceChanged, result.Problem?.Message);
+        Assert.True(b.Exists(src));
+        Assert.False(b.Exists(dst));
+        Assert.Empty(b.PartFiles());
+    }
+
+    [Fact]
+    public async Task Copy_ReopenedPartRedirectedOutside_LeavesOtherFileAlone()
+    {
+        using var b = Backend.Create(Backend.InMemory);
+        using var pool = new BufferPool();
+        var src = b.PathOf("source.bin");
+        var folder = b.PathOf("destination");
+        var outside = b.PathOf("outside");
+        b.Memory!.CreateDirectory(folder);
+        b.Memory.CreateDirectory(outside);
+        b.AddFile(src, FileCopierTests.Bytes(2 * MiB, seed: 35));
+        b.Faults.FailWriteWhere(FileCopierTests.IsPart, MiB, IoErrorKind.NetworkLost, times: 1, handleDies: true);
+        string? otherFile = null;
+        byte[] otherData = [1, 2, 3, 4];
+        b.Faults.BeforeOpenWriteExisting = part =>
+        {
+            b.Memory.Move(folder, folder + "-old", overwrite: false);
+            b.Memory.AddJunction(folder, outside);
+            otherFile = Path.Combine(outside, Path.GetFileName(part));
+            b.AddFile(otherFile, otherData);
+        };
+
+        var result = await new FileCopier(b.Fs, pool, new AutoAdvancingTime()).CopyAsync(
+            src, Path.Combine(folder, "copy.bin"), new CopyOptions { BufferSizeBytes = MiB }, new PauseGate(), new LatestProgress(), Ct);
+
+        Assert.False(result.Success);
+        Assert.Equal(IoErrorKind.InvalidName, result.Problem?.Kind);
+        Assert.NotNull(otherFile);
+        Assert.Equal(otherData, b.ReadAll(otherFile));
     }
 
     // ---- In the copier ----
@@ -163,7 +229,7 @@ public sealed class RetryPolicyTests
         Assert.True(outcome.Success, outcome.Problem?.Message);
         Assert.Null(outcome.Problem);
         Assert.Equal(data, b.ReadAll(dst));
-        Assert.Contains("Waiting for the network drive to come back…", status.Messages);
+        Assert.Contains("Waiting for the network drive…", status.Messages);
         Assert.Empty(b.PartFiles());
         Assert.Equal(0, pool.Outstanding);
     }

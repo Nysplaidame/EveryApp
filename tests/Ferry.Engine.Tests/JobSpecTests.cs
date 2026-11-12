@@ -13,6 +13,7 @@ public sealed class JobSpecTests
         IfExists = ConflictRule.OverwriteIfNewer,
         IfUnreadable = FailureRule.Stop,
         RescueMode = true,
+        MaxLostSectors = 32,
         FollowReparsePoints = true,
         SpeedLimitBytesPerSecond = 12_345_678,
         Exclude = ["**/node_modules/**", "Thumbs.db"],
@@ -51,6 +52,18 @@ public sealed class JobSpecTests
         Assert.Equal(spec.Mode, back.Mode);
         Assert.Equal(spec.Options.Exclude, back.Options.Exclude);
         Assert.Equal(spec.Options with { Exclude = [] }, back.Options with { Exclude = [] });
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void Parse_InvalidRescueLimit_Throws(int limit)
+    {
+        var folder = Path.GetTempPath();
+        var spec = new JobSpec(JobSpec.CurrentVersion, [Path.Combine(folder, "source")],
+            Path.Combine(folder, "destination"), CopyMode.Copy, new CopyOptions { MaxLostSectors = limit });
+
+        Assert.Throws<InvalidDataException>(() => JobSpec.Parse(spec.ToJson()));
     }
 
     [Theory]

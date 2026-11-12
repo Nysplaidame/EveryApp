@@ -5,7 +5,8 @@ public sealed record FileProgress(string RelativePath, long Done, long Total);
 
 /// <summary>
 /// Result of copying one file. When <paramref name="Success"/> is true the destination holds the complete data; <paramref name="Problem"/> may
-/// still carry a warning (for example dates and attributes could not be kept). When false, nothing was left under the destination name.
+/// still carry a warning (for example dates and attributes could not be kept). Rescue saves zero-filled data with a warning and
+/// <see cref="FileCopyOutcome.Lost"/> ranges: Success means saved, not intact. When false, nothing was left under the destination name.
 /// <paramref name="SourceHash"/> is the hash of exactly the bytes read (null when neither verify nor checksum export is on).
 /// <paramref name="PartPath"/> is the last part-file name this call chose (null if it never chose one). It is for information only: it arrives
 /// after the fact, so it cannot help clean up after a crash. For that, use <see cref="FileCopyHooks.PartChosen"/>, which reports every name
@@ -56,6 +57,6 @@ public sealed class FileCopyHooks
     /// </summary>
     public string? MustBeUnder { get; init; }
 
-    /// <summary>Plain status lines while the copy waits, e.g. "Waiting for the network drive to come back…". Called from copy threads.</summary>
+    /// <summary>Plain status lines while the copy waits, e.g. "Waiting for the network drive…". Called from copy threads.</summary>
     public IProgress<string>? Status { get; init; }
 }

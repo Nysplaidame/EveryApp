@@ -51,9 +51,16 @@ public sealed class RetryPolicy
         var delay = FirstDelay;
         for (var attempt = 1; ; attempt++)
         {
+            ct.ThrowIfCancellationRequested();
             try
             {
-                return await op().ConfigureAwait(false);
+                var result = await op().ConfigureAwait(false);
+                if (waited > TimeSpan.Zero)
+                {
+                    status?.Report(CopyMessages.Copying);
+                }
+
+                return result;
             }
             catch (FileSystemException ex) when (isTransient(ex.Kind))
             {

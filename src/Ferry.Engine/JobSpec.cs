@@ -43,6 +43,7 @@ internal sealed record JobSpec(int Version, IReadOnlyList<string> Sources, strin
             && o is not null
             && o.Exclude is not null && o.Exclude.All(e => e is not null)
             && o.BufferSizeBytes is >= 0 and <= FileCopier.MaxBufferSizeBytes
+            && o.MaxLostSectors > 0
             && o.SpeedLimitBytesPerSecond is null or > 0
             && Enum.IsDefined(o.IfExists)
             && Enum.IsDefined(o.IfUnreadable)

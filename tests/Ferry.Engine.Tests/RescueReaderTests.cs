@@ -17,6 +17,103 @@ public sealed class RescueReaderTests
     private static readonly CopyOptions Rescue = new() { RescueMode = true };
 
     [Fact]
+    public async Task Rescue_MetadataAndReportWarningsAreBothKept()
+    {
+        using var b = Backend.Create(Backend.InMemory);
+        using var pool = new BufferPool();
+        var src = b.PathOf("source.bin");
+        var dst = b.PathOf("copy.bin");
+        b.AddFile(src, FileCopierTests.Bytes(8192, seed: 29));
+        b.AddFile(dst + ".ferry-lost.txt", [1]);
+        b.Faults.FailReadRange(src, 0, 4096, IoErrorKind.BadBlock);
+        var fs = new RecordingFileSystem(b.Fs)
+        {
+            BeforeSetMetadata = path => throw new FileSystemException(path, IoErrorKind.AccessDenied, null),
+        };
+
+        var result = await new FileCopier(fs, pool).CopyAsync(src, dst,
+            Rescue with { KeepDatesAndAttributes = true }, new PauseGate(), new LatestProgress(), Ct);
+
+        Assert.True(result.Success);
+        Assert.Contains("; the file was copied, but its dates and attributes couldn't be kept", result.Problem!.Message, StringComparison.Ordinal);
+        Assert.Contains(CopyMessages.LostReportNotWritten, result.Problem.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Rescue_AndReopenedWriter_ChecksSavedBytesWithoutReadingLostRangeAgain()
+    {
+        using var b = Backend.Create(Backend.InMemory);
+        using var pool = new BufferPool();
+        var src = b.PathOf("source.bin");
+        var dst = b.PathOf("copy.bin");
+        var data = FileCopierTests.Bytes(8192, seed: 30);
+        b.AddFile(src, data);
+        b.Faults.FailReadRange(src, 0, 4096, IoErrorKind.BadBlock);
+        b.Faults.FailWriteWhere(FileCopierTests.IsPart, 0, IoErrorKind.NetworkLost, times: 1, handleDies: true);
+
+        var result = await new FileCopier(b.Fs, pool, new AutoAdvancingTime()).CopyAsync(src, dst,
+            Rescue, new PauseGate(), new LatestProgress(), Ct);
+
+        Array.Clear(data, 0, 4096);
+        Assert.True(result.Success, result.Problem?.Message);
+        Assert.NotEmpty(result.Lost);
+        Assert.Equal(data, b.ReadAll(dst));
+        Assert.True(b.Faults.ReopenedWrites > 0);
+    }
+
+    [Theory]
+    [InlineData(1, false)]
+    [InlineData(2, true)]
+    public async Task Rescue_LostSectorCap_AppliesAcrossChunks(int cap, bool saved)
+    {
+        using var b = Backend.Create(Backend.InMemory);
+        b.Memory!.SectorSize = 4096;
+        using var pool = new BufferPool();
+        var src = b.PathOf("source.bin");
+        var dst = b.PathOf("copy.bin");
+        b.AddFile(src, FileCopierTests.Bytes(3 * 4096, seed: 31));
+        b.Faults.FailReadRange(src, 0, 2 * 4096, IoErrorKind.BadBlock);
+
+        var result = await new FileCopier(b.Fs, pool).CopyAsync(src, dst,
+            Rescue with { MaxLostSectors = cap, BufferSizeBytes = 4096 }, new PauseGate(), new LatestProgress(), Ct);
+
+        Assert.Equal(saved, result.Success);
+        Assert.Equal(saved, b.Exists(dst));
+        if (saved)
+        {
+            Assert.Equal([new LostRange(0, 8192)], result.Lost);
+            Assert.NotNull(result.Problem);
+        }
+        else
+        {
+            Assert.True(result.NoRetry);
+            Assert.Equal(CopyMessages.TooMuchUnreadable, result.Problem?.Message);
+        }
+        Assert.Empty(b.PartFiles());
+    }
+
+    [Fact]
+    public async Task Rescue_ExistingLostReport_IsKeptAndWarningExplains()
+    {
+        using var b = Backend.Create(Backend.InMemory);
+        using var pool = new BufferPool();
+        var src = b.PathOf("source.bin");
+        var dst = b.PathOf("copy.bin");
+        var oldReport = Encoding.UTF8.GetBytes("Earlier report");
+        b.AddFile(src, FileCopierTests.Bytes(8192, seed: 32));
+        b.AddFile(dst + ".ferry-lost.txt", oldReport);
+        b.Faults.FailReadRange(src, 0, 4096, IoErrorKind.BadBlock);
+
+        var result = await new FileCopier(b.Fs, pool).CopyAsync(src, dst, Rescue, new PauseGate(), new LatestProgress(), Ct);
+
+        Assert.True(result.Success);
+        Assert.NotEmpty(result.Lost);
+        Assert.Contains(CopyMessages.LostReportNotWritten, result.Problem!.Message, StringComparison.Ordinal);
+        Assert.Equal(oldReport, b.ReadAll(dst + ".ferry-lost.txt"));
+        Assert.Empty(b.PartFiles());
+    }
+
+    [Fact]
     public async Task Rescue_BadSectorInMiddle_RecoversRestAndReportsRange()
     {
         using var b = Backend.Create(Backend.InMemory);
