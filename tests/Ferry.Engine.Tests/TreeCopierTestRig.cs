@@ -324,6 +324,12 @@ internal sealed class RecordingFileSystem(IFileSystem inner) : IFileSystem
         return handle;
     }
 
+    public IWriteHandle OpenWriteExisting(string path, bool unbuffered)
+    {
+        Add($"OpenWriteExisting {Plain(path)}");
+        return new WriteHandle(this, path, inner.OpenWriteExisting(path, unbuffered));
+    }
+
     public FileEntry GetEntry(string path) => Map(inner.GetEntry(path));
 
     public FileEntry GetEntryFollowingLinks(string path) => Map(inner.GetEntryFollowingLinks(path));

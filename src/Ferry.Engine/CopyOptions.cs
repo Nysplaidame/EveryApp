@@ -17,6 +17,9 @@ public sealed record CopyOptions
 
     public bool RescueMode { get; init; }
 
+    /// <summary>Give up after this many unreadable sectors per file. Default 4,096 (2 MiB on 512-byte sectors, 16 MiB on 4 KiB sectors).</summary>
+    public int MaxLostSectors { get; init; } = RescueReader.DefaultMaxLostSectors;
+
     public bool FollowReparsePoints { get; init; }
 
     public long? SpeedLimitBytesPerSecond { get; init; }

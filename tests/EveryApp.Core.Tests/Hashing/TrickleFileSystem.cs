@@ -13,6 +13,8 @@ internal sealed class TrickleFileSystem(IFileSystem inner, int maxPerRead) : IFi
 
     public IWriteHandle CreateWrite(string path, long preallocate, bool unbuffered) => inner.CreateWrite(path, preallocate, unbuffered);
 
+    public IWriteHandle OpenWriteExisting(string path, bool unbuffered) => inner.OpenWriteExisting(path, unbuffered);
+
     public FileEntry GetEntry(string path) => inner.GetEntry(path);
 
     public FileEntry GetEntryFollowingLinks(string path) => inner.GetEntryFollowingLinks(path);

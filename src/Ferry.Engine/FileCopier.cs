@@ -82,6 +82,7 @@ public sealed class FileCopier
         ArgumentNullException.ThrowIfNull(pause);
         ArgumentNullException.ThrowIfNull(progress);
         ArgumentOutOfRangeException.ThrowIfNegative(options.BufferSizeBytes);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(options.MaxLostSectors);
         if (options.SpeedLimitBytesPerSecond is { } limit)
         {
             ArgumentOutOfRangeException.ThrowIfNegativeOrZero(limit);
@@ -92,10 +93,11 @@ public sealed class FileCopier
         IWriteHandle? writer = null;
         StreamingHasher? hasher = null;
         var partIsOurs = false;
+        var retry = new RetryPolicy(time: _time);
         try
         {
             await pause.WaitIfPausedAsync(ct).ConfigureAwait(false);
-            var before = _fs.GetEntryFollowingLinks(source);
+            var before = await retry.RunAsync(() => Task.FromResult(_fs.GetEntryFollowingLinks(source)), RetryPolicy.IsTransient, hooks?.Status, ct).ConfigureAwait(false);
             var length = before.Length;
             if (hooks is { TryBlockClone: true } && length > 0)
             {
@@ -110,14 +112,25 @@ public sealed class FileCopier
             }
 
             var unbuffered = length >= UnbufferedThresholdBytes;
-            var alignment = unbuffered ? Math.Max(_fs.GetSectorSize(source), _fs.GetSectorSize(destination)) : BufferedAlignment;
-            reader = _fs.OpenRead(source, unbuffered);
+            var alignment = unbuffered || options.RescueMode ? Math.Max(_fs.GetSectorSize(source), _fs.GetSectorSize(destination)) : BufferedAlignment;
+            reader = await retry.RunAsync(() => Task.FromResult(_fs.OpenRead(source, unbuffered)), RetryPolicy.IsTransient, hooks?.Status, ct).ConfigureAwait(false);
             if (reader.Length != length)
             {
                 return Failed(source, IoErrorKind.Other, CopyMessages.SourceChanged, part);
             }
 
-            (writer, part) = CreatePart(destination, length, unbuffered, hooks);
+            reader = new RetryReadHandle(reader, () =>
+            {
+                var current = _fs.GetEntryFollowingLinks(source);
+                if (current.FileId != before.FileId || current.VolumeSerial != before.VolumeSerial || current.Length != length || current.LastWriteTimeUtc != before.LastWriteTimeUtc)
+                {
+                    throw new SourceChangedException();
+                }
+
+                return _fs.OpenRead(source, unbuffered);
+            }, retry, hooks?.Status);
+
+            (writer, part) = await retry.RunAsync(() => Task.FromResult(CreatePart(destination, length, unbuffered, hooks)), RetryPolicy.IsTransient, hooks?.Status, ct).ConfigureAwait(false);
             partIsOurs = true;
             if (hooks?.MustBeUnder is { } root && !PathSafety.IsSameOrUnderFinal(root, writer.GetFinalPath()))
             {
@@ -125,6 +138,28 @@ public sealed class FileCopier
                 partIsOurs = false;
                 return Failed(source, IoErrorKind.InvalidName, CopyMessages.PartOutsideDestination, part);
             }
+            var originalFinalPath = writer.GetFinalPath();
+            var retryWriter = new RetryWriteHandle(writer, async () =>
+            {
+                var reopened = _fs.OpenWriteExisting(part, unbuffered);
+                try
+                {
+                    if (!SamePath(originalFinalPath, reopened.GetFinalPath()))
+                    {
+                        partIsOurs = false; // the name now points somewhere else: never delete through it
+                        throw new FileSystemException(part, IoErrorKind.InvalidName, null);
+                    }
+
+                    return reopened;
+                }
+                catch
+                {
+                    await reopened.DisposeAsync().ConfigureAwait(false);
+                    throw;
+                }
+            }, retry, hooks?.Status, ct);
+            writer = retryWriter;
+
             if (options.Verify || options.ExportChecksums)
             {
                 hasher = new StreamingHasher(options.HashAlgorithm);
@@ -143,7 +178,8 @@ public sealed class FileCopier
                 length,
                 ChunkSizeFor(options, alignment),
                 alignment,
-                unbuffered);
+                unbuffered,
+                options.RescueMode ? new RescueReader(_fs, _fs.GetSectorSize(source), pause, options.MaxLostSectors) : null);
             await transfer.RunAsync(ct).ConfigureAwait(false);
 
             // All data is written. Make it durable and close it; any failure here fails the copy (never rename after a failed flush).
@@ -155,12 +191,29 @@ public sealed class FileCopier
             reader = null;
             await r.DisposeAsync().ConfigureAwait(false);
 
-            if (CheckComplete(source, before, part, length) is { } incomplete)
+            if (await retry.RunAsync(() => Task.FromResult(CheckComplete(source, before, part, length)),
+                RetryPolicy.IsTransient, hooks?.Status, ct).ConfigureAwait(false) is { } incomplete)
             {
                 return incomplete;
             }
 
             var hash = hasher?.Finish();
+            if (retryWriter.Reopened)
+            {
+                var expected = hash ?? await retry.RunAsync(
+                    () => HashRescuedSourceAsync(source, length, transfer.Lost, options.HashAlgorithm, ct), RetryPolicy.IsTransient, hooks?.Status, ct).ConfigureAwait(false);
+                if (!await retry.RunAsync(
+                    () => Verifier.MatchesAsync(_fs, part, expected, options.HashAlgorithm, ct), RetryPolicy.IsTransient, hooks?.Status, ct).ConfigureAwait(false))
+                {
+                    return Failed(source, IoErrorKind.Other, CopyMessages.VerifyMismatch, part) with { NoRetry = true };
+                }
+
+                if (await retry.RunAsync(() => Task.FromResult(CheckComplete(source, before, part, length)),
+                    RetryPolicy.IsTransient, hooks?.Status, ct).ConfigureAwait(false) is { } changed)
+                {
+                    return changed;
+                }
+            }
             if (await RunBeforeCommitAsync(hooks, part, hash, ct).ConfigureAwait(false) is { } refused)
             {
                 return new FileCopyOutcome(false, null, refused, part);
@@ -173,7 +226,24 @@ public sealed class FileCopier
 
             // After the rename (a rename can change them), and ReadOnly last so it cannot block the rename.
             var warning = options.KeepDatesAndAttributes ? ApplyMetadata(source, destination, before) : null;
-            return new FileCopyOutcome(true, hash, warning, part);
+            if (transfer.Lost.Count > 0)
+            {
+                var rescueWarning = await new LostReport(_fs, _time).WriteAsync(source, destination, transfer.Lost,
+                    hooks?.MustBeUnder ?? Path.GetDirectoryName(originalFinalPath), ct).ConfigureAwait(false);
+                warning = warning is null ? rescueWarning : rescueWarning with { Message = rescueWarning.Message + "; " + (warning.Message.StartsWith("The ", StringComparison.Ordinal) ? "the " + warning.Message[4..] : warning.Message) };
+            }
+
+            return new FileCopyOutcome(true, hash, warning, part) { Lost = transfer.Lost };
+        }
+        catch (RescueLimitException)
+        {
+            return Failed(source, IoErrorKind.BadBlock, CopyMessages.TooMuchUnreadable, part) with { NoRetry = true };
+        }
+        catch (RetryGaveUpException ex) when (!ct.IsCancellationRequested)
+        {
+            var atPart = part is not null && SamePath(ex.Last.Path, part);
+            var message = CopyMessages.For(ex.Last.Kind, atPart || SamePath(ex.Last.Path, destination), DriveOf(destination));
+            return Failed(source, ex.Last.Kind, CopyMessages.RetryGaveUp(message, ex.Waited), part) with { NoRetry = true };
         }
         catch (SourceChangedException)
         {
@@ -199,6 +269,56 @@ public sealed class FileCopier
         {
             await CleanUpAsync(reader, writer, partIsOurs ? part : null).ConfigureAwait(false);
             hasher?.Dispose();
+        }
+    }
+
+    private async Task<byte[]> HashRescuedSourceAsync(string source, long length, List<LostRange> lost, HashAlgorithmKind algorithm, CancellationToken ct)
+    {
+        var buffer = _pool.Rent(DefaultBufferSizeBytes);
+        try
+        {
+            await using var input = _fs.OpenRead(source, unbuffered: false);
+            using var hash = new StreamingHasher(algorithm);
+            long offset = 0;
+            var index = 0;
+            while (offset < length)
+            {
+                ct.ThrowIfCancellationRequested();
+                var inLost = index < lost.Count && offset >= lost[index].Offset;
+                var end = inLost ? lost[index].Offset + lost[index].Length : index < lost.Count ? lost[index].Offset : length;
+                var count = (int)Math.Min(buffer.Memory.Length, end - offset);
+                if (inLost)
+                {
+                    buffer.Memory.Span[..count].Clear();
+                }
+                else
+                {
+                    var filled = 0;
+                    while (filled < count)
+                    {
+                        var n = await input.ReadAsync(buffer.Memory[filled..count], offset + filled, ct).ConfigureAwait(false);
+                        if (n <= 0)
+                        {
+                            throw new SourceChangedException();
+                        }
+
+                        filled += n;
+                    }
+                }
+
+                hash.Append(buffer.Memory.Span[..count]);
+                offset += count;
+                if (inLost && offset == end)
+                {
+                    index++;
+                }
+            }
+
+            return hash.Finish();
+        }
+        finally
+        {
+            _pool.Return(buffer);
         }
     }
 
@@ -496,15 +616,6 @@ public sealed class FileCopier
         }
     }
 
-    /// <summary>The source ended early or grew while it was read.</summary>
-    private sealed class SourceChangedException : Exception
-    {
-        public SourceChangedException()
-            : base(CopyMessages.SourceChanged)
-        {
-        }
-    }
-
     /// <summary>State of one copy's data transfer. The read side and the write side each touch only their own fields.</summary>
     private sealed class Transfer(
         IReadHandle reader,
@@ -519,8 +630,10 @@ public sealed class FileCopier
         long length,
         int chunkSize,
         int alignment,
-        bool unbuffered)
+        bool unbuffered,
+        RescueReader? rescue)
     {
+        public List<LostRange> Lost { get; } = [];
         private Exception? _firstFailure; // whichever loop faulted first
         private long _done; // write side
         private long _lastReport = time.GetTimestamp(); // write side
@@ -702,15 +815,32 @@ public sealed class FileCopier
             // Unbuffered reads ask for whole sectors (the end of file just returns fewer bytes).
             var memory = buffer.Memory[..(unbuffered ? (int)AlignUp(count, alignment) : count)];
             var filled = 0;
-            while (filled < count)
+            try
             {
-                var n = await reader.ReadAsync(memory[filled..], offset + filled, ct).ConfigureAwait(false);
-                if (n <= 0)
+                while (filled < count)
                 {
-                    throw new SourceChangedException(); // shorter than when the copy started
-                }
+                    var n = await reader.ReadAsync(memory[filled..], offset + filled, ct).ConfigureAwait(false);
+                    if (n <= 0)
+                    {
+                        throw new SourceChangedException(); // shorter than when the copy started
+                    }
 
-                filled += n;
+                    filled += n;
+                }
+            }
+            catch (FileSystemException ex) when (ex.Kind == IoErrorKind.BadBlock && rescue is not null)
+            {
+                foreach (var range in await rescue.ReadChunkAsync(reader, memory, offset, ct).ConfigureAwait(false))
+                {
+                    if (Lost.Count > 0 && Lost[^1] is var last && last.Offset + last.Length == range.Offset && (long)last.Length + range.Length <= int.MaxValue)
+                    {
+                        Lost[^1] = last with { Length = last.Length + range.Length };
+                    }
+                    else
+                    {
+                        Lost.Add(range);
+                    }
+                }
             }
 
             hasher?.Append(memory.Span[..count]);

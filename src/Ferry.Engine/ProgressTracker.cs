@@ -68,6 +68,13 @@ internal sealed class ProgressTracker(IProgress<JobProgress> sink, TimeProvider 
     /// <summary>Adapter for <see cref="FileCopier"/>'s per-file progress.</summary>
     public IProgress<FileProgress> FileSink() => new FileProgressSink(this);
 
+    public IProgress<string> StatusSink() => new StatusProgressSink(this);
+
+    private sealed class StatusProgressSink(ProgressTracker tracker) : IProgress<string>
+    {
+        public void Report(string value) => tracker.SetPhase(value);
+    }
+
     public void Report()
     {
         JobProgress snapshot;

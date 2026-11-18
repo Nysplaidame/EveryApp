@@ -1,3 +1,4 @@
+using System.Globalization;
 using EveryApp.Core.FileSystem;
 
 namespace Ferry.Engine;
@@ -11,6 +12,7 @@ public static class CopyMessages
     public const string PartFileVanished = "The temporary copy disappeared before it could be finished";
     public const string WrongSize = "The copy didn't come out the same size as the original";
     public const string NetworkLost = "The network connection was lost";
+    public const string Copying = "Copying";
     public const string SourceMissing = "The file couldn't be found";
     public const string DestinationFolderMissing = "The folder to copy into couldn't be found";
     public const string NoAccessToSource = "Windows didn't allow this file to be opened";
@@ -20,6 +22,16 @@ public static class CopyMessages
     public const string PathTooLong = "The file's location is too long for Windows";
     public const string InvalidName = "This name can't be used here";
     public const string Unknown = "Something went wrong while copying this file";
+    public const string TooMuchUnreadable = "Too much of this file is unreadable to rescue";
+    public const string LostReportNotWritten = "; the list of unreadable parts couldn't be saved";
+
+    public static string Rescued(string size) => $"Part of this file couldn't be read and was filled with blanks ({size} lost)";
+
+    public static string RetryGaveUp(string problem, TimeSpan waited) =>
+        string.Create(CultureInfo.InvariantCulture, $"{problem}, even after waiting {waited.TotalMinutes:0.#} minutes");
+    public const string RescuedOriginalKept = "Part of this file couldn't be read, so the original was kept";
+    public const string WaitingForNetwork = "Waiting for the network drive…";
+    public const string WaitingForFile = "Waiting for another program to finish with this file…";
     public const string DatesAndAttributesNotKept = "The file was copied, but its dates and attributes couldn't be kept";
 
     // Tree copy (job level).

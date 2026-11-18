@@ -93,6 +93,35 @@ public sealed partial class WindowsFileSystem(AlignedBufferPool? pool = null) : 
         }
     }
 
+    public IWriteHandle OpenWriteExisting(string path, bool unbuffered)
+    {
+        try
+        {
+            var p = Normalize(path);
+            var handle = OpenExistingPartHandle(p, unbuffered);
+            try
+            {
+                // Opened without following links, so a link put in its place is refused instead of written through.
+                var entry = EntryFromHandle(handle, p);
+                if (entry.IsReparsePoint || entry.Attributes.HasFlag(FileAttributes.Directory))
+                {
+                    throw new FileSystemException(path, IoErrorKind.InvalidName, null);
+                }
+
+                return new WindowsWriteHandle(handle, path, unbuffered ? SectorFor(handle, p) : 0, _pool, preallocated: false, existingLength: entry.Length);
+            }
+            catch
+            {
+                handle.Dispose();
+                throw;
+            }
+        }
+        catch (Exception ex) when (IsTranslatable(ex))
+        {
+            throw ErrorKinds.Translate(path, ex);
+        }
+    }
+
     public FileEntry GetEntry(string path)
     {
         try

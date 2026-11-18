@@ -425,6 +425,7 @@ internal sealed class TreeJob
                 ReplaceExisting = replace,
                 TryBlockClone = _clone,
                 MustBeUnder = _destinationFinal,
+                Status = _progress.StatusSink(),
                 BeforeCommit = async (part, hash, token) =>
                 {
                     if (options.Verify)
@@ -472,7 +473,8 @@ internal sealed class TreeJob
             };
 
             outcome = await _owner.Copier.CopyAsync(source, target, options, _pause, _progress.FileSink(), hooks, _ct).ConfigureAwait(false);
-            if (outcome.Success || attempt >= TreeCopier.RetryDelays.Length || !IsWorthRetrying(outcome.Problem!.Kind))
+            _progress.SetPhase(CopyMessages.Copying);
+            if (outcome.Success || outcome.NoRetry || attempt >= TreeCopier.RetryDelays.Length || !IsWorthRetrying(outcome.Problem!.Kind))
             {
                 break;
             }
@@ -489,7 +491,7 @@ internal sealed class TreeJob
             return;
         }
 
-        if (options.Verify)
+        if (options.Verify && outcome.Lost.Count == 0)
         {
             _outcome.Verified++; // BeforeCommit only lets a matching copy through
         }
@@ -501,9 +503,13 @@ internal sealed class TreeJob
         }
 
         CopyPermissions(source, target);
-        if (expected is not null)
+        if (expected is not null && outcome.Lost.Count == 0)
         {
             DeleteSource(source, expected, root.Path); // only now: the copy is complete and matched
+        }
+        else if (expected is not null)
+        {
+            _outcome.Problems.Add(new Problem(TreePaths.Display(source), IoErrorKind.BadBlock, CopyMessages.RescuedOriginalKept));
         }
 
         var hex = outcome.SourceHash is null ? null : Convert.ToHexStringLower(outcome.SourceHash);
@@ -513,7 +519,11 @@ internal sealed class TreeJob
         }
 
         _outcome.Copied++;
-        _journal.Done(item.JournalKey, entry.Length, entry.LastWriteTimeUtc, hex);
+        // A rescued copy must not be recovered later as a verified move that can delete its source.
+        if (outcome.Lost.Count == 0)
+        {
+            _journal.Done(item.JournalKey, entry.Length, entry.LastWriteTimeUtc, hex);
+        }
     }
 
     private static bool IsWorthRetrying(IoErrorKind kind) =>

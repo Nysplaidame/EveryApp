@@ -223,6 +223,26 @@ public sealed partial class WindowsFileSystem
         return handle;
     }
 
+    /// <summary>Opens an existing part file for writing: never truncates, never follows a link, shares nothing, carries delete access.</summary>
+    private static SafeFileHandle OpenExistingPartHandle(string longForm, bool unbuffered)
+    {
+        var flags = FILE_FLAGS_AND_ATTRIBUTES.FILE_FLAG_OVERLAPPED | FILE_FLAGS_AND_ATTRIBUTES.FILE_FLAG_OPEN_REPARSE_POINT;
+        if (unbuffered)
+        {
+            flags |= FILE_FLAGS_AND_ATTRIBUTES.FILE_FLAG_NO_BUFFERING | FILE_FLAGS_AND_ATTRIBUTES.FILE_FLAG_WRITE_THROUGH;
+        }
+
+        var handle = PInvoke.CreateFile(longForm, GenericWrite | DeleteAccess | FileReadAttributes, 0, null, FILE_CREATION_DISPOSITION.OPEN_EXISTING, flags, null);
+        if (handle.IsInvalid)
+        {
+            var error = Marshal.GetLastWin32Error();
+            handle.Dispose();
+            throw new Win32Exception(error);
+        }
+
+        return handle;
+    }
+
     private bool DeleteThroughHandle(string path, bool folder, Func<FileEntry, bool> matches, string? mustBeUnder)
     {
         try

@@ -17,13 +17,15 @@ internal sealed class WindowsWriteHandle : IWriteHandle
     private long _logicalLength; // end of the data written so far; the file is trimmed to this
     private bool _needsTrim;
 
-    public WindowsWriteHandle(SafeFileHandle handle, string path, int sectorSize, AlignedBufferPool pool, bool preallocated)
+    /// <param name="existingLength">Data already in the file (a reopened part file); a short write must still reach at least this far.</param>
+    public WindowsWriteHandle(SafeFileHandle handle, string path, int sectorSize, AlignedBufferPool pool, bool preallocated, long existingLength = 0)
     {
         _handle = handle;
         _path = path;
         _sector = sectorSize;
         _pool = pool;
         _needsTrim = preallocated; // end of file is ahead of the data until the final trim
+        _logicalLength = existingLength;
     }
 
     public async ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, long offset, CancellationToken ct)

@@ -65,6 +65,14 @@ public interface IFileSystem
     /// </summary>
     IWriteHandle CreateWrite(string path, long preallocate, bool unbuffered);
 
+    /// <summary>
+    /// Opens an EXISTING file for writing without truncating or replacing it (to carry on writing a part file after its handle was lost, e.g.
+    /// when a network drive dropped). A link is never followed: a link or folder at <paramref name="path"/> throws
+    /// <see cref="IoErrorKind.InvalidName"/>. Nobody else may open the file while the handle is open. Writes keep the file's existing data;
+    /// a short unbuffered write is padded and trimmed exactly as with <see cref="CreateWrite"/>.
+    /// </summary>
+    IWriteHandle OpenWriteExisting(string path, bool unbuffered);
+
     FileEntry GetEntry(string path);
 
     /// <summary>

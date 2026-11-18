@@ -2,17 +2,15 @@
 
 Only mandatory start-of-session read. Keep under ~200 lines. `/handoff` replaces the ▶ START HERE block; history goes in `HANDOFF.md`.
 
-## ▶ START HERE (updated 2026-11-11, by Claude Sonnet 5.5 — Explorer tab paste bug traced to Ultracopier)
+## ▶ START HERE (updated 2026-11-18, by Claude Opus 5.5 — task 14 accepted and merged)
 
-- **Branch:** `feat/m1-foundation-ferry-engine` (pushed; draft PR #1). Last commit `7f1bb7f` (local, not pushed; docs only). M1 tasks 1–13 complete and review-clean.
-- **Just finished:** the "Ctrl+V pastes into the left-most Explorer tab" bug. Not an EveryApp bug: Ultracopier (runs at startup) was taking over Ctrl+V; quitting it fixed it. PasteCatcher's tab matching was correct in the live log (no code change kept). Note added to `spikes/explorer-interception/MANUAL-TEST.md` (R5).
+- **Branch:** `feat/m1-foundation-ferry-engine` (draft PR #1). Task 14 merged in from `agent/002-task14-rescue` (merge not pushed yet). M1 tasks 1–14 complete.
+- **Just finished:** task 14 (rescue mode + network retry). Full `./build.ps1` passed: 671 tests, 670 passed, 1 skipped (no ReFS drive). Code reviewed by Claude, no issues. Card 002 can be closed; card 003 (merge) is superseded by this merge.
+- **Unmerged agent work to review next:** card 004 (`agent/004-…`, M2 Ctrl+V risk doc), 005 (prep for tasks 15–17), 006 (`agent/006-…`, `ferry` CLI, 5 commits), 007 (`agent/007-…`, task 16 benchmarks, build tweaks). None is based on the task 14 merge, so expect conflicts in `FileCopier.cs`/`STATE.md`. Review and run `./build.ps1` on each before merging.
 - **M2 risk to carry:** Ferry's Ctrl+V hook will compete with copy tools like Ultracopier. Test with one running; decide detection/handling. Not yet in the spec.
-- **Task 14 (rescue mode + network retry) is owned by agent-ops card 002** — `.agents/tasks/002-task14-rescue-retry.md`. Don't resume it through the superpowers plan run; run, stop or close the card instead (Agent Ops page or `dispatch`).
-- **Partial work** from the paused 2026-11-09 run is saved on `wip/task14-partial` (`593e293`, tests written, RED). The card's branch `agent/002-task14-rescue` starts from it.
-- **Card 001** (task 13 security round 3) is closed: done in the plan run, `b0e4c09`.
-- **Waiting on the user:** approve and run card 002. Optional: Explorer spike Part A `--swallow` (step 17+) and Part C; left-drag decision before M2; run `scripts/New-SigningCert.ps1` before the first release.
-- **Next step (tier):** card 002 (Executor, Codex at high effort; Claude reviews) → merge its branch into the feature branch → Tasks 15–17 (`ferry` CLI, benchmarks/tuning incl. R27 levers, soak + milestone security review).
-- **Touches (this update):** `STATE.md`, `HANDOFF.md`, `spikes/explorer-interception/MANUAL-TEST.md`.
+- **Waiting on the user:** optional Explorer spike Part A `--swallow` (step 17+) and Part C; left-drag decision before M2; run `scripts/New-SigningCert.ps1` before the first release.
+- **Next step:** review and merge cards 006 then 007 (tasks 15–16), then task 17 (soak + milestone security review against the threat model).
+- **Touches (this update):** `STATE.md`, `HANDOFF.md`.
 
 ## Current state
 
@@ -20,8 +18,8 @@ Only mandatory start-of-session read. Keep under ~200 lines. `/handoff` replaces
 |---|---|
 | M1 tasks 1–12 | Complete, each review-clean after ≤1 fix round |
 | M1 task 13 (tree copy) | Complete — task review + 3 security rounds clean |
-| M1 task 14 (rescue + retry) | Card 002 (proposed); partial work on `wip/task14-partial` |
-| M1 tasks 15–17 | Not started |
+| M1 task 14 (rescue + retry) | Complete — full build.ps1 green, Claude review clean, merged 2026-11-18 |
+| M1 tasks 15–17 | 15 and 16 done by agents on unmerged branches (cards 006, 007), not reviewed; 17 not started |
 | Deferred minors | Listed per task in the progress log (`- Task N: minor (deferred)`) — sweep before M1 release |
 | Notes for M2 | In progress log (`NOTE for M2`): scheduler can block ~3 s on WMI — never on UI thread; same-folder copy should name "- Copy"/"(2)" |
 
