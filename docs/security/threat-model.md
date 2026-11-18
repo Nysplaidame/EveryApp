@@ -53,12 +53,12 @@ Keep this file current whenever a component or trust boundary changes. Each mile
 
 | STRIDE | Threat | Mitigation |
 |--------|--------|------------|
-| S | A script passes arguments that impersonate another operation, such as a delete flag appended through string concatenation. | Strict argument parser with an allow-list of options. Unknown options are errors. No shell invocation, and no argument is ever passed to a shell. |
+| S | A script passes arguments that impersonate another operation, such as a delete flag appended through string concatenation. | System.CommandLine plus an explicit option allow-list (variadic paths must not swallow unknown flags). Unknown options are errors. No shell invocation, and no argument is ever passed to a shell. |
 | T | Argument injection through file names that begin with `-` or contain wildcards. | `--` end-of-options handling. Names are never expanded as patterns unless requested. All paths go through Core normalisation. |
-| R | No record of what a scripted run did. | The CLI uses the same journal as the apps. Exit codes are stable and documented. |
-| I | Verbose output or crash dumps leak paths or secrets. | Output goes through the Core scrubber. Stack traces are shown only in an explicit debug mode. |
-| D | Pathological arguments or response files cause runaway memory or time. | Limits on argument count, length and response-file size. |
-| E | The CLI is run elevated by habit and acts with more rights than needed. | The CLI refuses destructive operations when elevated unless explicitly forced, and prints a plain warning. |
+| R | No record of what a scripted run did. | The CLI uses the same journal as the apps. Exit codes are stable and documented in --help. History uses the journal's bounded, checksum-validating reader without truncating a damaged tail or retaining per-file state. Moves and automatic replacements show a dry-run preview and require confirmation (prompt or --yes). Resume uses the engine's confirmation callback for the saved sources, destination and mode. |
+| I | Verbose output or crash dumps leak paths or secrets. | User-controlled output goes through the Core scrubber and control characters are removed. JSON uses source-generated serialization. Exceptions produce plain messages, never stack traces. Local logs use LogSetup and record only command, result and exception type. |
+| D | Pathological arguments or response files cause runaway memory or time. | At most 4,096 arguments, each at most 32,767 characters; control characters rejected. Response-file expansion and parser directives are disabled. History streams bounded journal lines with cancellation. Console reads cannot prevent cancellation. |
+| E | The CLI is run elevated by habit and acts with more rights than needed. | Every copy, move and resume goes through the engine's elevation refusal. There is no force-elevation override. |
 
 ### Build and release pipeline (TB8)
 
@@ -101,6 +101,7 @@ Each row is a binding requirement from spec section 14, to be expanded into full
 
 | Date | Scope | Result |
 |------|-------|--------|
+| 2026-11-12 | Task 15 CLI boundary review (card 006) | Reviewed argument parsing, output, confirmations, journal history and engine delegation. Added unknown-option rejection, disabled response files, bounded input, JSON Ask rejection, cancellation-safe prompts and read-only history. Process tests cover malformed input, reserved names, corrupt journals, confirmation, Ctrl+C and kill/resume. Rescue and unreadable Ask are explicitly rejected until Task 14 is available. This is not the milestone audit. |
 | 2026-11-06 | Initial model (Task 2 of M1) | Written. Awaiting the M1 security-auditor review. |
 | 2026-11-07 | Ferry tree copier security review (Task 13, fix round 2) | Findings F1 to F9: elevation advice and elevated runs, destination links, path-based deletes, serial-based same-volume check with copy-allowed renames, file links followed, mark-of-the-web, permission copying limits, tampered journal and spec, hostile-tree cost. All fixed (see Core and Engine rows, TB3, TB6, Accepted risks). |
 | 2026-11-09 | Ferry tree copier security re-review (Task 13, fix round 3) | Findings N1 to N4. N1: generic rights (GENERIC_ALL, GENERIC_WRITE, MAXIMUM_ALLOWED) slipped past the permission filter; now treated as write rights. N2: resume deletes of journaled parts and writes to recovered targets followed links inside the destination; now handle-checked against the destination's final path. N3: the elevation check could be replaced through the public constructor; the seam is now internal. N4: no access re-check after the revert, and INTERACTIVE, Guests and Domain Users missing from the broad groups; both fixed. Accepted-risk row 2 narrowed to match. |

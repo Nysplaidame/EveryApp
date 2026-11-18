@@ -23,6 +23,9 @@ public enum JournalRecordKind
 /// <summary>A part file named by a <see cref="JournalRecordKind.FilePartStarted"/> record. Both paths are safe relative paths.</summary>
 public sealed record JournalPart(string RelativePath, string PartRelativePath, string TargetRelativePath);
 
+/// <summary>Read-only history of a journal's valid records. The options still need the engine's validation.</summary>
+public sealed record JournalSummary(string OptionsJson, DateTime StartedUtc, bool IsFinished, string? Result);
+
 /// <summary>
 /// One journal entry. For <see cref="JournalRecordKind.JobStarted"/>, <see cref="Detail"/> holds the job options as a JSON string.
 /// <see cref="RelativePath"/> is the job's key for the item and must never be rooted or contain <c>..</c>.
