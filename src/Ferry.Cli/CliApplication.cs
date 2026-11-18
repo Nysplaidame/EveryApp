@@ -24,7 +24,8 @@ internal static class CliApplication
         Moves and automatic replacements show a preview and require confirmation.
         --yes confirms that preview, including the saved paths when resuming.
         With --json, copy requires an explicit --if-exists rule other than ask.
-        Rescue and unreadable-file prompts are not available in this version.
+        --rescue saves what it can from a failing drive and lists the parts it could not read.
+        --if-unreadable ask is not available in this version.
         Use -- before names that start with a dash. Response files are disabled.
         Exit codes: 0 success; 1 problems; 2 blocked; 3 cancelled; 4 invalid arguments; 10 internal error.
         """;
@@ -227,9 +228,10 @@ internal static class CliApplication
             throw new ArgumentException("Ask cannot be used with --json. Choose a rule that does not need a prompt.");
         }
 
-        if (options.RescueMode || options.IfUnreadable == FailureRule.Ask)
+        // The engine has no way to ask about an unreadable file until the M2 window exists.
+        if (options.IfUnreadable == FailureRule.Ask)
         {
-            throw new ArgumentException("Rescue and unreadable-file prompts are not available in this version.");
+            throw new ArgumentException("--if-unreadable ask is not available in this version.");
         }
     }
 

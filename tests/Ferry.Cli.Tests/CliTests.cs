@@ -70,7 +70,6 @@ public sealed class CliTests : IDisposable
     [InlineData("copy", "one", "two", "--limit", "-1MB/s")]
     [InlineData("copy", "one", "two", "--limit", "99999999999999999999GB/s")]
     [InlineData("copy", "one", "two", "--json")]
-    [InlineData("copy", "one", "two", "--rescue")]
     [InlineData("copy", "one", "two", "--if-unreadable", "ask")]
     [InlineData("resume", "../bad")]
     [InlineData("verify", "one")]
@@ -80,6 +79,16 @@ public sealed class CliTests : IDisposable
         var result = await RunAsync(args);
         Assert.Equal(4, result.Code);
         Assert.False(Directory.Exists(_destination));
+    }
+
+    [Fact]
+    public async Task Cli_Rescue_HealthyFile_CopiesAndSucceeds()
+    {
+        var file = SourceFile("healthy.txt", "Nothing to rescue");
+        var result = await RunAsync("copy", file, _destination, "--rescue");
+        Assert.Equal(0, result.Code);
+        Assert.Equal("Nothing to rescue", File.ReadAllText(Path.Combine(_destination, "healthy.txt")));
+        Assert.False(File.Exists(Path.Combine(_destination, "healthy.txt.ferry-lost.txt")));
     }
 
     [Fact]
@@ -95,15 +104,17 @@ public sealed class CliTests : IDisposable
     {
         SourceFile("same.txt", "same");
         SourceFile("different.txt", "left");
+        SourceFile("same-size.txt", "abcd");
         SourceFile("missing.txt", "left only");
         Directory.CreateDirectory(_destination);
         File.WriteAllText(Path.Combine(_destination, "same.txt"), "same");
         File.WriteAllText(Path.Combine(_destination, "different.txt"), "right");
+        File.WriteAllText(Path.Combine(_destination, "same-size.txt"), "abce"); // same size, different bytes: caught by the hash
         File.WriteAllText(Path.Combine(_destination, "extra.txt"), "right only");
         Directory.CreateDirectory(Path.Combine(_destination, "empty"));
         var result = await RunAsync("verify", _source, _destination, "--json");
         Assert.Equal(1, result.Code);
-        Assert.Equal(4, Events(result.Output).Count(e => e.GetProperty("type").GetString() == "problem"));
+        Assert.Equal(5, Events(result.Output).Count(e => e.GetProperty("type").GetString() == "problem"));
         Assert.Contains("File contents differ", result.Output, StringComparison.Ordinal);
         Assert.Contains("Missing from", result.Output, StringComparison.Ordinal);
         Assert.Contains("Only in", result.Output, StringComparison.Ordinal);

@@ -61,8 +61,15 @@ internal static class FolderVerifier
 
             try
             {
+                // Different sizes already differ: skip reading both files.
+                if (entry.Length != other.Length)
+                {
+                    Problem("File contents differ.", relative);
+                    continue;
+                }
+
                 var hash = await Verifier.HashAsync(fs, entry.FullPath, true, HashAlgorithmKind.XxHash3, ct).ConfigureAwait(false);
-                if (entry.Length != other.Length || !await Verifier.MatchesAsync(fs, other.FullPath, hash, HashAlgorithmKind.XxHash3, ct).ConfigureAwait(false))
+                if (!await Verifier.MatchesAsync(fs, other.FullPath, hash, HashAlgorithmKind.XxHash3, ct).ConfigureAwait(false))
                 {
                     Problem("File contents differ.", relative);
                 }

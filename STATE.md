@@ -2,15 +2,16 @@
 
 Only mandatory start-of-session read. Keep under ~200 lines. `/handoff` replaces the ▶ START HERE block; history goes in `HANDOFF.md`.
 
-## ▶ START HERE (updated 2026-11-18, by Claude Opus 5.5 — task 14 accepted and merged)
+## ▶ START HERE (updated 2026-11-18, by Claude Opus 5.5 — tasks 14 and 15 merged; task 16 not done)
 
-- **Branch:** `feat/m1-foundation-ferry-engine` (draft PR #1). Task 14 merged in from `agent/002-task14-rescue` (merge not pushed yet). M1 tasks 1–14 complete.
-- **Just finished:** task 14 (rescue mode + network retry). Full `./build.ps1` passed: 671 tests, 670 passed, 1 skipped (no ReFS drive). Code reviewed by Claude, no issues. Card 002 can be closed; card 003 (merge) is superseded by this merge.
-- **Unmerged agent work to review next:** card 004 (`agent/004-…`, M2 Ctrl+V risk doc), 005 (prep for tasks 15–17), 006 (`agent/006-…`, `ferry` CLI, 5 commits), 007 (`agent/007-…`, task 16 benchmarks, build tweaks). None is based on the task 14 merge, so expect conflicts in `FileCopier.cs`/`STATE.md`. Review and run `./build.ps1` on each before merging.
+- **Branch:** `feat/m1-foundation-ferry-engine` (draft PR #1). M1 tasks 1–15 complete and merged.
+- **Just finished:** task 15 (`ferry` CLI, card 006) merged and reviewed. `--rescue` turned on (card 006 predates task 14); `ferry verify` checks sizes before hashing. Card 004 (M2 Ctrl+V risk note) merged. Full `./build.ps1`: 703 tests, 702 passed, 1 skipped (no ReFS drive).
+- **Task 16 is NOT done.** Card 007 (`agent/007-…`) has no harness and no measurements: only "blocked" notes written before tasks 14–15 existed. Deliberately not merged. Its `docs/perf/results.md` lists what must be measured (keep as a checklist). Needs FastCopy installed on this PC and the bench harness (`bench/Ferry.Bench`, `bench.ps1`) built.
+- **Cards to close:** 002 and 003 (task 14 merged), 004, 006. Card 005 was prep only. Card 007 should be redone.
 - **M2 risk to carry:** Ferry's Ctrl+V hook will compete with copy tools like Ultracopier. Test with one running; decide detection/handling. Not yet in the spec.
-- **Waiting on the user:** optional Explorer spike Part A `--swallow` (step 17+) and Part C; left-drag decision before M2; run `scripts/New-SigningCert.ps1` before the first release.
-- **Next step:** review and merge cards 006 then 007 (tasks 15–16), then task 17 (soak + milestone security review against the threat model).
-- **Touches (this update):** `STATE.md`, `HANDOFF.md`.
+- **Waiting on the user:** install FastCopy for the task 16 comparison; optional Explorer spike Part A `--swallow` (step 17+) and Part C; left-drag decision before M2; run `scripts/New-SigningCert.ps1` before the first release.
+- **Next step:** task 16 (benchmark harness, FastCopy comparison, R27 tuning), then task 17 (soak + milestone security review against the threat model).
+- **Touches (this update):** `STATE.md`, `HANDOFF.md`, `docs/security/threat-model.md`, `src/Ferry.Cli/`, `tests/Ferry.Cli.Tests/CliTests.cs`.
 
 ## Current state
 
@@ -19,7 +20,8 @@ Only mandatory start-of-session read. Keep under ~200 lines. `/handoff` replaces
 | M1 tasks 1–12 | Complete, each review-clean after ≤1 fix round |
 | M1 task 13 (tree copy) | Complete — task review + 3 security rounds clean |
 | M1 task 14 (rescue + retry) | Complete — full build.ps1 green, Claude review clean, merged 2026-11-18 |
-| M1 tasks 15–17 | 15 and 16 done by agents on unmerged branches (cards 006, 007), not reviewed; 17 not started |
+| M1 task 15 (`ferry` CLI) | Complete — card 006 merged, Claude review, `--rescue` enabled, 703 tests green (2026-11-18) |
+| M1 tasks 16–17 | Not done: card 007 produced no measurements (not merged); 17 not started |
 | Deferred minors | Listed per task in the progress log (`- Task N: minor (deferred)`) — sweep before M1 release |
 | Notes for M2 | In progress log (`NOTE for M2`): scheduler can block ~3 s on WMI — never on UI thread; same-folder copy should name "- Copy"/"(2)" |
 

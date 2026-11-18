@@ -101,6 +101,7 @@ Each row is a binding requirement from spec section 14, to be expanded into full
 
 | Date | Scope | Result |
 |------|-------|--------|
+| 2026-11-18 | Task 15 CLI merged after Task 14 (Claude review) | `--rescue` enabled in the CLI now that Task 14 is in; `--if-unreadable ask` still refused (no engine prompt until M2). Locked restore validated the System.CommandLine 2.0.2 lock entries. No new findings. |
 | 2026-11-12 | Task 15 CLI boundary review (card 006) | Reviewed argument parsing, output, confirmations, journal history and engine delegation. Added unknown-option rejection, disabled response files, bounded input, JSON Ask rejection, cancellation-safe prompts and read-only history. Process tests cover malformed input, reserved names, corrupt journals, confirmation, Ctrl+C and kill/resume. Rescue and unreadable Ask are explicitly rejected until Task 14 is available. This is not the milestone audit. |
 | 2026-11-06 | Initial model (Task 2 of M1) | Written. Awaiting the M1 security-auditor review. |
 | 2026-11-07 | Ferry tree copier security review (Task 13, fix round 2) | Findings F1 to F9: elevation advice and elevated runs, destination links, path-based deletes, serial-based same-volume check with copy-allowed renames, file links followed, mark-of-the-web, permission copying limits, tampered journal and spec, hostile-tree cost. All fixed (see Core and Engine rows, TB3, TB6, Accepted risks). |
