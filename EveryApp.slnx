@@ -1,0 +1,12 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/EveryApp.Core/EveryApp.Core.csproj" />
+    <Project Path="src/Ferry.Engine/Ferry.Engine.csproj" />
+    <Project Path="src/Ferry.Cli/Ferry.Cli.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/EveryApp.Core.Tests/EveryApp.Core.Tests.csproj" />
+    <Project Path="tests/Ferry.Engine.Tests/Ferry.Engine.Tests.csproj" />
+    <Project Path="tests/Ferry.Cli.Tests/Ferry.Cli.Tests.csproj" />
+  </Folder>
+</Solution>

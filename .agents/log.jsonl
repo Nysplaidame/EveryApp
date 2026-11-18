@@ -1,0 +1,83 @@
+{"ts":"2026-11-11","agent":"claude","model":"sonnet-5.5","task":"explorer-tab-paste-bug","outcome":"cause was Ultracopier; no code change; MANUAL-TEST note 7f1bb7f","next":"card 002 (task 14)"}
+{"ts": "2026-11-12T11:09:23", "task": "002", "step": "approved", "by": "user"}
+{"ts": "2026-11-12T11:09:45", "task": "002", "step": "start", "agent": "codex", "tier": "executor", "worktree": "K:\\Documents\\Obsidian\\worktrees\\EveryApp\\agent_002-task14-rescue"}
+{"ts": "2026-11-12T11:13:29", "task": "002", "step": "exec-executor", "agent": "codex", "model": "gpt-6.1-terra", "effort": "high", "exit": 0, "minutes": 3.7}
+{"ts": "2026-11-12T11:16:51", "task": "002", "step": "fix-executor", "agent": "codex", "model": "gpt-6.1-terra", "effort": "high", "exit": 0, "minutes": 2.5}
+{"ts": "2026-11-12T11:30:13", "task": "002", "step": "exec-planner", "agent": "codex", "model": "gpt-6-astra", "effort": "high", "exit": 0, "minutes": 12.9}
+{"ts": "2026-11-12T11:31:49", "task": "002", "step": "review-1", "agent": "claude", "model": "sonnet", "effort": "high", "exit": 0, "minutes": 1.2}
+{"ts": "2026-11-12T11:31:49", "task": "002", "step": "verdict-1", "agent": "claude", "outcome": "FAIL"}
+{"ts": "2026-11-12T11:35:03", "task": "002", "step": "fix-review", "agent": "codex", "model": "gpt-6.1-terra", "effort": "high", "exit": 0, "minutes": 3.2}
+{"ts": "2026-11-12T11:37:26", "task": "002", "step": "review-2", "agent": "claude", "model": "sonnet", "effort": "high", "exit": 0, "minutes": 1.6}
+{"ts": "2026-11-12T11:37:26", "task": "002", "step": "verdict-2", "agent": "claude", "outcome": "FAIL"}
+{"ts": "2026-11-12T11:37:26", "task": "002", "step": "finish", "outcome": "blocked"}
+{"ts": "2026-11-12T13:18:20", "task": "002", "step": "start", "agent": "codex", "tier": "executor", "worktree": "K:\\Documents\\Obsidian\\worktrees\\EveryApp\\agent_002-task14-rescue"}
+{"ts": "2026-11-12T13:20:51", "task": "002", "step": "exec-executor", "agent": "codex", "model": "gpt-6.1-terra", "effort": "high", "exit": 0, "minutes": 2.5}
+{"ts": "2026-11-12T13:21:40", "task": "002", "step": "review-1", "agent": "claude", "model": "sonnet", "effort": "high", "exit": 0, "minutes": 0.5}
+{"ts": "2026-11-12T13:21:40", "task": "002", "step": "verdict-1", "agent": "claude", "outcome": "FAIL"}
+{"ts": "2026-11-12T13:23:05", "task": "002", "step": "fix-review", "agent": "codex", "model": "gpt-6.1-terra", "effort": "high", "exit": 0, "minutes": 1.4}
+{"ts": "2026-11-12T13:23:26", "task": "002", "step": "finish", "outcome": "blocked"}
+{"ts": "2026-11-12T13:28:17", "task": "002", "step": "start", "agent": "codex", "tier": "executor", "worktree": "K:\\Documents\\Obsidian\\worktrees\\EveryApp\\agent_002-task14-rescue"}
+{"ts": "2026-11-12T13:30:35", "task": "002", "step": "exec-executor", "agent": "codex", "model": "gpt-6.1-terra", "effort": "high", "exit": 0, "minutes": 2.3}
+{"ts": "2026-11-12T13:31:24", "task": "002", "step": "review-1", "agent": "claude", "model": "sonnet", "effort": "high", "exit": 0, "minutes": 0.5}
+{"ts": "2026-11-12T13:31:24", "task": "002", "step": "verdict-1", "agent": "claude", "outcome": "FAIL"}
+{"ts": "2026-11-12T13:33:08", "task": "002", "step": "fix-review", "agent": "codex", "model": "gpt-6.1-terra", "effort": "high", "exit": 0, "minutes": 1.7}
+{"ts": "2026-11-12T13:34:06", "task": "002", "step": "review-2", "agent": "claude", "model": "sonnet", "effort": "high", "exit": 0, "minutes": 0.6}
+{"ts": "2026-11-12T13:34:06", "task": "002", "step": "verdict-2", "agent": "claude", "outcome": "FAIL"}
+{"ts": "2026-11-12T13:34:06", "task": "002", "step": "finish", "outcome": "blocked"}
+{"ts": "2026-11-12T13:48:36", "task": "002", "step": "start", "agent": "qwen", "tier": "executor", "worktree": "K:\\Documents\\Obsidian\\worktrees\\EveryApp\\agent_002-task14-rescue"}
+{"ts": "2026-11-12T13:48:38", "task": "002", "step": "exec-executor", "agent": "qwen", "model": "llama-swap/qwen-worker", "effort": "low", "exit": 1, "minutes": 0.0}
+{"ts": "2026-11-12T13:48:53", "task": "002", "step": "stopped", "by": "user"}
+{"ts": "2026-11-12T13:48:58", "task": "002", "step": "start", "agent": "codex", "tier": "executor", "worktree": "K:\\Documents\\Obsidian\\worktrees\\EveryApp\\agent_002-task14-rescue"}
+{"ts": "2026-11-12T13:51:25", "task": "002", "step": "exec-executor", "agent": "codex", "model": "gpt-6.1-terra", "effort": "high", "exit": 0, "minutes": 2.4}
+{"ts": "2026-11-12T13:52:52", "task": "002", "step": "review-1", "agent": "claude", "model": "sonnet", "effort": "high", "exit": 0, "minutes": 0.9}
+{"ts": "2026-11-12T13:52:52", "task": "002", "step": "verdict-1", "agent": "claude", "outcome": "PASS"}
+{"ts": "2026-11-12T13:52:52", "task": "002", "step": "finish", "outcome": "done"}
+{"ts": "2026-11-12T20:04:45", "task": "003", "step": "approved", "by": "user"}
+{"ts": "2026-11-12T20:04:46", "task": "004", "step": "approved", "by": "user"}
+{"ts": "2026-11-12T20:04:47", "task": "005", "step": "approved", "by": "user"}
+{"ts": "2026-11-12T20:04:56", "task": "003", "step": "start", "agent": "codex", "tier": "mechanical", "worktree": "K:\\Documents\\Obsidian\\worktrees\\EveryApp\\agent_003-merge-card-002-branch-into-feature-branc"}
+{"ts": "2026-11-12T20:05:28", "task": "003", "step": "exec-mechanical", "agent": "codex", "model": "gpt-6-luna", "effort": "low", "exit": 0, "minutes": 0.5}
+{"ts": "2026-11-12T20:06:22", "task": "003", "step": "review-1", "agent": "claude", "model": "sonnet", "effort": "medium", "exit": 0, "minutes": 0.4}
+{"ts": "2026-11-12T20:06:22", "task": "003", "step": "verdict-1", "agent": "claude", "outcome": "FAIL"}
+{"ts": "2026-11-12T20:07:23", "task": "003", "step": "fix-review", "agent": "codex", "model": "gpt-6-luna", "effort": "low", "exit": 0, "minutes": 1.0}
+{"ts": "2026-11-12T20:08:22", "task": "003", "step": "review-2", "agent": "claude", "model": "sonnet", "effort": "medium", "exit": 0, "minutes": 0.4}
+{"ts": "2026-11-12T20:08:22", "task": "003", "step": "verdict-2", "agent": "claude", "outcome": "PASS"}
+{"ts": "2026-11-12T20:08:22", "task": "003", "step": "finish", "outcome": "done"}
+{"ts": "2026-11-12T23:00:23", "task": "004", "step": "start", "agent": "codex", "tier": "mechanical", "worktree": "K:\\Documents\\Obsidian\\worktrees\\EveryApp\\agent_004-document-m2-risk-regarding-ctrl-v-hook-c"}
+{"ts": "2026-11-12T23:00:59", "task": "004", "step": "exec-mechanical", "agent": "codex", "model": "gpt-6-luna", "effort": "low", "exit": 0, "minutes": 0.6}
+{"ts": "2026-11-12T23:02:05", "task": "004", "step": "review-1", "agent": "claude", "model": "sonnet", "effort": "medium", "exit": 0, "minutes": 0.4}
+{"ts": "2026-11-12T23:02:05", "task": "004", "step": "verdict-1", "agent": "claude", "outcome": "PASS"}
+{"ts": "2026-11-12T23:02:05", "task": "004", "step": "finish", "outcome": "done"}
+{"ts": "2026-11-12T23:21:21", "task": "005", "step": "start", "agent": "codex", "tier": "mechanical", "worktree": "K:\\Documents\\Obsidian\\worktrees\\EveryApp\\agent_005-prepare-environment-for-tasks-15-17-exec"}
+{"ts": "2026-11-12T23:22:38", "task": "005", "step": "exec-mechanical", "agent": "codex", "model": "gpt-6-luna", "effort": "low", "exit": 0, "minutes": 1.3}
+{"ts": "2026-11-12T23:23:40", "task": "005", "step": "review-1", "agent": "claude", "model": "sonnet", "effort": "medium", "exit": 0, "minutes": 0.4}
+{"ts": "2026-11-12T23:23:40", "task": "005", "step": "verdict-1", "agent": "claude", "outcome": "PASS"}
+{"ts": "2026-11-12T23:23:40", "task": "005", "step": "finish", "outcome": "done"}
+{"ts": "2026-11-12T23:25:28", "task": "006", "step": "approved", "by": "user"}
+{"ts": "2026-11-12T23:25:29", "task": "007", "step": "approved", "by": "user"}
+{"ts": "2026-11-12T23:25:35", "task": "006", "step": "start", "agent": "codex", "tier": "executor", "worktree": "K:\\Documents\\Obsidian\\worktrees\\EveryApp\\agent_006-implement-the-ferry-cli-for-task-15"}
+{"ts": "2026-11-12T23:27:41", "task": "006", "step": "exec-executor", "agent": "codex", "model": "gpt-6.1-terra", "effort": "medium", "exit": 0, "minutes": 2.1}
+{"ts": "2026-11-12T23:29:30", "task": "006", "step": "fix-executor", "agent": "codex", "model": "gpt-6.1-terra", "effort": "medium", "exit": 0, "minutes": 1.4}
+{"ts": "2026-11-12T23:50:41", "task": "006", "step": "exec-planner", "agent": "codex", "model": "gpt-6-astra", "effort": "high", "exit": 0, "minutes": 20.8}
+{"ts": "2026-11-12T23:53:43", "task": "006", "step": "fix-planner", "agent": "codex", "model": "gpt-6-astra", "effort": "high", "exit": 0, "minutes": 2.7}
+{"ts": "2026-11-12T23:56:53", "task": "006", "step": "review-1", "agent": "claude", "model": "sonnet", "effort": "high", "exit": 0, "minutes": 1.9}
+{"ts": "2026-11-12T23:56:53", "task": "006", "step": "verdict-1", "agent": "claude", "outcome": "PASS"}
+{"ts": "2026-11-12T23:56:54", "task": "006", "step": "finish", "outcome": "done"}
+{"ts": "2026-11-12T23:58:51", "task": "007", "step": "start", "agent": "codex", "tier": "executor", "worktree": "K:\\Documents\\Obsidian\\worktrees\\EveryApp\\agent_007-run-task-16-benchmarks-and-apply-justifi"}
+{"ts": "2026-11-13T00:00:42", "task": "007", "step": "exec-executor", "agent": "codex", "model": "gpt-6.1-terra", "effort": "medium", "exit": 0, "minutes": 1.8}
+{"ts": "2026-11-13T00:02:19", "task": "007", "step": "fix-executor", "agent": "codex", "model": "gpt-6.1-terra", "effort": "medium", "exit": 0, "minutes": 1.2}
+{"ts": "2026-11-13T00:05:25", "task": "007", "step": "exec-planner", "agent": "codex", "model": "gpt-6-astra", "effort": "high", "exit": 0, "minutes": 2.7}
+{"ts": "2026-11-13T00:08:58", "task": "007", "step": "fix-planner", "agent": "codex", "model": "gpt-6-astra", "effort": "high", "exit": 0, "minutes": 3.2}
+{"ts": "2026-11-13T00:09:54", "task": "007", "step": "review-1", "agent": "claude", "model": "sonnet", "effort": "high", "exit": 0, "minutes": 0.4}
+{"ts": "2026-11-13T00:09:54", "task": "007", "step": "verdict-1", "agent": "claude", "outcome": "FAIL"}
+{"ts": "2026-11-13T00:11:10", "task": "007", "step": "fix-review", "agent": "codex", "model": "gpt-6.1-terra", "effort": "medium", "exit": 0, "minutes": 1.3}
+{"ts": "2026-11-13T00:12:14", "task": "007", "step": "review-2", "agent": "claude", "model": "sonnet", "effort": "high", "exit": 0, "minutes": 0.5}
+{"ts": "2026-11-13T00:12:14", "task": "007", "step": "verdict-2", "agent": "claude", "outcome": "FAIL"}
+{"ts": "2026-11-13T00:12:14", "task": "007", "step": "finish", "outcome": "blocked"}
+{"ts": "2026-11-13T23:34:56", "task": "007", "step": "unblocked", "by": "user"}
+{"ts": "2026-11-13T23:35:01", "task": "007", "step": "start", "agent": "codex", "tier": "executor", "worktree": "K:\\Documents\\Obsidian\\worktrees\\EveryApp\\agent_007-run-task-16-benchmarks-and-apply-justifi"}
+{"ts": "2026-11-13T23:36:21", "task": "007", "step": "exec-executor", "agent": "codex", "model": "gpt-6.1-terra", "effort": "medium", "exit": 0, "minutes": 1.3, "tokens": {"input": 28115, "cached": 261248, "output": 2426}}
+{"ts": "2026-11-13T23:37:45", "task": "007", "step": "fix-executor", "agent": "codex", "model": "gpt-6.1-terra", "effort": "medium", "exit": 0, "minutes": 0.6, "tokens": {"input": 19598, "cached": 98688, "output": 931}}
+{"ts": "2026-11-13T23:38:19", "task": "007", "step": "review-1", "agent": "claude", "model": "sonnet", "effort": "high", "exit": 1, "minutes": 0.0, "tokens": {"input": 0, "cached": 0, "output": 0}, "cost_usd": 0.0}
+{"ts": "2026-11-13T23:38:21", "task": "007", "step": "review-1-retry", "agent": "claude", "model": "sonnet", "effort": "high", "exit": 1, "minutes": 0.0, "tokens": {"input": 0, "cached": 0, "output": 0}, "cost_usd": 0.0}
+{"ts": "2026-11-13T23:38:21", "task": "007", "step": "finish", "outcome": "blocked"}

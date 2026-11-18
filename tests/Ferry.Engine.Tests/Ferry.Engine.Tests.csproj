@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Content Include="xunit.runner.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="xunit.v3.mtp-v2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/Ferry.Engine/Ferry.Engine.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Shared test fakes (InMemoryFileSystem, FaultInjectingFileSystem) live in the core test project. -->
+    <Compile Include="..\EveryApp.Core.Tests\Fakes\**\*.cs" Link="Fakes\%(RecursiveDir)%(Filename)%(Extension)" />
+  </ItemGroup>
+
+</Project>

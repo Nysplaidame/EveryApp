@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- Required by the CsWin32 source generator output and the aligned-buffer manager. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Source generator for Win32 P/Invoke (project convention: no hand-written DllImport). Build-time only. -->
+    <PackageReference Include="Microsoft.Windows.CsWin32" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- XxHash3: fast non-cryptographic hash for copy verification and duplicate pre-filtering (first-party Microsoft package). -->
+    <PackageReference Include="System.IO.Hashing" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Structured logging core and rolling-file sink. The bridge to Microsoft.Extensions.Logging is deliberately not used (one package fewer; Serilog's ILogger is returned directly). -->
+    <PackageReference Include="Serilog" />
+    <PackageReference Include="Serilog.Sinks.File" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Exclude-pattern matching (**/node_modules/** and friends) for the tree walker: first-party Microsoft package, no dependencies. -->
+    <PackageReference Include="Microsoft.Extensions.FileSystemGlobbing" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- WMI (root/Microsoft/Windows/Storage) to find the member disks of a Storage Spaces volume: first-party Microsoft package, no native code of our own. -->
+    <PackageReference Include="System.Management" />
+  </ItemGroup>
+
+</Project>

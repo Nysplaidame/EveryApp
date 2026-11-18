@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Spike only (Task 4). Not in EveryApp.slnx, not built by CI. Logs what Ferry WOULD do; never copies. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>PasteCatcher</RootNamespace>
+  </PropertyGroup>
+
+</Project>
