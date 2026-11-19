@@ -1,108 +1,49 @@
 ---
 id: 007
 title: Run Task 16 benchmarks and apply justified tuning
-status: blocked
+status: approved
 tier: executor
 agent: codex
 reviewer: claude
 base: feat/m1-foundation-ferry-engine
-base_commit: 7f1bb7fe782526ae1d49fa620d08c60379f71fdb
-branch: agent/007-run-task-16-benchmarks-and-apply-justifi
+base_commit: 418185d88d77824e5f47041abcb6349c1723b378
+branch: agent/007-task16-bench-v2
 acceptance_cmd: powershell -NoProfile -ExecutionPolicy Bypass -File build.ps1
-created: 2026-11-12
+created: 2026-11-19
 ---
 
 ## Goal
-Complete the Task 16 benchmarks and tuning, including the R27 levers specified in the plan, with results recorded for review.
+Build the Task 16 benchmark harness, measure Ferry against FastCopy, and tune the R27 levers only where the measurements justify it.
+
+## Background (rebuilt 2026-11-19)
+The first attempt (branch `agent/007-run-task-16-benchmarks-and-apply-justifi`, kept for reference) started from a base older than tasks 14 and 15, so it never had the `ferry` CLI and only wrote "blocked" notes. Tasks 1–15 are now merged into this base: the `ferry copy` CLI exists (`src/Ferry.Cli`), and rescue mode and network retry are done. Do not reuse the old branch's notes; `docs/perf/results.md` does not exist yet on this base.
 
 ## Read first
-- STATE.md - current project status and prerequisites
-- docs/superpowers/specs/2026-11-06-ferry-suite-v1-design.md - relevant performance and security requirements in §14
-- docs/superpowers/plans/2026-11-06-everyapp-m1-foundation-and-ferry-engine.md - Task 16 requirements
+- STATE.md: current status
+- docs/superpowers/plans/2026-11-06-everyapp-m1-foundation-and-ferry-engine.md: the "Task 16" section only
+- docs/superpowers/specs/2026-11-06-ferry-suite-v1-design.md: §14 (security), and the performance gate
+- src/Ferry.Engine/FileCopier.cs: the tunable constants
 
 ## Do
-1. Check that Task 16 prerequisites are complete.
-2. Run the benchmarks specified for Task 16 and record baseline results.
-3. Evaluate the R27 levers and make changes justified by the measurements.
-4. Rerun the relevant benchmarks and checks through build.ps1.
-5. Record results and update the START HERE block and HANDOFF.md with a Touches line.
+1. Build the harness from the plan: `bench/Ferry.Bench/*` (BenchmarkDotNet micro-benchmarks: `BufferPool` rent/return, XxHash3 throughput, `FileCopier` pipeline on a temp folder), `bench.ps1 [-Generate]` and `bench.example.json`. Real paths go only in the git-ignored `bench.local.json` (add it to `.gitignore`). Pin any new package in `Directory.Packages.props` and the lock files, exactly as `build.ps1`'s locked restore needs.
+2. Keep the bench project out of the normal `build.ps1` test run, so CI stays fast. It must still build and pass the format check.
+3. If `bench.local.json` exists and names a FastCopy executable, run the full comparison (3 rounds, alternating, verify on and off). If it doesn't, run the Ferry-only runs and the micro-benchmarks, and write "FastCopy comparison not run: not configured on this PC" in the results.
+4. If `EmptyStandbyList` isn't available, say so in the results instead of failing.
+5. Try the R27 levers (buffer 1/4/8/16 MiB, channel depth 2/4/8, unbuffered threshold 1/8/32 MiB, small-file ordering). Change a default in `FileCopier.cs` only when the measurements show it is faster; record the numbers behind each kept or changed default.
+6. Write `docs/perf/results.md`: hardware described by drive model only (no drive letters, paths or machine names), medians, ratios, the gate result for each set, and any gap with its cause.
+7. Run `build.ps1`. Update the START HERE block in STATE.md and add a HANDOFF.md entry with a `Touches:` line.
 
 ## Don't touch
-- Task 14 rescue mode and network retry
-- Task 17 soak and milestone security review
+- Rescue mode and network retry (task 14), the CLI's behaviour (task 15)
+- Task 17 (soak test, milestone security review)
+- Any committed file with a personal path, drive letter or machine name
+
+## Notes
+- `TreeCopierSecurityTests.HugeTree_PlansQuickly` failed once on the old branch by timing (2.2 s on a busy machine). If it fails here, report it; don't loosen it as part of this card.
+- If the gate (ratio ≤ 1.10 on every set) isn't met, record the gap and stop. The user decides before M2.
 
 ## Acceptance
 - [ ] `powershell -NoProfile -ExecutionPolicy Bypass -File build.ps1` passes
-- [ ] Task 16 benchmark results include baseline and final measurements.
-- [ ] Any tuning changes are supported by the recorded results.
-- [ ] The applicable build.ps1 checks pass.
-
-## Result
-- **Commit(s):** `de3e835` — `docs: record acceptance recheck`
-- **Acceptance output:** Fail. `build.ps1` exited 1 at locked restore; format, build and tests were not reached. The supplied huge-tree timing failure could not be reproduced in this run.
-- **Notes / follow-ups:** Task 16 remains blocked by incomplete Tasks 14 and 15. Baseline, final and R27 measurements remain unrun; no tuning was applied. Integrate the prerequisites and re-dispatch with the benchmark tools and required hardware available.
-
-**Dispatcher (2026-11-13):** status `blocked`; worktree `K:\Documents\Obsidian\worktrees\EveryApp\agent_007-run-task-16-benchmarks-and-apply-justifi`.
-- Notes: review did not complete (reviewer failed or gave no verdict, twice); run the review again or merge-check by hand
-
-<details><summary>Acceptance output (tail)</summary>
-
-```
-  All projects are up-to-date for restore.
-==> format check
-==> build
-  EveryApp.Core -> K:\Documents\Obsidian\worktrees\EveryApp\agent_007-run-task-16-benchmarks-and-apply-justifi\artifacts\bin\EveryApp.Core\release_win-x64\EveryApp.Core.dll
-  Ferry.Engine -> K:\Documents\Obsidian\worktrees\EveryApp\agent_007-run-task-16-benchmarks-and-apply-justifi\artifacts\bin\Ferry.Engine\release_win-x64\Ferry.Engine.dll
-  EveryApp.Core.Tests -> K:\Documents\Obsidian\worktrees\EveryApp\agent_007-run-task-16-benchmarks-and-apply-justifi\artifacts\bin\EveryApp.Core.Tests\release_win-x64\EveryApp.Core.Tests.dll
-  Ferry.Cli -> K:\Documents\Obsidian\worktrees\EveryApp\agent_007-run-task-16-benchmarks-and-apply-justifi\artifacts\bin\Ferry.Cli\release_win-x64\ferry.dll
-  Ferry.Engine.Tests -> K:\Documents\Obsidian\worktrees\EveryApp\agent_007-run-task-16-benchmarks-and-apply-justifi\artifacts\bin\Ferry.Engine.Tests\release_win-x64\Ferry.Engine.Tests.dll
-  Ferry.Cli.Tests -> K:\Documents\Obsidian\worktrees\EveryApp\agent_007-run-task-16-benchmarks-and-apply-justifi\artifacts\bin\Ferry.Cli.Tests\release_win-x64\Ferry.Cli.Tests.dll
-
-Build succeeded.
-    0 Warning(s)
-    0 Error(s)
-
-Time Elapsed 00:00:09.13
-==> test
-Running tests from K:\Documents\Obsidian\worktrees\EveryApp\agent_007-run-task-16-benchmarks-and-apply-justifi\artifacts\bin\Ferry.Cli.Tests\release_win-x64\Ferry.Cli.Tests.dll (net10.0|x64)
-Running tests from K:\Documents\Obsidian\worktrees\EveryApp\agent_007-run-task-16-benchmarks-and-apply-justifi\artifacts\bin\Ferry.Engine.Tests\release_win-x64\Ferry.Engine.Tests.dll (net10.0|x64)
-K:\Documents\Obsidian\worktrees\EveryApp\agent_007-run-task-16-benchmarks-and-apply-justifi\artifacts\bin\Ferry.Cli.Tests\release_win-x64\Ferry.Cli.Tests.dll (net10.0|x64) passed (228ms)
-Running tests from K:\Documents\Obsidian\worktrees\EveryApp\agent_007-run-task-16-benchmarks-and-apply-justifi\artifacts\bin\EveryApp.Core.Tests\release_win-x64\EveryApp.Core.Tests.dll (net10.0|x64)
-skipped Ferry.Engine.Tests.TreeCopierRealFileTests.ReFS_SameVolume_UsesBlockClone (0ms)
-  No ReFS volume on this PC.
-  from K:\Documents\Obsidian\worktrees\EveryApp\agent_007-run-task-16-benchmarks-and-apply-justifi\artifacts\bin\Ferry.Engine.Tests\release_win-x64\Ferry.Engine.Tests.dll (net10.0|x64)
-[+399/x0/?0] EveryApp.Core.Tests.dll (net10.0|x64)(2s)
-[+170/x0/?1] Ferry.Engine.Tests.dll (net10.0|x64)(2s)
-
-K:\Documents\Obsidian\worktrees\EveryApp\agent_007-run-task-16-benchmarks-and-apply-justifi\artifacts\bin\Ferry.Engine.Tests\release_win-x64\Ferry.Engine.Tests.dll (net10.0|x64) passed (4s 947ms)
-K:\Documents\Obsidian\worktrees\EveryApp\agent_007-run-task-16-benchmarks-and-apply-justifi\artifacts\bin\EveryApp.Core.Tests\release_win-x64\EveryApp.Core.Tests.dll (net10.0|x64) passed (5s 083ms)
-
-Test run summary: Passed!
-  K:\Documents\Obsidian\worktrees\EveryApp\agent_007-run-task-16-benchmarks-and-apply-justifi\artifacts\bin\Ferry.Engine.Tests\release_win-x64\Ferry.Engine.Tests.dll (net10.0|x64) passed (4s 947ms)
-  K:\Documents\Obsidian\worktrees\EveryApp\agent_007-run-task-16-benchmarks-and-apply-justifi\artifacts\bin\EveryApp.Core.Tests\release_win-x64\EveryApp.Core.Tests.dll (net10.0|x64) passed (5s 083ms)
-  K:\Documents\Obsidian\worktrees\EveryApp\agent_007-run-task-16-benchmarks-and-apply-justifi\artifacts\bin\Ferry.Cli.Tests\release_win-x64\Ferry.Cli.Tests.dll (net10.0|x64) passed (228ms)
-
-  total: 616
-  failed: 0
-  succeeded: 615
-  skipped: 1
-  duration: 5s 597ms
-Build OK.
-```
-</details>
-
-<details><summary>Branch log</summary>
-
-```
-de3e835 docs: record acceptance recheck
-faee054 docs: restore task 16 handoff context
-10072f3 fix(build): revert unmeasured worker limit
-aee6a83 fix(build): serialize MSBuild workers
-e783a70 docs(perf): detail pending task 16 measurements
-ebed530 docs(perf): record acceptance retry
-970ae52 docs(perf): record benchmark blockers
-7f1bb7f docs(spike): note Ultracopier Ctrl+V pastes into the left-most Explorer tab
-c1d4c3b chore(agents): card 002 takes over task 14 (rescue + retry)
-bbb283c docs(state): record task 14 pause
-```
-</details>
+- [ ] `bench.ps1` and `bench/Ferry.Bench` exist and run; `bench.example.json` holds placeholder paths only
+- [ ] `docs/perf/results.md` has baseline and final numbers (or says plainly which runs could not happen and why)
+- [ ] Every tuning change is backed by a number in `results.md`
