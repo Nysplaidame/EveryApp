@@ -4,6 +4,9 @@
     <Project Path="src/Ferry.Engine/Ferry.Engine.csproj" />
     <Project Path="src/Ferry.Cli/Ferry.Cli.csproj" />
   </Folder>
+  <Folder Name="/bench/">
+    <Project Path="bench/Ferry.Bench/Ferry.Bench.csproj" />
+  </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/EveryApp.Core.Tests/EveryApp.Core.Tests.csproj" />
     <Project Path="tests/Ferry.Engine.Tests/Ferry.Engine.Tests.csproj" />

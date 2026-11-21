@@ -1,0 +1,9 @@
+{
+  "fastCopyExe": "C:\\path\\to\\FastCopy.exe",
+  "sets": [
+    { "name": "hdd-to-nvme-large", "kind": "large", "gated": true, "source": "X:\\bench\\large", "dest": "Y:\\bench-out" },
+    { "name": "hdd-to-nvme-small", "kind": "small", "gated": true, "source": "X:\\bench\\small", "dest": "Y:\\bench-out" },
+    { "name": "nvme-to-nvme-large", "kind": "large", "gated": true, "source": "Y:\\bench\\large", "dest": "Z:\\bench-out" },
+    { "name": "nvme-to-nvme-mixed", "kind": "mixed", "gated": true, "source": "Y:\\bench\\mixed", "dest": "Z:\\bench-out" }
+  ]
+}

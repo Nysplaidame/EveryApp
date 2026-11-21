@@ -40,6 +40,7 @@ public sealed class FileCopier
     private readonly IFileSystem _fs;
     private readonly BufferPool _pool;
     private readonly TimeProvider _time;
+    private readonly CopierTuning _tuning;
 
     public FileCopier(IFileSystem fs, BufferPool pool)
         : this(fs, pool, TimeProvider.System)
@@ -48,13 +49,22 @@ public sealed class FileCopier
 
     /// <summary>Lets tests supply a clock for the speed limit and progress timing.</summary>
     public FileCopier(IFileSystem fs, BufferPool pool, TimeProvider time)
+        : this(fs, pool, time, CopierTuning.Default)
+    {
+    }
+
+    /// <summary>Lets the benchmarks try other pipeline depths and unbuffered thresholds. The app always uses <see cref="CopierTuning.Default"/>.</summary>
+    internal FileCopier(IFileSystem fs, BufferPool pool, TimeProvider time, CopierTuning tuning)
     {
         ArgumentNullException.ThrowIfNull(fs);
         ArgumentNullException.ThrowIfNull(pool);
         ArgumentNullException.ThrowIfNull(time);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(tuning.PipelineDepth);
+        ArgumentOutOfRangeException.ThrowIfNegative(tuning.UnbufferedThresholdBytes);
         _fs = fs;
         _pool = pool;
         _time = time;
+        _tuning = tuning;
     }
 
     /// <summary>The longest file name Windows allows in one path segment.</summary>
@@ -111,7 +121,7 @@ public sealed class FileCopier
                 }
             }
 
-            var unbuffered = length >= UnbufferedThresholdBytes;
+            var unbuffered = length >= _tuning.UnbufferedThresholdBytes;
             var alignment = unbuffered || options.RescueMode ? Math.Max(_fs.GetSectorSize(source), _fs.GetSectorSize(destination)) : BufferedAlignment;
             reader = await retry.RunAsync(() => Task.FromResult(_fs.OpenRead(source, unbuffered)), RetryPolicy.IsTransient, hooks?.Status, ct).ConfigureAwait(false);
             if (reader.Length != length)
@@ -179,7 +189,8 @@ public sealed class FileCopier
                 ChunkSizeFor(options, alignment),
                 alignment,
                 unbuffered,
-                options.RescueMode ? new RescueReader(_fs, _fs.GetSectorSize(source), pause, options.MaxLostSectors) : null);
+                options.RescueMode ? new RescueReader(_fs, _fs.GetSectorSize(source), pause, options.MaxLostSectors) : null,
+                _tuning.PipelineDepth);
             await transfer.RunAsync(ct).ConfigureAwait(false);
 
             // All data is written. Make it durable and close it; any failure here fails the copy (never rename after a failed flush).
@@ -631,7 +642,8 @@ public sealed class FileCopier
         int chunkSize,
         int alignment,
         bool unbuffered,
-        RescueReader? rescue)
+        RescueReader? rescue,
+        int pipelineDepth)
     {
         public List<LostRange> Lost { get; } = [];
         private Exception? _firstFailure; // whichever loop faulted first
@@ -692,7 +704,7 @@ public sealed class FileCopier
         private async Task RunPipelineAsync(CancellationToken ct)
         {
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            var channel = Channel.CreateBounded<Chunk>(new BoundedChannelOptions(PipelineDepth)
+            var channel = Channel.CreateBounded<Chunk>(new BoundedChannelOptions(pipelineDepth)
             {
                 SingleReader = true,
                 SingleWriter = true,
