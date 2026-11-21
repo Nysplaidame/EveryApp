@@ -8,6 +8,7 @@ reviewer: claude
 base: feat/m1-foundation-ferry-engine
 base_commit: 418185d88d77824e5f47041abcb6349c1723b378
 branch: agent/007-task16-bench-v2
+codex_access: net
 acceptance_cmd: powershell -NoProfile -ExecutionPolicy Bypass -File build.ps1
 created: 2026-11-19
 ---
@@ -17,6 +18,8 @@ Build the Task 16 benchmark harness, measure Ferry against FastCopy, and tune th
 
 ## Background (rebuilt 2026-11-19)
 The first attempt (branch `agent/007-run-task-16-benchmarks-and-apply-justifi`, kept for reference) started from a base older than tasks 14 and 15, so it never had the `ferry` CLI and only wrote "blocked" notes. Tasks 1–15 are now merged into this base: the `ferry copy` CLI exists (`src/Ferry.Cli`), and rescue mode and network retry are done. Do not reuse the old branch's notes; `docs/perf/results.md` does not exist yet on this base.
+
+Second run (2026-11-21): the run on 2026-11-20 had no network, so NuGet restore failed and it only wrote "blocked" notes (`da6cd90`, `f33b021`). This run has network access and a writable NuGet cache: `build.ps1` passes on this branch (703 tests) outside the sandbox. Replace those blocked notes with real results; don't stop at restore.
 
 ## Read first
 - STATE.md: current status
