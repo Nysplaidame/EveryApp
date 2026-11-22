@@ -1,7 +1,7 @@
 ---
 id: 007
 title: Run Task 16 benchmarks and apply justified tuning
-status: approved
+status: superseded
 tier: executor
 agent: codex
 reviewer: claude
@@ -50,3 +50,9 @@ Second run (2026-11-21): the run on 2026-11-20 had no network, so NuGet restore 
 - [ ] `bench.ps1` and `bench/Ferry.Bench` exist and run; `bench.example.json` holds placeholder paths only
 - [ ] `docs/perf/results.md` has baseline and final numbers (or says plainly which runs could not happen and why)
 - [ ] Every tuning change is backed by a number in `results.md`
+
+## Result
+- **Superseded (2026-11-22):** done in a Claude session instead. Codex's sandbox could not restore NuGet packages (TLS `SEC_E_NO_CREDENTIALS`) or read the test drives, so both card runs only wrote "blocked" notes; nothing from branches `agent/007-run-task-16-benchmarks-and-apply-justifi` or `agent/007-task16-bench-v2` was merged.
+- **Commit(s):** `d219557` (harness), `5ecb65b` (engine changes, results, review fixes).
+- **Acceptance output:** `build.ps1` passes: 729 tests, 728 passed, 1 skipped (ReFS).
+- **Notes / follow-ups:** speed gate not met (see `docs/perf/results.md`); the user decides how to close it before M2. HDD sets not run (HDD offline).
