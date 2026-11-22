@@ -18,6 +18,13 @@ public interface IWriteHandle : IAsyncDisposable
 {
     ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, long offset, CancellationToken ct);
 
+    /// <summary>
+    /// Reads back through this same handle (verify before close: no second open, which antivirus scanning delays by milliseconds per new file).
+    /// On an unbuffered handle the data comes from the drive, not the cache; the buffer must then be sector-aligned and a whole number of sectors
+    /// (the end of the file just returns fewer bytes). Returns the bytes read, 0 at the end.
+    /// </summary>
+    ValueTask<int> ReadBackAsync(Memory<byte> buffer, long offset, CancellationToken ct);
+
     ValueTask SetLengthAsync(long length);
 
     ValueTask FlushAsync();

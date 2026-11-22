@@ -62,6 +62,7 @@ public class HashBenchmarks
 /// The full FileCopier path for one 256 MiB file inside the temp folder (verify on and off). Uses whatever drive holds the temp folder,
 /// so compare runs on the same PC only.
 /// </summary>
+[SimpleJob(launchCount: 1, warmupCount: 1, iterationCount: 5)] // few runs: each one writes 256 MiB to the temp folder
 public class FileCopierBenchmarks
 {
     private string _folder = null!;

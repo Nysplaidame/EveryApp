@@ -20,6 +20,7 @@ public sealed partial class WindowsFileSystem
     private const uint ReadControl = 0x00020000;
     private const uint WriteDac = 0x00040000;
     private const uint GenericWrite = 0x40000000;
+    private const uint GenericRead = 0x80000000; // part files only: lets the copier read its own data back before closing (verify)
     private const uint FileReadData = 0x0001; // FILE_LIST_DIRECTORY for folders
     private const int ErrorDirNotEmpty = 145;
     private const string ZoneIdentifierStream = ":Zone.Identifier:$DATA";
@@ -203,16 +204,16 @@ public sealed partial class WindowsFileSystem
     [GeneratedRegex(@"^:[^:\\/]+:\$DATA$", RegexOptions.CultureInvariant | RegexOptions.IgnoreCase)]
     private static partial Regex StreamName();
 
-    /// <summary>A part file: CREATE_NEW, write and delete access, no sharing, overlapped (for RandomAccess), optionally unbuffered.</summary>
+    /// <summary>A part file: CREATE_NEW, read, write and delete access, no sharing, overlapped (for RandomAccess), optionally unbuffered.</summary>
     private static SafeFileHandle CreatePartHandle(string longForm, bool unbuffered)
     {
         var flags = FILE_FLAGS_AND_ATTRIBUTES.FILE_FLAG_OVERLAPPED;
         if (unbuffered)
         {
-            flags |= FILE_FLAGS_AND_ATTRIBUTES.FILE_FLAG_NO_BUFFERING | FILE_FLAGS_AND_ATTRIBUTES.FILE_FLAG_WRITE_THROUGH;
+            flags |= FILE_FLAGS_AND_ATTRIBUTES.FILE_FLAG_NO_BUFFERING; // no write-through (slower, benchmarked in task 16): the copier flushes before the rename, or journals the file to recheck on resume
         }
 
-        var handle = PInvoke.CreateFile(longForm, GenericWrite | DeleteAccess | FileReadAttributes, 0, null, FILE_CREATION_DISPOSITION.CREATE_NEW, flags, null);
+        var handle = PInvoke.CreateFile(longForm, GenericRead | GenericWrite | DeleteAccess | FileReadAttributes, 0, null, FILE_CREATION_DISPOSITION.CREATE_NEW, flags, null);
         if (handle.IsInvalid)
         {
             var error = Marshal.GetLastWin32Error();
@@ -229,10 +230,10 @@ public sealed partial class WindowsFileSystem
         var flags = FILE_FLAGS_AND_ATTRIBUTES.FILE_FLAG_OVERLAPPED | FILE_FLAGS_AND_ATTRIBUTES.FILE_FLAG_OPEN_REPARSE_POINT;
         if (unbuffered)
         {
-            flags |= FILE_FLAGS_AND_ATTRIBUTES.FILE_FLAG_NO_BUFFERING | FILE_FLAGS_AND_ATTRIBUTES.FILE_FLAG_WRITE_THROUGH;
+            flags |= FILE_FLAGS_AND_ATTRIBUTES.FILE_FLAG_NO_BUFFERING; // no write-through (slower, benchmarked in task 16): the copier flushes before the rename, or journals the file to recheck on resume
         }
 
-        var handle = PInvoke.CreateFile(longForm, GenericWrite | DeleteAccess | FileReadAttributes, 0, null, FILE_CREATION_DISPOSITION.OPEN_EXISTING, flags, null);
+        var handle = PInvoke.CreateFile(longForm, GenericRead | GenericWrite | DeleteAccess | FileReadAttributes, 0, null, FILE_CREATION_DISPOSITION.OPEN_EXISTING, flags, null);
         if (handle.IsInvalid)
         {
             var error = Marshal.GetLastWin32Error();

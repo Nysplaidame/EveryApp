@@ -853,6 +853,19 @@ public sealed class InMemoryFileSystem : IFileSystem
             }
         }
 
+        public ValueTask<int> ReadBackAsync(Memory<byte> buffer, long offset, CancellationToken ct)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            ArgumentOutOfRangeException.ThrowIfNegative(offset);
+            ct.ThrowIfCancellationRequested();
+            lock (fs._lock)
+            {
+                var n = (int)Math.Max(0, Math.Min(buffer.Length, node.Length - offset));
+                node.Data.AsSpan((int)offset, n).CopyTo(buffer.Span);
+                return ValueTask.FromResult(n);
+            }
+        }
+
         public ValueTask SetLengthAsync(long length)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);

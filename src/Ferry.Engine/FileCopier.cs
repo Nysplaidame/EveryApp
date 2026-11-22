@@ -11,7 +11,9 @@ namespace Ferry.Engine;
 
 /// <summary>
 /// Copies one file. Data goes to a part file, <c>&lt;destination&gt;.&lt;random&gt;.ferrypart</c>, and only takes the real name (by rename) once it is complete, flushed,
-/// the right size, and the source did not change meanwhile; the real name never holds partial content. Every failure or cancellation
+/// the right size, verified when asked, and the source did not change meanwhile; the real name never holds partial content. The one exception is
+/// <see cref="FileCopyHooks.SkipSmallFileFlush"/>: a small file may then reach its real name before its data is on disk, so a power cut can leave
+/// it blank, and the caller journals it (<see cref="FileCopyOutcome.Flushed"/>) to check it again on resume. Every failure or cancellation
 /// deletes the part file. Large files stream through a reader loop and a writer loop joined by a small bounded queue of pooled, aligned buffers.
 /// Thread safe: one instance can run many copies at once.
 /// </summary>
@@ -122,7 +124,10 @@ public sealed class FileCopier
             }
 
             var unbuffered = length >= _tuning.UnbufferedThresholdBytes;
-            var alignment = unbuffered || options.RescueMode ? Math.Max(_fs.GetSectorSize(source), _fs.GetSectorSize(destination)) : BufferedAlignment;
+
+            // A small file that will be verified is written unbuffered too, so it can be read back from the drive before its handle closes.
+            var writeUnbuffered = unbuffered || (options.Verify && hooks is { VerifyInCopier: true } && !options.RescueMode && length > 0);
+            var alignment = writeUnbuffered || options.RescueMode ? Math.Max(_fs.GetSectorSize(source), _fs.GetSectorSize(destination)) : BufferedAlignment;
             reader = await retry.RunAsync(() => Task.FromResult(_fs.OpenRead(source, unbuffered)), RetryPolicy.IsTransient, hooks?.Status, ct).ConfigureAwait(false);
             if (reader.Length != length)
             {
@@ -140,7 +145,7 @@ public sealed class FileCopier
                 return _fs.OpenRead(source, unbuffered);
             }, retry, hooks?.Status);
 
-            (writer, part) = await retry.RunAsync(() => Task.FromResult(CreatePart(destination, length, unbuffered, hooks)), RetryPolicy.IsTransient, hooks?.Status, ct).ConfigureAwait(false);
+            (writer, part) = await retry.RunAsync(() => Task.FromResult(CreatePart(destination, length, writeUnbuffered, hooks)), RetryPolicy.IsTransient, hooks?.Status, ct).ConfigureAwait(false);
             partIsOurs = true;
             if (hooks?.MustBeUnder is { } root && !PathSafety.IsSameOrUnderFinal(root, writer.GetFinalPath()))
             {
@@ -151,7 +156,7 @@ public sealed class FileCopier
             var originalFinalPath = writer.GetFinalPath();
             var retryWriter = new RetryWriteHandle(writer, async () =>
             {
-                var reopened = _fs.OpenWriteExisting(part, unbuffered);
+                var reopened = _fs.OpenWriteExisting(part, writeUnbuffered);
                 try
                 {
                     if (!SamePath(originalFinalPath, reopened.GetFinalPath()))
@@ -189,12 +194,48 @@ public sealed class FileCopier
                 ChunkSizeFor(options, alignment),
                 alignment,
                 unbuffered,
+                writeUnbuffered,
                 options.RescueMode ? new RescueReader(_fs, _fs.GetSectorSize(source), pause, options.MaxLostSectors) : null,
                 _tuning.PipelineDepth);
             await transfer.RunAsync(ct).ConfigureAwait(false);
 
+            // Verify a small file before closing it, through the same handle: opening a just-written file again waits milliseconds for
+            // antivirus scanning, more than the whole copy. Its writes were unbuffered, so this read comes from the drive, not the cache.
+            var hash = hasher?.Finish();
+            var verifyHere = options.Verify && hooks is { VerifyInCopier: true };
+            if (verifyHere && hash is null)
+            {
+                return Failed(source, IoErrorKind.Other, CopyMessages.VerifyMismatch, part) with { VerifyFailed = true }; // nothing to compare with: never pass it
+            }
+
+            var verifiedBeforeClose = false;
+            if (verifyHere && !unbuffered && (writeUnbuffered || length == 0) && !retryWriter.Reopened)
+            {
+                hooks!.Verifying?.Invoke();
+                try
+                {
+                    if (!await ReadBackMatchesAsync(writer, length, alignment, hash!, options.HashAlgorithm, ct).ConfigureAwait(false))
+                    {
+                        return Failed(source, IoErrorKind.Other, CopyMessages.VerifyMismatch, part) with { VerifyFailed = true };
+                    }
+                }
+                catch (FileSystemException ex) when (!ct.IsCancellationRequested)
+                {
+                    return Failed(source, ex.Kind, CopyMessages.VerifyCouldNotRead, part) with { VerifyFailed = true };
+                }
+
+                verifiedBeforeClose = true;
+            }
+
             // All data is written. Make it durable and close it; any failure here fails the copy (never rename after a failed flush).
-            await writer.FlushAsync().ConfigureAwait(false);
+            // A caller that can recheck after a power cut may skip the flush for small, plain copies (it is most of their time); closing the
+            // handle still writes the data out through the cache. Large, rescued and reconnected copies are always flushed.
+            var flushed = !(hooks is { SkipSmallFileFlush: true } && !unbuffered && !options.RescueMode && !retryWriter.Reopened);
+            if (flushed)
+            {
+                await writer.FlushAsync().ConfigureAwait(false);
+            }
+
             var w = writer;
             writer = null;
             await w.DisposeAsync().ConfigureAwait(false);
@@ -208,7 +249,6 @@ public sealed class FileCopier
                 return incomplete;
             }
 
-            var hash = hasher?.Finish();
             if (retryWriter.Reopened)
             {
                 var expected = hash ?? await retry.RunAsync(
@@ -225,6 +265,12 @@ public sealed class FileCopier
                     return changed;
                 }
             }
+            else if (verifyHere && !verifiedBeforeClose && await VerifyClosedPartAsync(source, part, hash!, options, hooks!, ct).ConfigureAwait(false) is { } bad)
+            {
+                // Large (or rescued) files: the closed part is read back unbuffered. The wait to reopen is small next to reading the file.
+                return bad;
+            }
+
             if (await RunBeforeCommitAsync(hooks, part, hash, ct).ConfigureAwait(false) is { } refused)
             {
                 return new FileCopyOutcome(false, null, refused, part);
@@ -244,7 +290,7 @@ public sealed class FileCopier
                 warning = warning is null ? rescueWarning : rescueWarning with { Message = rescueWarning.Message + "; " + (warning.Message.StartsWith("The ", StringComparison.Ordinal) ? "the " + warning.Message[4..] : warning.Message) };
             }
 
-            return new FileCopyOutcome(true, hash, warning, part) { Lost = transfer.Lost };
+            return new FileCopyOutcome(true, hash, warning, part) { Lost = transfer.Lost, Flushed = flushed };
         }
         catch (RescueLimitException)
         {
@@ -429,6 +475,11 @@ public sealed class FileCopier
             return incomplete;
         }
 
+        if (options.Verify && hooks.VerifyInCopier && await VerifyClosedPartAsync(source, part, hash!, options, hooks, ct).ConfigureAwait(false) is { } bad)
+        {
+            return bad;
+        }
+
         if (await RunBeforeCommitAsync(hooks, part, hash, ct).ConfigureAwait(false) is { } refused)
         {
             return new FileCopyOutcome(false, null, refused, part);
@@ -450,6 +501,23 @@ public sealed class FileCopier
         return new FileCopyOutcome(true, hash, warning, part);
     }
 
+    /// <summary>Reads a closed part file back unbuffered and compares it with the source hash; null when it matches.</summary>
+    private async Task<FileCopyOutcome?> VerifyClosedPartAsync(
+        string source, string part, byte[] hash, CopyOptions options, FileCopyHooks hooks, CancellationToken ct)
+    {
+        hooks.Verifying?.Invoke();
+        try
+        {
+            return await Verifier.MatchesAsync(_fs, part, hash, options.HashAlgorithm, ct).ConfigureAwait(false)
+                ? null
+                : Failed(source, IoErrorKind.Other, CopyMessages.VerifyMismatch, part) with { VerifyFailed = true };
+        }
+        catch (FileSystemException ex) when (!ct.IsCancellationRequested)
+        {
+            return Failed(source, ex.Kind, CopyMessages.VerifyCouldNotRead, part) with { VerifyFailed = true };
+        }
+    }
+
     private static FileCopyOutcome Failed(string source, IoErrorKind kind, string message, string? part) =>
         new(false, null, new Problem(source, kind, message), part);
 
@@ -465,6 +533,38 @@ public sealed class FileCopier
         {
         }
 #pragma warning restore CA1031
+    }
+
+    /// <summary>Hashes the first <paramref name="length"/> bytes read back through the still-open part handle and compares with the source hash.</summary>
+    private async Task<bool> ReadBackMatchesAsync(IWriteHandle writer, long length, int alignment, byte[] expected, HashAlgorithmKind algorithm, CancellationToken ct)
+    {
+        const int Chunk = 1024 * 1024;
+        var buffer = _pool.Rent(Chunk);
+        try
+        {
+            using var hasher = new StreamingHasher(algorithm);
+            long offset = 0;
+            while (offset < length)
+            {
+                var ask = (int)Math.Min(Chunk, AlignUp(length - offset, alignment));
+                var n = await writer.ReadBackAsync(buffer.Memory[..ask], offset, ct).ConfigureAwait(false);
+                if (n <= 0)
+                {
+                    return false; // shorter than what was written
+                }
+
+                var take = (int)Math.Min(n, length - offset);
+                hasher.Append(buffer.Memory.Span[..take]);
+                offset += take;
+            }
+
+            var actual = hasher.Finish();
+            return actual.Length == expected.Length && CryptographicOperations.FixedTimeEquals(actual, expected);
+        }
+        finally
+        {
+            _pool.Return(buffer);
+        }
     }
 
     private static int ChunkSizeFor(CopyOptions options, int alignment)
@@ -642,6 +742,7 @@ public sealed class FileCopier
         int chunkSize,
         int alignment,
         bool unbuffered,
+        bool writeUnbuffered,
         RescueReader? rescue,
         int pipelineDepth)
     {
@@ -790,8 +891,8 @@ public sealed class FileCopier
         // completes. The change is local: every chunk carries its own offset, so writes may complete in any order. Two rules must hold:
         // (1) the final short (unaligned) tail write is issued only after every earlier write has completed, because the handle zero-pads
         // it to a whole sector and trims the file to the data end on flush; (2) progress adds bytes as each write completes (Interlocked)
-        // and never assumes in-order completion. FileOptions.WriteThrough on unbuffered handles is not needed for safety:
-        // FlushFileBuffers runs before the rename, so the real name only ever appears on durable data.
+        // and never assumes in-order completion. Part handles are opened without write-through (it slowed copies, task 16): FlushFileBuffers runs before
+        // the rename, so the real name only appears on durable data (small files may skip it; the journal then marks them for a recheck on resume).
         private async Task WriteLoopAsync(ChannelReader<Chunk> input, CancellationTokenSource cts)
         {
             var ct = cts.Token;
@@ -870,7 +971,7 @@ public sealed class FileCopier
             var data = chunk.Buffer.Memory[..chunk.Length];
 
             // Unbuffered: whole sectors go straight from the aligned buffer; only the final short tail is padded by the handle and trimmed on flush.
-            var whole = unbuffered ? chunk.Length - (chunk.Length % alignment) : chunk.Length;
+            var whole = writeUnbuffered ? chunk.Length - (chunk.Length % alignment) : chunk.Length;
             if (whole > 0)
             {
                 await writer.WriteAsync(data[..whole], chunk.Offset, ct).ConfigureAwait(false);

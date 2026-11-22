@@ -94,12 +94,13 @@ function Invoke-Signing {
 
         if ($thumbprint -notmatch '^[0-9A-Fa-f]{40}$') { throw 'The signing thumbprint is not a valid SHA-1 thumbprint.' }
 
-        # Binaries we ship: our own assemblies and the CLI. Test projects are never signed.
+        # Binaries we ship: our own assemblies and the CLI. Test projects and the bench tool are never signed.
         $files = @(Get-ChildItem -Path $ArtifactsRoot -Recurse -File -ErrorAction SilentlyContinue |
                 Where-Object {
                     ($_.FullName -match ('[\\/]bin[\\/][^\\/]+[\\/]' + $Configuration.ToLowerInvariant() + '_') -or
                     $_.FullName -match '[\\/]publish[\\/]') -and
                     $_.FullName -notmatch '\.Tests[\\/]' -and
+                    $_.FullName -notmatch '[\\/]Ferry\.Bench[\\/]' -and
                     ($_.Name -like 'EveryApp.*.dll' -or $_.Name -like 'Ferry.*.dll' -or $_.Name -ieq 'ferry.dll' -or $_.Name -ieq 'ferry.exe')
                 })
         if ($files.Count -eq 0) { throw "No binaries to sign under $ArtifactsRoot. Build first." }

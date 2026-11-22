@@ -122,6 +122,9 @@ internal sealed class RetryWriteHandle(IWriteHandle initial, Func<ValueTask<IWri
             return true;
         }, status, ct);
 
+    /// <summary>Not retried: after a reconnect the copier verifies by reading the file again from the start.</summary>
+    public ValueTask<int> ReadBackAsync(Memory<byte> buffer, long offset, CancellationToken ct) => _handle!.ReadBackAsync(buffer, offset, ct);
+
     public ValueTask SetLengthAsync(long length) => _handle!.SetLengthAsync(length);
 
     public string GetFinalPath() => _handle!.GetFinalPath();

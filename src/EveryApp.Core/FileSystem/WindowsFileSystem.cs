@@ -64,8 +64,6 @@ public sealed partial class WindowsFileSystem(AlignedBufferPool? pool = null) : 
         try
         {
             var p = Normalize(path);
-            var options = FileOptions.Asynchronous | (unbuffered ? NoBuffering | FileOptions.WriteThrough : FileOptions.None);
-
             // CREATE_NEW: never truncate or replace something that already exists. Opened with DELETE access so a part file can be removed
             // through this very handle (never by name again) when it turns out to sit somewhere it must not.
             var handle = CreatePartHandle(p, unbuffered);

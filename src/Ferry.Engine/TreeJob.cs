@@ -328,9 +328,28 @@ internal sealed class TreeJob
         _progress.StartFile(item.Key);
         try
         {
-            if (!_sameVolume && await TryRecoverAsync(item, root).ConfigureAwait(false))
+            var notOnDisk = _recovery.IsNotOnDisk(item.JournalKey);
+            if (!notOnDisk && !_sameVolume && await TryRecoverAsync(item, root).ConfigureAwait(false))
             {
                 return;
+            }
+
+            // Resuming a copy that may have skipped forcing small files to disk: a power cut can leave this job's own file blank under its real
+            // name, even with the journal's last records lost. Still the source's exact data: done (counted already if its done record survived).
+            // Damaged: replace it without a conflict question. Anything else is not this job's file and goes through the conflict rule below.
+            if (_recovery.IsResume && !_isMove && !_sameVolume)
+            {
+                var recheck = await _recovery.RecheckAsync(item, _options.HashAlgorithm, _ct).ConfigureAwait(false);
+                if (recheck.Result == RecheckResult.Intact && notOnDisk)
+                {
+                    return;
+                }
+
+                if (recheck.Result == RecheckResult.Damaged)
+                {
+                    await CopyFileAsync(root, item, Path.Combine(_destination, recheck.TargetKey), recheck.TargetKey, replace: true).ConfigureAwait(false);
+                    return;
+                }
             }
 
             var target = Path.Combine(_destination, item.Key);
@@ -424,32 +443,18 @@ internal sealed class TreeJob
                     TreePaths.Combine(targetFolderKey, Path.GetFileName(part)), targetKey)),
                 ReplaceExisting = replace,
                 TryBlockClone = _clone,
+
+                // Forcing each small file to disk is most of its copy time. The journal marks such files and a resume checks them again;
+                // a move never skips it, because the source is deleted right after.
+                SkipSmallFileFlush = !_isMove,
                 MustBeUnder = _destinationFinal,
                 Status = _progress.StatusSink(),
-                BeforeCommit = async (part, hash, token) =>
-                {
-                    if (options.Verify)
-                    {
-                        _progress.SetPhase("Verifying");
-                        try
-                        {
-                            if (hash is null || !await Verifier.MatchesAsync(_fs, part, hash, options.HashAlgorithm, token).ConfigureAwait(false))
-                            {
-                                verifyFailed = true;
-                                return new Problem(source, IoErrorKind.Other, CopyMessages.VerifyMismatch);
-                            }
-                        }
-                        catch (FileSystemException ex)
-                        {
-                            verifyFailed = true;
-                            return new Problem(source, ex.Kind, CopyMessages.VerifyCouldNotRead);
-                        }
-                        finally
-                        {
-                            _progress.SetPhase("Copying");
-                        }
-                    }
 
+                // The copier reads the copy back before the real name appears (small files before their handle closes, see VerifyInCopier).
+                VerifyInCopier = true,
+                Verifying = () => _progress.SetPhase("Verifying"),
+                BeforeCommit = (part, hash, token) =>
+                {
                     // The "downloaded from the internet" marker always travels with the file; other streams only when asked.
                     if (_keepsStreams)
                     {
@@ -461,18 +466,19 @@ internal sealed class TreeJob
                         {
                             if (_isMove)
                             {
-                                return new Problem(source, ex.Kind, CopyMessages.StreamsNotCopiedOriginalKept); // never lose the marker by moving
+                                return ValueTask.FromResult<Problem?>(new Problem(source, ex.Kind, CopyMessages.StreamsNotCopiedOriginalKept)); // never lose the marker by moving
                             }
 
                             warnings.Add(new Problem(TreePaths.Display(source), ex.Kind, CopyMessages.StreamsNotCopied));
                         }
                     }
 
-                    return null;
+                    return ValueTask.FromResult<Problem?>(null);
                 },
             };
 
             outcome = await _owner.Copier.CopyAsync(source, target, options, _pause, _progress.FileSink(), hooks, _ct).ConfigureAwait(false);
+            verifyFailed = outcome.VerifyFailed;
             _progress.SetPhase(CopyMessages.Copying);
             if (outcome.Success || outcome.NoRetry || attempt >= TreeCopier.RetryDelays.Length || !IsWorthRetrying(outcome.Problem!.Kind))
             {
@@ -522,7 +528,7 @@ internal sealed class TreeJob
         // A rescued copy must not be recovered later as a verified move that can delete its source.
         if (outcome.Lost.Count == 0)
         {
-            _journal.Done(item.JournalKey, entry.Length, entry.LastWriteTimeUtc, hex);
+            _journal.Done(item.JournalKey, entry.Length, entry.LastWriteTimeUtc, hex, onDisk: outcome.Flushed);
         }
     }
 

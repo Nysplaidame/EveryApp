@@ -143,8 +143,7 @@ public sealed class TreeCopierFailureTests : TreeCopierTestBase
     {
         Add(@"C:\src\a.bin", 300, seed: 1);
         Add(@"C:\src\b.bin", 400, seed: 2);
-        _rig.Fs.OnOpenRead = (path, unbuffered) =>
-            unbuffered && IsPartOf(path, "b.bin") ? new FileSystemException(path, IoErrorKind.BadBlock, null) : null;
+        _rig.Fs.OnReadBack = path => IsPartOf(path, "b.bin") ? new FileSystemException(path, IoErrorKind.BadBlock, null) : null;
 
         var result = await _rig.RunAsync([@"C:\src"], @"D:\dst");
 
@@ -189,6 +188,7 @@ public sealed class TreeCopierFailureTests : TreeCopierTestBase
 
         await _rig.RunAsync([@"C:\src"], @"D:\dst");
 
-        Assert.Contains(_rig.Fs.Log, l => l.StartsWith(@"OpenRead D:\dst\src\a.bin.", StringComparison.Ordinal) && l.EndsWith(".ferrypart unbuffered", StringComparison.Ordinal));
+        // Read back through the part's own unbuffered handle before it closes: from the drive, not the cache, and without reopening it.
+        Assert.Contains(_rig.Fs.Log, l => l.StartsWith(@"ReadBack D:\dst\src\a.bin.", StringComparison.Ordinal) && l.EndsWith(".ferrypart unbuffered", StringComparison.Ordinal));
     }
 }

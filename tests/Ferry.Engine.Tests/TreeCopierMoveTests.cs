@@ -173,7 +173,7 @@ public sealed class TreeCopierMoveTests : TreeCopierTestBase
         Assert.Equal(1, result.Copied);
         Assert.Empty(result.Problems);
         Assert.Equal(1, _rig.Fs.Count("CreateWrite"));
-        Assert.Contains(_rig.Fs.Log, l => l.StartsWith(@"OpenRead C:\dst\src\a.bin.", StringComparison.Ordinal) && l.EndsWith(" unbuffered", StringComparison.Ordinal));
+        Assert.Contains(_rig.Fs.Log, l => l.StartsWith(@"ReadBack C:\dst\src\a.bin.", StringComparison.Ordinal) && l.EndsWith(" unbuffered", StringComparison.Ordinal));
         Assert.Equal(data, _rig.Mem.ReadAllBytes(@"C:\dst\src\a.bin"));
         Assert.False(_rig.Mem.Exists(@"C:\src\a.bin"));
     }
@@ -208,7 +208,7 @@ public sealed class TreeCopierMoveTests : TreeCopierTestBase
         Assert.False(_rig.Mem.Exists(@"C:\src\a.bin"));
         Assert.False(_rig.Mem.Exists(@"C:\src"));
         var log = _rig.Fs.Log;
-        var verify = log.FindIndex(l => l.StartsWith(@"OpenRead D:\dst\src\a.bin.", StringComparison.Ordinal) && l.EndsWith(" unbuffered", StringComparison.Ordinal));
+        var verify = log.FindIndex(l => l.StartsWith(@"ReadBack D:\dst\src\a.bin.", StringComparison.Ordinal) && l.EndsWith(" unbuffered", StringComparison.Ordinal));
         var commit = log.FindIndex(l => l.StartsWith("Move ", StringComparison.Ordinal) && l.EndsWith(@"-> D:\dst\src\a.bin", StringComparison.Ordinal));
         var delete = log.FindIndex(l => l == @"DeleteVerified C:\src\a.bin"); // checked and deleted through one handle
         Assert.True(verify >= 0 && verify < commit && commit < delete, string.Join(Environment.NewLine, log));

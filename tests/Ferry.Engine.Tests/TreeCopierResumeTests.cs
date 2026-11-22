@@ -235,4 +235,108 @@ public sealed class TreeCopierResumeTests : TreeCopierTestBase
         Assert.Equal(when, _rig.Mem.GetEntry(@"D:\dst\src\a.bin").LastWriteTimeUtc);
         Assert.False(_rig.Mem.Exists(@"D:\dst\src\a (2).bin"));
     }
+
+    [Fact]
+    public async Task Copy_SmallFiles_AreJournaledAsNotOnDiskYet_MoveIsNot()
+    {
+        Add(@"C:\src\a.bin", 100);
+        Add(@"C:\mv\b.bin", 100);
+        var copyId = Guid.NewGuid();
+        var moveId = Guid.NewGuid();
+
+        await _rig.RunAsync([@"C:\src"], @"D:\dst", jobId: copyId);
+        await _rig.RunAsync([@"C:\mv"], @"D:\dst", mode: CopyMode.Move, jobId: moveId);
+
+        using (var copy = JobJournal.Open(_rig.JobsDir, copyId))
+        {
+            Assert.Equal([@"0\src\a.bin"], copy.NotOnDiskPaths);
+        }
+
+        using var move = JobJournal.Open(_rig.JobsDir, moveId);
+        Assert.Empty(move.NotOnDiskPaths); // a move forces every file to disk before it deletes the source
+        Assert.Single(move.CompletedPaths);
+    }
+
+    [Fact]
+    public async Task Resume_NotOnDiskFile_StillIntact_IsLeftAloneAndNotCountedAgain()
+    {
+        Add(@"C:\src\a.bin", 100, seed: 1);
+        Add(@"C:\src\b.bin", 100, seed: 2);
+        _rig.Faults.FailRead(@"C:\src\b.bin", 0, IoErrorKind.AccessDenied, times: 1);
+        var id = Guid.NewGuid();
+        var first = await _rig.RunAsync([@"C:\src"], @"D:\dst", new CopyOptions { IfUnreadable = FailureRule.Stop }, jobId: id);
+        Assert.Equal(1, first.Copied);
+        _rig.Fs.ClearLog();
+
+        var resumed = await _rig.ResumeAsync(id);
+
+        Assert.Equal(1, resumed.Copied); // only b; a was checked, not copied again
+        Assert.Contains(_rig.Fs.Log, l => l == @"OpenRead D:\dst\src\a.bin unbuffered"); // a was read back and compared
+        Assert.DoesNotContain(_rig.Fs.Log, l => l.StartsWith(@"CreateWrite D:\dst\src\a.bin", StringComparison.Ordinal));
+        Assert.Equal(_rig.Mem.ReadAllBytes(@"C:\src\a.bin"), _rig.Mem.ReadAllBytes(@"D:\dst\src\a.bin"));
+    }
+
+    [Fact]
+    public async Task Resume_NotOnDiskFile_LeftBlankByPowerCut_IsReplacedWithoutAConflictQuestion()
+    {
+        Add(@"C:\src\a.bin", 100, seed: 1);
+        Add(@"C:\src\b.bin", 100, seed: 2);
+        _rig.Faults.FailRead(@"C:\src\b.bin", 0, IoErrorKind.AccessDenied, times: 1);
+        var id = Guid.NewGuid();
+        var options = new CopyOptions { IfUnreadable = FailureRule.Stop, IfExists = ConflictRule.Skip };
+        await _rig.RunAsync([@"C:\src"], @"D:\dst", options, jobId: id);
+        _rig.Mem.AddFile(@"D:\dst\src\a.bin", new byte[100]); // the name reached the disk, the data did not
+
+        var resumed = await _rig.ResumeAsync(id);
+
+        Assert.Equal(2, resumed.Copied);
+        Assert.Equal(0, resumed.Skipped); // Skip would have kept the blank file: this job's own copy is replaced instead
+        Assert.Equal(_rig.Mem.ReadAllBytes(@"C:\src\a.bin"), _rig.Mem.ReadAllBytes(@"D:\dst\src\a.bin"));
+        Assert.Empty(_rig.PartFiles(@"D:\dst"));
+        using var journal = JobJournal.Open(_rig.JobsDir, id);
+        Assert.True(journal.IsFinished);
+    }
+
+    [Fact]
+    public async Task Resume_PowerCutLostTheJournalTail_BlankFileIsStillReplaced()
+    {
+        Add(@"C:\src\a.bin", 100, seed: 1);
+        Add(@"C:\src\b.bin", 100, seed: 2);
+        _rig.Faults.FailRead(@"C:\src\b.bin", 0, IoErrorKind.AccessDenied, times: 1);
+        var id = Guid.NewGuid();
+        var options = new CopyOptions { IfUnreadable = FailureRule.Stop, IfExists = ConflictRule.Skip };
+        await _rig.RunAsync([@"C:\src"], @"D:\dst", options, jobId: id);
+
+        // The power cut kept the rename and the dates but lost the data, and the journal's last records (a's part and done lines) with it.
+        var journalPath = Path.Combine(_rig.JobsDir, id.ToString("N") + ".journal");
+        var lines = File.ReadAllLines(journalPath).Where(l => !l.Contains(@"a.bin", StringComparison.Ordinal)).ToArray();
+        File.WriteAllText(journalPath, string.Join('\n', lines) + "\n");
+        var kept = _rig.Mem.GetEntry(@"D:\dst\src\a.bin");
+        _rig.Mem.AddFile(@"D:\dst\src\a.bin", new byte[100]);
+        _rig.Mem.SetMetadata(@"D:\dst\src\a.bin", FileAttributes.Normal, kept.CreationTimeUtc, kept.LastWriteTimeUtc);
+
+        var resumed = await _rig.ResumeAsync(id);
+
+        Assert.Equal(0, resumed.Skipped); // Skip would have kept the blank file
+        Assert.Equal(_rig.Mem.ReadAllBytes(@"C:\src\a.bin"), _rig.Mem.ReadAllBytes(@"D:\dst\src\a.bin"));
+    }
+
+    [Fact]
+    public async Task Resume_FileChangedAfterTheJobStopped_IsNotTreatedAsOurs()
+    {
+        Add(@"C:\src\a.bin", 100, seed: 1);
+        Add(@"C:\src\b.bin", 100, seed: 2);
+        _rig.Faults.FailRead(@"C:\src\b.bin", 0, IoErrorKind.AccessDenied, times: 1);
+        var id = Guid.NewGuid();
+        var options = new CopyOptions { IfUnreadable = FailureRule.Stop, IfExists = ConflictRule.Skip };
+        await _rig.RunAsync([@"C:\src"], @"D:\dst", options, jobId: id);
+        var edited = Bytes(100, seed: 77);
+        _rig.Mem.AddFile(@"D:\dst\src\a.bin", edited); // the user edits the copy later, before resuming
+        _rig.Mem.SetMetadata(@"D:\dst\src\a.bin", FileAttributes.Normal, DateTime.UtcNow, DateTime.UtcNow.AddHours(2));
+
+        var resumed = await _rig.ResumeAsync(id);
+
+        Assert.Equal(1, resumed.Skipped); // the user's rule (Skip) decides, as for any file that is not this job's own
+        Assert.Equal(edited, _rig.Mem.ReadAllBytes(@"D:\dst\src\a.bin"));
+    }
 }

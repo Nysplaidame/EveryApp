@@ -483,6 +483,95 @@ public sealed class FileCopierTests
         Assert.True(c.Size >= MiB);
     }
 
+    [Theory]
+    [MemberData(nameof(Backends))]
+    public async Task SkipSmallFileFlush_SmallFile_IsNotForcedToDisk_AndSaysSo(string backend)
+    {
+        using var b = Backend.Create(backend);
+        using var pool = new BufferPool();
+        var data = Bytes(100 * KiB, seed: 3);
+        var (src, dst) = (b.PathOf("src.bin"), b.PathOf("dst.bin"));
+        b.AddFile(src, data);
+
+        var outcome = await new FileCopier(b.Fs, pool).CopyAsync(
+            src, dst, new CopyOptions(), new PauseGate(), new LatestProgress(), new FileCopyHooks { SkipSmallFileFlush = true }, Ct);
+
+        Assert.True(outcome.Success, outcome.Problem?.Message);
+        Assert.False(outcome.Flushed);
+        Assert.Equal(0, b.Hooks.Flushes);
+        Assert.True(data.AsSpan().SequenceEqual(b.ReadAll(dst)));
+    }
+
+    [Theory]
+    [MemberData(nameof(Backends))]
+    public async Task SkipSmallFileFlush_LargeFile_IsStillForcedToDisk(string backend)
+    {
+        using var b = Backend.Create(backend);
+        using var pool = new BufferPool();
+        var data = Bytes((int)FileCopier.UnbufferedThresholdBytes, seed: 4);
+        var (src, dst) = (b.PathOf("src.bin"), b.PathOf("dst.bin"));
+        b.AddFile(src, data);
+
+        var outcome = await new FileCopier(b.Fs, pool).CopyAsync(
+            src, dst, new CopyOptions(), new PauseGate(), new LatestProgress(), new FileCopyHooks { SkipSmallFileFlush = true }, Ct);
+
+        Assert.True(outcome.Success, outcome.Problem?.Message);
+        Assert.True(outcome.Flushed);
+        Assert.Equal(1, b.Hooks.Flushes);
+    }
+
+    [Fact]
+    public async Task SkipSmallFileFlush_RescueMode_IsStillForcedToDisk()
+    {
+        using var b = Backend.Create(Backend.InMemory);
+        using var pool = new BufferPool();
+        var (src, dst) = (b.PathOf("src.bin"), b.PathOf("dst.bin"));
+        b.AddFile(src, Bytes(100 * KiB, seed: 5));
+
+        var outcome = await new FileCopier(b.Fs, pool).CopyAsync(
+            src, dst, new CopyOptions { RescueMode = true }, new PauseGate(), new LatestProgress(), new FileCopyHooks { SkipSmallFileFlush = true }, Ct);
+
+        Assert.True(outcome.Success, outcome.Problem?.Message);
+        Assert.True(outcome.Flushed);
+        Assert.Equal(1, b.Hooks.Flushes);
+    }
+
+    /// <summary>Small files are read back through their own unbuffered handle before it closes; large ones by reopening. Real NTFS rules apply.</summary>
+    [Theory]
+    [MemberData(nameof(BackendsAndSizes))]
+    public async Task VerifyInCopier_MatchingCopy_Succeeds(string backend, int size)
+    {
+        using var b = Backend.Create(backend);
+        using var pool = new BufferPool();
+        var data = Bytes(size, seed: size + 1);
+        var (src, dst) = (b.PathOf("src.bin"), b.PathOf("dst.bin"));
+        b.AddFile(src, data);
+        var verifying = 0;
+
+        var outcome = await new FileCopier(b.Fs, pool).CopyAsync(src, dst, new CopyOptions { Verify = true }, new PauseGate(), new LatestProgress(),
+            new FileCopyHooks { VerifyInCopier = true, SkipSmallFileFlush = true, Verifying = () => verifying++ }, Ct);
+
+        Assert.True(outcome.Success, outcome.Problem?.Message);
+        Assert.False(outcome.VerifyFailed);
+        Assert.Equal(1, verifying);
+        Assert.True(data.AsSpan().SequenceEqual(b.ReadAll(dst)));
+        Assert.Empty(b.PartFiles());
+    }
+
+    [Fact]
+    public async Task WithoutTheHook_SmallFile_IsForcedToDisk()
+    {
+        using var b = Backend.Create(Backend.InMemory);
+        using var pool = new BufferPool();
+        var (src, dst) = (b.PathOf("src.bin"), b.PathOf("dst.bin"));
+        b.AddFile(src, Bytes(100 * KiB, seed: 6));
+
+        var outcome = await new FileCopier(b.Fs, pool).CopyAsync(src, dst, new CopyOptions(), new PauseGate(), new LatestProgress(), Ct);
+
+        Assert.True(outcome.Flushed);
+        Assert.Equal(1, b.Hooks.Flushes);
+    }
+
     internal static CancellationToken Ct => TestContext.Current.CancellationToken;
 
     internal static bool IsPart(string path) => path.EndsWith(FileCopier.PartSuffix, StringComparison.OrdinalIgnoreCase);
@@ -686,6 +775,13 @@ internal sealed class HookFileSystem(IFileSystem inner) : IFileSystem
 
     public Action<string, string>? BeforeMove { get; set; }
 
+    private int _flushes;
+
+    /// <summary>How many times a write handle was forced to disk.</summary>
+    public int Flushes => Volatile.Read(ref _flushes);
+
+    internal void CountFlush() => Interlocked.Increment(ref _flushes);
+
     public IReadHandle OpenRead(string path, bool unbuffered) => new ReadHandle(this, path, inner.OpenRead(path, unbuffered));
 
     public IWriteHandle CreateWrite(string path, long preallocate, bool unbuffered) =>
@@ -767,9 +863,15 @@ internal sealed class HookFileSystem(IFileSystem inner) : IFileSystem
         public ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, long offset, CancellationToken ct) =>
             fs.OnWrite?.Invoke(path, offset) is { } ex ? ValueTask.FromException(ex) : inner.WriteAsync(buffer, offset, ct);
 
+        public ValueTask<int> ReadBackAsync(Memory<byte> buffer, long offset, CancellationToken ct) => inner.ReadBackAsync(buffer, offset, ct);
+
         public ValueTask SetLengthAsync(long length) => inner.SetLengthAsync(length);
 
-        public ValueTask FlushAsync() => inner.FlushAsync();
+        public ValueTask FlushAsync()
+        {
+            fs.CountFlush();
+            return inner.FlushAsync();
+        }
 
         public ValueTask DisposeAsync() => inner.DisposeAsync();
 

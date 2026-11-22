@@ -314,6 +314,18 @@ public sealed class FaultInjectingFileSystem(IFileSystem inner) : IFileSystem
             await inner.WriteAsync(buffer, offset, ct).ConfigureAwait(false);
         }
 
+        public ValueTask<int> ReadBackAsync(Memory<byte> buffer, long offset, CancellationToken ct)
+        {
+            ThrowIfDead();
+            fs.RunMutations(path, offset, buffer.Length);
+            if (fs.Match(fs._readRules, path, offset, buffer.Length) is { } rule)
+            {
+                throw new FileSystemException(path, rule.Kind, null);
+            }
+
+            return inner.ReadBackAsync(buffer, offset, ct);
+        }
+
         public ValueTask SetLengthAsync(long length)
         {
             ThrowIfDead();

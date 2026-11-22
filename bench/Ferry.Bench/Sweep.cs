@@ -54,6 +54,12 @@ internal static class Sweep
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(rounds);
         source = Path.GetFullPath(source);
         dest = Path.GetFullPath(dest);
+        var (s, d) = (source.TrimEnd('\\') + '\\', dest.TrimEnd('\\') + '\\');
+        if (s.StartsWith(d, StringComparison.OrdinalIgnoreCase) || d.StartsWith(s, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new IOException("The destination must not be the source, inside it, or around it.");
+        }
+
         if (!Directory.Exists(source))
         {
             throw new IOException($"The source folder does not exist: {source}");
@@ -135,14 +141,47 @@ internal static class Sweep
         }
     }
 
+    private const string Marker = ".ferry-bench-out";
+
+    /// <summary>
+    /// Empties <paramref name="dest"/> only if it is new, empty or marked by these tools (same rule as bench.ps1). Never a drive root;
+    /// links inside are removed as links (Directory.Delete does not follow them).
+    /// </summary>
     private static void Clear(string dest)
     {
-        if (Directory.Exists(dest))
+        if (Path.GetPathRoot(dest) is { } root && string.Equals(dest.TrimEnd('\\'), root.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase))
         {
-            Directory.Delete(dest, recursive: true);
+            throw new IOException($"Refusing to empty a drive root: {dest}");
+        }
+
+        var marker = Path.Combine(dest, Marker);
+        if (Directory.Exists(dest) && !File.Exists(marker) && Directory.EnumerateFileSystemEntries(dest).Any())
+        {
+            throw new IOException($"Refusing to empty {dest}: it is not empty and was not made by the bench tools (no {Marker} file).");
         }
 
         Directory.CreateDirectory(dest);
+        if (!File.Exists(marker))
+        {
+            File.WriteAllText(marker, "Ferry benchmark output: the bench tools empty this folder before every run.");
+        }
+
+        foreach (var entry in new DirectoryInfo(dest).EnumerateFileSystemInfos())
+        {
+            if (entry.Name == Marker)
+            {
+                continue;
+            }
+
+            if (entry is DirectoryInfo folder)
+            {
+                folder.Delete(recursive: !folder.Attributes.HasFlag(FileAttributes.ReparsePoint));
+            }
+            else
+            {
+                entry.Delete();
+            }
+        }
     }
 
     private static double Median(List<double> values)

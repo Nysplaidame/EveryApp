@@ -17,6 +17,26 @@ public sealed class JobJournalPartTests : IDisposable
     private static JournalRecord Part(string? rel, string? part, string? target) =>
         new(JournalRecordKind.FilePartStarted, rel, 0, DateTime.UnixEpoch, null, part, target);
 
+    private static JournalRecord Done(string rel, string? detail) => new(JournalRecordKind.FileDone, rel, 0, DateTime.UnixEpoch, null, detail);
+
+    [Fact]
+    public void NotOnDiskFlag_RoundTrips_AndTheLatestDoneRecordWins()
+    {
+        var id = Guid.NewGuid();
+        using (var j = JobJournal.Create(_dir, id, "{}"))
+        {
+            j.Append(Done(@"0\a.txt", JobJournal.NotOnDiskYet));
+            j.Append(Done(@"0\b.txt", null));
+            j.Append(Done(@"0\c.txt", JobJournal.NotOnDiskYet));
+            j.Append(Done(@"0\c.txt", null)); // copied again and forced to disk: trusted now
+            Assert.Equal([@"0\a.txt"], j.NotOnDiskPaths);
+        }
+
+        using var again = JobJournal.Open(_dir, id);
+        Assert.Equal([@"0\a.txt"], again.NotOnDiskPaths);
+        Assert.Equal(3, again.CompletedPaths.Count); // still listed as done; the resume decides whether to trust it
+    }
+
     [Fact]
     public void PartRecords_RoundTrip_AndAreListedInOrder()
     {

@@ -150,6 +150,7 @@ internal sealed class JobJournalWriter(JobJournal? journal)
         }
     }
 
-    public void Done(string key, long length, DateTime lastWrite, string? hash) =>
-        Append(new JournalRecord(JournalRecordKind.FileDone, key, length, lastWrite, hash, null));
+    /// <param name="onDisk">False when the file was renamed into place without being forced to disk: a resume then checks it again.</param>
+    public void Done(string key, long length, DateTime lastWrite, string? hash, bool onDisk = true) =>
+        Append(new JournalRecord(JournalRecordKind.FileDone, key, length, lastWrite, hash, onDisk ? null : JobJournal.NotOnDiskYet));
 }

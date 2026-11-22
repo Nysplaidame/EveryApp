@@ -86,6 +86,24 @@ internal sealed class WindowsWriteHandle : IWriteHandle
         }
     }
 
+    public async ValueTask<int> ReadBackAsync(Memory<byte> buffer, long offset, CancellationToken ct)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(offset);
+        await _gate.EnterSharedAsync(ct).ConfigureAwait(false);
+        try
+        {
+            return await RandomAccess.ReadAsync(_handle, buffer, offset, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (WindowsFileSystem.IsTranslatable(ex))
+        {
+            throw ErrorKinds.Translate(_path, ex);
+        }
+        finally
+        {
+            _gate.ExitShared();
+        }
+    }
+
     public async ValueTask SetLengthAsync(long length)
     {
         await _gate.EnterExclusiveAsync().ConfigureAwait(false);

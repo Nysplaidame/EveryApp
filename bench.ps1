@@ -11,6 +11,8 @@
   Also run the tuning sweep (Ferry.Bench sweep) on each set.
 .PARAMETER Micro
   Run the BenchmarkDotNet micro-benchmarks instead of the comparison.
+.PARAMETER MicroFilter
+  Which micro-benchmarks to run (default all), e.g. '*Hash*'. The copy one writes a few GB to the temp folder.
 .PARAMETER Rounds
   Rounds per set (default 3, median reported).
 .PARAMETER Only
@@ -23,12 +25,14 @@ param(
     [switch]$Micro,
     [ValidateRange(1, 20)][int]$Rounds = 3,
     [string]$Only = '*',
-    [string]$Config = (Join-Path $PSScriptRoot 'bench.local.json')
+    [string]$MicroFilter = '*',
+    [string]$Config = ''
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
+if (-not $Config) { $Config = Join-Path $root 'bench.local.json' } # Windows PowerShell leaves $PSScriptRoot empty in parameter defaults
 $outDir = Join-Path $root 'artifacts\bench'
 $ferry = Join-Path $root 'artifacts\bin\Ferry.Cli\release_win-x64\ferry.exe'
 $bench = Join-Path $root 'artifacts\bin\Ferry.Bench\release_win-x64\Ferry.Bench.exe'
@@ -46,8 +50,8 @@ foreach ($project in 'src\Ferry.Cli\Ferry.Cli.csproj', 'bench\Ferry.Bench\Ferry.
 
 New-Item -ItemType Directory -Force $outDir | Out-Null
 if ($Micro) {
-    Push-Location $outDir
-    try { Invoke-Native $bench @('micro', '--filter', '*', '--artifacts', (Join-Path $outDir 'micro')) }
+    Push-Location $root # BenchmarkDotNet finds the project from the current folder
+    try { Invoke-Native $bench @('micro', '--filter', $MicroFilter, '--artifacts', (Join-Path $outDir 'micro')) }
     finally { Pop-Location }
     return
 }
@@ -70,9 +74,36 @@ function Get-TreeSize([string]$Path) {
     [pscustomobject]@{ Count = $files.Count; Bytes = ($files | Measure-Object Length -Sum).Sum }
 }
 
+$markerName = '.ferry-bench-out'
+
+# Empties a destination folder, but only one this script owns: new, empty, or marked by this script. Never a drive root. Links inside are
+# removed as links, never followed.
 function Clear-Destination([string]$Path) {
-    if (Test-Path -LiteralPath $Path) { Remove-Item -LiteralPath $Path -Recurse -Force }
-    New-Item -ItemType Directory -Force $Path | Out-Null
+    $full = [IO.Path]::GetFullPath($Path).TrimEnd('\')
+    if ($full.Length -le 3) { throw "Refusing to empty a drive root: $full" }
+    $marker = Join-Path $full $markerName
+    if (Test-Path -LiteralPath $full) {
+        if (-not (Test-Path -LiteralPath $marker) -and (Get-ChildItem -LiteralPath $full -Force | Select-Object -First 1)) {
+            throw "Refusing to empty $full : it is not empty and was not made by bench.ps1 (no $markerName file). Pick an empty folder."
+        }
+    }
+    else {
+        New-Item -ItemType Directory $full | Out-Null
+    }
+    if (-not (Test-Path -LiteralPath $marker)) { Set-Content -LiteralPath $marker -Value 'Ferry benchmark output: bench.ps1 empties this folder before every run.' }
+    foreach ($child in @(Get-ChildItem -LiteralPath $full -Force | Where-Object Name -ne $markerName)) {
+        if ($child.Attributes -band [IO.FileAttributes]::ReparsePoint) { if ($child.PSIsContainer) { [IO.Directory]::Delete($child.FullName, $false) } else { [IO.File]::Delete($child.FullName) } }
+        elseif ($child.PSIsContainer) { [IO.Directory]::Delete($child.FullName, $true) }
+        else { [IO.File]::Delete($child.FullName) }
+    }
+}
+
+function Assert-Separate([string]$Source, [string]$Dest) {
+    $s = [IO.Path]::GetFullPath($Source).TrimEnd('\') + '\'
+    $d = [IO.Path]::GetFullPath($Dest).TrimEnd('\') + '\'
+    if ($s.StartsWith($d, [StringComparison]::OrdinalIgnoreCase) -or $d.StartsWith($s, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "The destination must not be the source, inside it, or around it: $Dest"
+    }
 }
 
 $script:cacheCleared = $true
@@ -115,6 +146,7 @@ function Get-Median([double[]]$Values) {
 $results = @()
 foreach ($set in @($cfg.sets | Where-Object { $_.name -like $Only })) {
     $source = $set.source
+    Assert-Separate $source $set.dest
     if ($Generate -and (-not (Test-Path -LiteralPath $source) -or -not (Get-ChildItem -LiteralPath $source -Force | Select-Object -First 1))) {
         Write-Host "==> generate $($set.kind) for $($set.name)" -ForegroundColor Cyan
         Invoke-Native $bench @('generate', $set.kind, $source)

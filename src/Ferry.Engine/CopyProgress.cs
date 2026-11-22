@@ -23,6 +23,15 @@ public sealed record FileCopyOutcome(bool Success, byte[]? SourceHash, Problem? 
 
     /// <summary>The copier already waited and retried (or gave up rescuing) before failing, so running the whole file again won't help.</summary>
     public bool NoRetry { get; init; }
+
+    /// <summary>
+    /// False when the data was not forced to disk before the rename (<see cref="FileCopyHooks.SkipSmallFileFlush"/>): after a power cut the
+    /// file may hold blanks or old data under its real name, so a resume must check it again before trusting it.
+    /// </summary>
+    public bool Flushed { get; init; } = true;
+
+    /// <summary>The copy was read back and did not match the source, or could not be read back (<see cref="FileCopyHooks.VerifyInCopier"/>).</summary>
+    public bool VerifyFailed { get; init; }
 }
 
 /// <summary>Optional hooks for <see cref="FileCopier.CopyAsync(string, string, CopyOptions, Jobs.PauseGate, IProgress{FileProgress}, FileCopyHooks?, CancellationToken)"/>.</summary>
@@ -35,7 +44,7 @@ public sealed class FileCopyHooks
     public Func<string, bool>? PartChosen { get; init; }
 
     /// <summary>
-    /// Called once the part file is complete, flushed and the right size, just before it takes the real name, with the source hash (null when
+    /// Called once the part file is complete, flushed (see <see cref="SkipSmallFileFlush"/>) and the right size, just before it takes the real name, with the source hash (null when
     /// neither verify nor checksum export is on). Return a <see cref="Problem"/> to refuse: the copy then fails and the part file is deleted.
     /// Used to verify the copy and to add extra data streams before the real name ever appears.
     /// </summary>
@@ -59,4 +68,22 @@ public sealed class FileCopyHooks
 
     /// <summary>Plain status lines while the copy waits, e.g. "Waiting for the network drive…". Called from copy threads.</summary>
     public IProgress<string>? Status { get; init; }
+
+    /// <summary>
+    /// Skip forcing the data to disk before the rename for small files (below <see cref="FileCopier.UnbufferedThresholdBytes"/>), when not in
+    /// rescue mode and the destination was never reopened. Forcing each small file to disk is most of its copy time. Only for a caller that
+    /// journals <see cref="FileCopyOutcome.Flushed"/> and rechecks such files on resume, and never when the source will be deleted (a move).
+    /// </summary>
+    public bool SkipSmallFileFlush { get; init; }
+
+    /// <summary>
+    /// With <see cref="CopyOptions.Verify"/>, the copier itself reads the copy back and compares it with the source hash before the real name
+    /// appears (instead of leaving that to <see cref="BeforeCommit"/>). A small file is then written unbuffered and read back through the same
+    /// handle before it closes, which avoids the antivirus wait on reopening a just-written file. A failed check comes back as
+    /// <see cref="FileCopyOutcome.VerifyFailed"/>.
+    /// </summary>
+    public bool VerifyInCopier { get; init; }
+
+    /// <summary>Called just before the copier starts reading the copy back (<see cref="VerifyInCopier"/>). Called from copy threads.</summary>
+    public Action? Verifying { get; init; }
 }

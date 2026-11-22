@@ -60,7 +60,7 @@ jobs:
         run: |
           dotnet tool restore
           if ($LASTEXITCODE -ne 0) { throw 'tool restore failed' }
-          dotnet CycloneDX EveryApp.slnx -j -o artifacts/sbom
+          dotnet CycloneDX src/Ferry.Cli/Ferry.Cli.csproj -j -o artifacts/sbom  # what ships (not tests or bench tools)
           if ($LASTEXITCODE -ne 0) { throw 'SBOM generation failed' }
 
       # The only step that can see the signing secrets: step-level env, and it runs only build.ps1 -SignOnly.

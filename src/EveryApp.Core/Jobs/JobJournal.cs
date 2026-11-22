@@ -27,6 +27,10 @@ internal sealed class JournalIo
 /// <c>r</c> object. The first line is always the <see cref="JournalRecordKind.JobStarted"/> header, which carries the job options.
 /// </para>
 /// <para>
+/// A <see cref="JournalRecordKind.FileDone"/> record whose <see cref="JournalRecord.Detail"/> is <see cref="NotOnDiskYet"/> names a file renamed into
+/// place without being forced to disk; see <see cref="NotOnDiskPaths"/>.
+/// </para>
+/// <para>
 /// Durability: the file is flushed to disk every 64 records or 2 seconds, whichever comes first, always after
 /// <see cref="JournalRecordKind.FileFailed"/> and <see cref="JournalRecordKind.JobFinished"/>, and on dispose.
 /// A <see cref="JournalRecordKind.FilePartStarted"/> record is always handed to the operating system at once (not flushed to disk), so a
@@ -56,9 +60,16 @@ public sealed class JobJournal : IDisposable
     private static readonly byte[] CrcPrefix = "{\"crc\":"u8.ToArray();
     private static readonly byte[] RecordPrefix = ",\"r\":"u8.ToArray();
 
+    /// <summary>
+    /// <see cref="JournalRecord.Detail"/> of a <see cref="JournalRecordKind.FileDone"/> record whose file was renamed into place without being
+    /// forced to disk first. After a power cut such a file may hold blanks or old data, so a resume checks it again before trusting it.
+    /// </summary>
+    public const string NotOnDiskYet = "unflushed";
+
     private readonly object _lock = new();
     private readonly FileStream _stream;
     private readonly HashSet<string> _completed;
+    private readonly HashSet<string> _notOnDisk = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<JournalPart> _parts;
     private readonly TimeProvider _time;
     private readonly JournalIo _io;
@@ -70,11 +81,17 @@ public sealed class JobJournal : IDisposable
     private volatile bool _finished;
 
     private JobJournal(
-        FileStream stream, string optionsJson, HashSet<string> completed, List<JournalPart> parts, bool isFinished, TimeProvider time, JournalIo io)
+        FileStream stream, string optionsJson, HashSet<string> completed, List<JournalPart> parts, bool isFinished, TimeProvider time, JournalIo io,
+        HashSet<string>? notOnDisk = null)
     {
         _stream = stream;
         OptionsJson = optionsJson;
         _completed = completed;
+        if (notOnDisk is not null)
+        {
+            _notOnDisk.UnionWith(notOnDisk);
+        }
+
         _parts = parts;
         _finished = isFinished;
         _time = time;
@@ -85,6 +102,15 @@ public sealed class JobJournal : IDisposable
 
     /// <summary>The options the job was started with.</summary>
     public string OptionsJson { get; }
+
+    /// <summary>When the job started (from the header), for a reopened journal; default for a new one.</summary>
+    public DateTime StartedUtc { get; private init; }
+
+    /// <summary>
+    /// For a reopened journal: when the file was last written before this open, roughly when the job stopped (Windows may update it late, so
+    /// it can be early, never late). Null for a new journal. A resume uses it to tell files written during the job from files changed after.
+    /// </summary>
+    public DateTime? LastActivityUtc { get; private init; }
 
     /// <summary>True once a <see cref="JournalRecordKind.JobFinished"/> record has been read or appended.</summary>
     public bool IsFinished => _finished;
@@ -101,6 +127,36 @@ public sealed class JobJournal : IDisposable
             {
                 return new HashSet<string>(_completed, StringComparer.OrdinalIgnoreCase);
             }
+        }
+    }
+
+    /// <summary>
+    /// A snapshot of the <see cref="CompletedPaths"/> whose latest <see cref="JournalRecordKind.FileDone"/> record says
+    /// <see cref="NotOnDiskYet"/>. A resume must check these files again instead of trusting them.
+    /// </summary>
+    public IReadOnlySet<string> NotOnDiskPaths
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return new HashSet<string>(_notOnDisk, StringComparer.OrdinalIgnoreCase);
+            }
+        }
+    }
+
+    /// <summary>Records a FileDone line in both sets; a later done record for the same file replaces the earlier one's flag.</summary>
+    private static void TrackDone(HashSet<string> completed, HashSet<string> notOnDisk, JournalRecord record)
+    {
+        var key = Normalize(record.RelativePath!);
+        completed.Add(key);
+        if (string.Equals(record.Detail, NotOnDiskYet, StringComparison.Ordinal))
+        {
+            notOnDisk.Add(key);
+        }
+        else
+        {
+            notOnDisk.Remove(key);
         }
     }
 
@@ -172,6 +228,7 @@ public sealed class JobJournal : IDisposable
             throw new FileNotFoundException("The job journal for this job was not found, so it cannot be resumed.", path);
         }
 
+        var lastActivity = File.GetLastWriteTimeUtc(path); // before this open changes it
         var stream = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.Read, 16 * 1024);
         try
         {
@@ -184,7 +241,11 @@ public sealed class JobJournal : IDisposable
             // Cut off anything after the last good line, so new records are not stranded behind garbage.
             stream.SetLength(load.GoodLength);
             stream.Seek(0, SeekOrigin.End);
-            return new JobJournal(stream, load.Options, load.Completed, load.Parts, load.Finished, timeProvider ?? TimeProvider.System, io ?? new JournalIo());
+            return new JobJournal(stream, load.Options, load.Completed, load.Parts, load.Finished, timeProvider ?? TimeProvider.System, io ?? new JournalIo(), load.NotOnDisk)
+            {
+                StartedUtc = load.StartedUtc,
+                LastActivityUtc = lastActivity,
+            };
         }
         catch
         {
@@ -328,7 +389,7 @@ public sealed class JobJournal : IDisposable
             _goodOffset += line.Length;
             if (record.Kind == JournalRecordKind.FileDone)
             {
-                _completed.Add(Normalize(record.RelativePath!));
+                TrackDone(_completed, _notOnDisk, record);
             }
             else if (record.Kind == JournalRecordKind.FilePartStarted)
             {
@@ -391,12 +452,13 @@ public sealed class JobJournal : IDisposable
     }
 
     private readonly record struct LoadResult(string? Options, HashSet<string> Completed, List<JournalPart> Parts, bool Finished, long GoodLength,
-        DateTime StartedUtc, string? Result);
+        DateTime StartedUtc, string? Result, HashSet<string> NotOnDisk);
 
     /// <summary>Reads lines from the start and stops at the first one that cannot be trusted.</summary>
     private static LoadResult Load(FileStream stream, bool collectFileState = true, CancellationToken ct = default)
     {
         var completed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var notOnDisk = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var parts = new List<JournalPart>();
         string? options = null;
         var finished = false;
@@ -454,7 +516,7 @@ public sealed class JobJournal : IDisposable
                     case JournalRecordKind.FileDone:
                         if (collectFileState)
                         {
-                            completed.Add(Normalize(record.RelativePath!));
+                            TrackDone(completed, notOnDisk, record);
                         }
                         break;
                     case JournalRecordKind.JobFinished:
@@ -476,7 +538,7 @@ public sealed class JobJournal : IDisposable
             }
         }
 
-        return new LoadResult(options, completed, parts, finished, goodLength, startedUtc, result);
+        return new LoadResult(options, completed, parts, finished, goodLength, startedUtc, result, notOnDisk);
     }
 
     private static bool TryParseLine(ReadOnlySpan<byte> line, bool isHeader, out JournalRecord record)

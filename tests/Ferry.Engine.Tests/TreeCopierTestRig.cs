@@ -251,6 +251,9 @@ internal sealed class RecordingFileSystem(IFileSystem inner) : IFileSystem
     /// <summary>Returns an exception to throw for opening (path, unbuffered) to read, or null.</summary>
     public Func<string, bool, Exception?>? OnOpenRead { get; set; }
 
+    /// <summary>Returns an exception to throw when the copier reads a part file back through its write handle (verify), or null.</summary>
+    public Func<string, Exception?>? OnReadBack { get; set; }
+
     /// <summary>Runs just before CreateWrite (e.g. to swap a folder for a link after the folder was checked).</summary>
     public Action<string>? BeforeCreateWrite { get; set; }
 
@@ -319,7 +322,7 @@ internal sealed class RecordingFileSystem(IFileSystem inner) : IFileSystem
     {
         Add($"CreateWrite {Plain(path)}");
         BeforeCreateWrite?.Invoke(path);
-        var handle = new WriteHandle(this, path, inner.CreateWrite(path, preallocate, unbuffered));
+        var handle = new WriteHandle(this, path, inner.CreateWrite(path, preallocate, unbuffered), unbuffered);
         AfterCreateWrite?.Invoke(path);
         return handle;
     }
@@ -425,7 +428,7 @@ internal sealed class RecordingFileSystem(IFileSystem inner) : IFileSystem
         }
     }
 
-    private sealed class WriteHandle(RecordingFileSystem fs, string path, IWriteHandle inner) : IWriteHandle
+    private sealed class WriteHandle(RecordingFileSystem fs, string path, IWriteHandle inner, bool unbuffered = false) : IWriteHandle
     {
         public ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, long offset, CancellationToken ct)
         {
@@ -436,6 +439,12 @@ internal sealed class RecordingFileSystem(IFileSystem inner) : IFileSystem
 
             var data = fs.TransformWrite is { } transform ? transform(path, offset, buffer) : buffer;
             return inner.WriteAsync(data, offset, ct);
+        }
+
+        public ValueTask<int> ReadBackAsync(Memory<byte> buffer, long offset, CancellationToken ct)
+        {
+            fs.Add($"ReadBack {Plain(path)}{(unbuffered ? " unbuffered" : string.Empty)}");
+            return fs.OnReadBack?.Invoke(path) is { } ex ? ValueTask.FromException<int>(ex) : inner.ReadBackAsync(buffer, offset, ct);
         }
 
         public ValueTask SetLengthAsync(long length) => inner.SetLengthAsync(length);
