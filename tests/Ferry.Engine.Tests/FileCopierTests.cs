@@ -762,6 +762,239 @@ public sealed class FileCopierPartNameTests
     }
 }
 
+/// <summary>
+/// Large files take turns to copy and to check (<see cref="LargeFileGates"/>). The unbuffered threshold is lowered to 64 KiB so 128 KiB counts
+/// as large; 128 KiB is one chunk, so an in-memory copy runs straight through on the calling thread until a hook or a gate holds it. A copy
+/// started directly has therefore either finished or is waiting when its call returns.
+/// </summary>
+public sealed class FileCopierLargeGateTests
+{
+    private const int Threshold = 64 * 1024;
+    private const int Large = 128 * 1024;
+
+    private static CancellationToken Ct => TestContext.Current.CancellationToken;
+
+    [Fact]
+    public async Task LargeGates_SecondTransferWaitsForFirst()
+    {
+        using var rig = new Rig();
+        var reachedA = NewSignal();
+        var releaseA = NewSignal();
+        rig.B.Hooks.BeforeWrite = async (path, _, ct) =>
+        {
+            if (IsPartOf("a", path))
+            {
+                reachedA.TrySetResult();
+                await releaseA.Task.WaitAsync(ct);
+            }
+        };
+
+        var a = rig.Copy("a", Large, Ct);
+        await reachedA.Task.WaitAsync(Ct);
+        var b = rig.Copy("b", Large, Ct);
+
+        Assert.False(b.IsCompleted);
+        Assert.False(rig.Parts.ContainsKey("b"), "The second large file created its part while the first was still copying.");
+
+        releaseA.TrySetResult();
+        Assert.True((await a).Success);
+        Assert.True((await b).Success);
+        rig.AssertGatesFree();
+    }
+
+    [Fact]
+    public async Task LargeGates_CheckOverlapsNextTransfer()
+    {
+        using var rig = new Rig();
+        var (reachedACheck, releaseACheck) = rig.HoldCheckOf("a");
+
+        var a = rig.Copy("a", Large, Ct);
+        await reachedACheck.Task.WaitAsync(Ct);
+        var b = rig.Copy("b", Large, Ct);
+
+        // B copied all its data and gave up its turn to copy while A is still being checked.
+        Assert.False(a.IsCompleted);
+        Assert.True(rig.Parts.TryGetValue("b", out var bPart));
+        Assert.Equal(Large, rig.B.Fs.GetEntry(bPart).Length);
+        Assert.Equal(1, rig.Gates.Transfer.CurrentCount);
+
+        releaseACheck.TrySetResult();
+        Assert.True((await a).Success);
+        Assert.True((await b).Success);
+        rig.AssertGatesFree();
+    }
+
+    [Fact]
+    public async Task LargeGates_OnlyOneCheckAtATime()
+    {
+        using var rig = new Rig();
+        var (reachedACheck, releaseACheck) = rig.HoldCheckOf("a");
+        var bCheckStarted = false;
+        var hold = rig.B.Hooks.BeforeRead!;
+        rig.B.Hooks.BeforeRead = (path, offset, ct) =>
+        {
+            if (IsPartOf("b", path))
+            {
+                Volatile.Write(ref bCheckStarted, true);
+            }
+
+            return hold(path, offset, ct);
+        };
+
+        var a = rig.Copy("a", Large, Ct);
+        await reachedACheck.Task.WaitAsync(Ct);
+        var b = rig.Copy("b", Large, Ct);
+
+        Assert.False(b.IsCompleted);
+        Assert.False(Volatile.Read(ref bCheckStarted), "The second large file was checked while the first was still being checked.");
+
+        releaseACheck.TrySetResult();
+        Assert.True((await a).Success);
+        Assert.True((await b).Success);
+        Assert.True(Volatile.Read(ref bCheckStarted));
+        rig.AssertGatesFree();
+    }
+
+    [Fact]
+    public async Task LargeGates_ReleasedOnFailureAndCancel()
+    {
+        using var rig = new Rig();
+
+        // A fails mid-write: B still gets its turn.
+        rig.B.Hooks.OnWrite = (path, _) => IsPartOf("a", path) ? new FileSystemException(path, IoErrorKind.DiskFull, null) : null;
+        var failed = await rig.Copy("a", Large, Ct);
+        Assert.False(failed.Success);
+        rig.AssertGatesFree();
+        Assert.True((await rig.Copy("b", Large, Ct)).Success);
+        rig.B.Hooks.OnWrite = null;
+
+        // C is cancelled while holding the turn to copy, D while waiting for it.
+        var reachedC = NewSignal();
+        rig.B.Hooks.BeforeWrite = async (path, _, ct) =>
+        {
+            if (IsPartOf("c", path))
+            {
+                reachedC.TrySetResult();
+                await Task.Delay(Timeout.Infinite, ct);
+            }
+        };
+        using var cancelC = CancellationTokenSource.CreateLinkedTokenSource(Ct);
+        using var cancelD = CancellationTokenSource.CreateLinkedTokenSource(Ct);
+        var c = rig.Copy("c", Large, cancelC.Token);
+        await reachedC.Task.WaitAsync(Ct);
+        var d = rig.Copy("d", Large, cancelD.Token);
+        Assert.False(d.IsCompleted);
+
+        await cancelD.CancelAsync();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => d);
+        await cancelC.CancelAsync();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => c);
+        rig.AssertGatesFree();
+
+        // A held check that is cancelled gives its turn back too.
+        rig.B.Hooks.BeforeWrite = null;
+        var reachedE = NewSignal();
+        rig.B.Hooks.BeforeRead = async (path, _, ct) =>
+        {
+            if (IsPartOf("e", path))
+            {
+                reachedE.TrySetResult();
+                await Task.Delay(Timeout.Infinite, ct);
+            }
+        };
+        using var cancelE = CancellationTokenSource.CreateLinkedTokenSource(Ct);
+        var e = rig.Copy("e", Large, cancelE.Token);
+        await reachedE.Task.WaitAsync(Ct);
+        await cancelE.CancelAsync();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => e);
+        rig.AssertGatesFree();
+        Assert.Empty(rig.B.PartFiles());
+        Assert.Equal(0, rig.Pool.Outstanding);
+    }
+
+    [Fact]
+    public async Task SmallFiles_IgnoreGates()
+    {
+        using var rig = new Rig();
+        await rig.Gates.Transfer.WaitAsync(Ct);
+        await rig.Gates.Check.WaitAsync(Ct);
+
+        var outcome = await rig.Copy("small", Threshold - 1, Ct).WaitAsync(Ct);
+
+        Assert.True(outcome.Success, outcome.Problem?.Message);
+    }
+
+    private static TaskCompletionSource NewSignal() => new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    private static bool IsPartOf(string name, string path) =>
+        FileCopierTests.IsPart(path) && Path.GetFileName(path).StartsWith(name + ".bin.", StringComparison.Ordinal);
+
+    private sealed class Rig : IDisposable
+    {
+        private readonly FileCopier _copier;
+
+        public Rig()
+        {
+            _copier = new FileCopier(B.Fs, Pool, TimeProvider.System, new CopierTuning(FileCopier.PipelineDepth, Threshold));
+        }
+
+        public Backend B { get; } = Backend.Create(Backend.InMemory);
+
+        public BufferPool Pool { get; } = new();
+
+        public LargeFileGates Gates { get; } = new();
+
+        /// <summary>Each copy's part-file name, by copy name.</summary>
+        public System.Collections.Concurrent.ConcurrentDictionary<string, string> Parts { get; } = new();
+
+        /// <summary>Holds the read-back of <paramref name="name"/>'s closed part until released.</summary>
+        public (TaskCompletionSource Reached, TaskCompletionSource Release) HoldCheckOf(string name)
+        {
+            var reached = NewSignal();
+            var release = NewSignal();
+            B.Hooks.BeforeRead = async (path, _, ct) =>
+            {
+                if (IsPartOf(name, path))
+                {
+                    reached.TrySetResult();
+                    await release.Task.WaitAsync(ct);
+                }
+            };
+            return (reached, release);
+        }
+
+        public Task<FileCopyOutcome> Copy(string name, int size, CancellationToken ct)
+        {
+            var src = B.PathOf(name + ".src");
+            B.AddFile(src, FileCopierTests.Bytes(size, seed: size + name.Length));
+            var hooks = new FileCopyHooks
+            {
+                LargeGates = Gates,
+                VerifyInCopier = true,
+                PartChosen = p =>
+                {
+                    Parts[name] = p;
+                    return true;
+                },
+            };
+            return _copier.CopyAsync(src, B.PathOf(name + ".bin"), new CopyOptions { Verify = true }, new PauseGate(), new LatestProgress(), hooks, ct);
+        }
+
+        public void AssertGatesFree()
+        {
+            Assert.Equal(1, Gates.Transfer.CurrentCount);
+            Assert.Equal(1, Gates.Check.CurrentCount);
+        }
+
+        public void Dispose()
+        {
+            Gates.Dispose();
+            Pool.Dispose();
+            B.Dispose();
+        }
+    }
+}
+
 /// <summary>Records the latest progress report (thread safe).</summary>
 internal sealed class LatestProgress : IProgress<FileProgress>
 {
@@ -791,6 +1024,12 @@ internal sealed class HookFileSystem(IFileSystem inner) : IFileSystem
     public Func<string, long, bool>? BlockRead { get; set; }
 
     public Action<string, string>? BeforeMove { get; set; }
+
+    /// <summary>Awaited before each write to (path, offset), so a test can hold a copy mid-write.</summary>
+    public Func<string, long, CancellationToken, ValueTask>? BeforeWrite { get; set; }
+
+    /// <summary>Awaited before each read at (path, offset), so a test can hold a read (e.g. the check of a closed part).</summary>
+    public Func<string, long, CancellationToken, ValueTask>? BeforeRead { get; set; }
 
     private int _flushes;
 
@@ -856,9 +1095,17 @@ internal sealed class HookFileSystem(IFileSystem inner) : IFileSystem
         public long Length => inner.Length;
 
         public ValueTask<int> ReadAsync(Memory<byte> buffer, long offset, CancellationToken ct) =>
-            fs.BlockRead?.Invoke(path, offset) == true ? BlockAsync(ct) : inner.ReadAsync(buffer, offset, ct);
+            fs.BlockRead?.Invoke(path, offset) == true ? BlockAsync(ct)
+            : fs.BeforeRead is { } before ? HeldReadAsync(before, buffer, offset, ct)
+            : inner.ReadAsync(buffer, offset, ct);
 
         public ValueTask DisposeAsync() => inner.DisposeAsync();
+
+        private async ValueTask<int> HeldReadAsync(Func<string, long, CancellationToken, ValueTask> before, Memory<byte> buffer, long offset, CancellationToken ct)
+        {
+            await before(path, offset, ct);
+            return await inner.ReadAsync(buffer, offset, ct);
+        }
 
         private async ValueTask<int> BlockAsync(CancellationToken ct)
         {
@@ -878,7 +1125,15 @@ internal sealed class HookFileSystem(IFileSystem inner) : IFileSystem
     private sealed class WriteHandle(HookFileSystem fs, string path, IWriteHandle inner) : IWriteHandle
     {
         public ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, long offset, CancellationToken ct) =>
-            fs.OnWrite?.Invoke(path, offset) is { } ex ? ValueTask.FromException(ex) : inner.WriteAsync(buffer, offset, ct);
+            fs.OnWrite?.Invoke(path, offset) is { } ex ? ValueTask.FromException(ex)
+            : fs.BeforeWrite is { } before ? HeldWriteAsync(before, buffer, offset, ct)
+            : inner.WriteAsync(buffer, offset, ct);
+
+        private async ValueTask HeldWriteAsync(Func<string, long, CancellationToken, ValueTask> before, ReadOnlyMemory<byte> buffer, long offset, CancellationToken ct)
+        {
+            await before(path, offset, ct);
+            await inner.WriteAsync(buffer, offset, ct);
+        }
 
         public ValueTask<int> ReadBackAsync(Memory<byte> buffer, long offset, CancellationToken ct) => inner.ReadBackAsync(buffer, offset, ct);
 

@@ -50,6 +50,12 @@ public sealed class FileCopyHooks
     internal SpeedLimiter? SharedLimiter { get; init; }
 
     /// <summary>
+    /// Turns shared by every copy of a job running at once: large files (at least the unbuffered size, not cloned, not rescued) copy one at a
+    /// time and are checked one at a time, so one file's check can run while the next one copies. When null nothing waits.
+    /// </summary>
+    internal LargeFileGates? LargeGates { get; init; }
+
+    /// <summary>
     /// Called once the part file is complete, flushed (see <see cref="SkipSmallFileFlush"/>) and the right size, just before it takes the real name, with the source hash (null when
     /// neither verify nor checksum export is on). Return a <see cref="Problem"/> to refuse: the copy then fails and the part file is deleted.
     /// Used to verify the copy and to add extra data streams before the real name ever appears.

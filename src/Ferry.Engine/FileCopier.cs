@@ -106,6 +106,9 @@ public sealed class FileCopier
         StreamingHasher? hasher = null;
         var partIsOurs = false;
         var retry = new RetryPolicy(time: _time);
+        LargeFileGates? gates = null; // set only for a large, plain copy that takes turns with the job's other large files
+        var holdingTransfer = false;
+        var holdingCheck = false;
         try
         {
             await pause.WaitIfPausedAsync(ct).ConfigureAwait(false);
@@ -128,6 +131,16 @@ public sealed class FileCopier
             // A small file that will be verified is written unbuffered too, so it can be read back from the drive before its handle closes.
             var writeUnbuffered = unbuffered || (options.Verify && hooks is { VerifyInCopier: true } && !options.RescueMode && length > 0);
             var alignment = writeUnbuffered || options.RescueMode ? Math.Max(_fs.GetSectorSize(source), _fs.GetSectorSize(destination)) : BufferedAlignment;
+
+            // A large file waits for its turn to copy before it opens anything or creates its part file; it keeps the turn until its part is
+            // flushed and closed (retries that reopen the part stay inside it).
+            if (unbuffered && !options.RescueMode && hooks?.LargeGates is { } shared)
+            {
+                gates = shared;
+                await gates.Transfer.WaitAsync(ct).ConfigureAwait(false);
+                holdingTransfer = true;
+            }
+
             reader = await retry.RunAsync(() => Task.FromResult(_fs.OpenRead(source, unbuffered)), RetryPolicy.IsTransient, hooks?.Status, ct).ConfigureAwait(false);
             if (reader.Length != length)
             {
@@ -243,6 +256,13 @@ public sealed class FileCopier
             reader = null;
             await r.DisposeAsync().ConfigureAwait(false);
 
+            // The data is written and closed: the next large file may start copying while this one is checked.
+            if (holdingTransfer)
+            {
+                holdingTransfer = false;
+                gates!.Transfer.Release();
+            }
+
             if (await retry.RunAsync(() => Task.FromResult(CheckComplete(source, before, part, length)),
                 RetryPolicy.IsTransient, hooks?.Status, ct).ConfigureAwait(false) is { } incomplete)
             {
@@ -265,10 +285,27 @@ public sealed class FileCopier
                     return changed;
                 }
             }
-            else if (verifyHere && !verifiedBeforeClose && await VerifyClosedPartAsync(source, part, hash!, options, hooks!, ct).ConfigureAwait(false) is { } bad)
+            else if (verifyHere && !verifiedBeforeClose)
             {
                 // Large (or rescued) files: the closed part is read back unbuffered. The wait to reopen is small next to reading the file.
-                return bad;
+                // Large files take turns to be checked, so two checks never compete for the same drive.
+                if (gates is not null)
+                {
+                    await gates.Check.WaitAsync(ct).ConfigureAwait(false);
+                    holdingCheck = true;
+                }
+
+                var bad = await VerifyClosedPartAsync(source, part, hash!, options, hooks!, ct).ConfigureAwait(false);
+                if (holdingCheck)
+                {
+                    holdingCheck = false;
+                    gates!.Check.Release();
+                }
+
+                if (bad is not null)
+                {
+                    return bad;
+                }
             }
 
             if (await RunBeforeCommitAsync(hooks, part, hash, ct).ConfigureAwait(false) is { } refused)
@@ -324,8 +361,24 @@ public sealed class FileCopier
         }
         finally
         {
-            await CleanUpAsync(reader, writer, partIsOurs ? part : null).ConfigureAwait(false);
-            hasher?.Dispose();
+            try
+            {
+                await CleanUpAsync(reader, writer, partIsOurs ? part : null).ConfigureAwait(false);
+                hasher?.Dispose();
+            }
+            finally
+            {
+                // Every way out gives back a turn it still holds (after the cleanup, so the next file never meets this one's handles).
+                if (holdingTransfer)
+                {
+                    gates!.Transfer.Release();
+                }
+
+                if (holdingCheck)
+                {
+                    gates!.Check.Release();
+                }
+            }
         }
     }
 
