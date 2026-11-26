@@ -141,13 +141,13 @@ internal static class Sweep
         }
     }
 
-    private const string Marker = ".ferry-bench-out";
+    internal const string Marker = ".ferry-bench-out";
 
     /// <summary>
     /// Empties <paramref name="dest"/> only if it is new, empty or marked by these tools (same rule as bench.ps1). Never a drive root;
     /// links inside are removed as links (Directory.Delete does not follow them).
     /// </summary>
-    private static void Clear(string dest)
+    internal static void Clear(string dest)
     {
         if (Path.GetPathRoot(dest) is { } root && string.Equals(dest.TrimEnd('\\'), root.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase))
         {

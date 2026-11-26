@@ -8,6 +8,7 @@ namespace Ferry.Bench;
 ///   micro [BenchmarkDotNet args]                 micro-benchmarks (buffer pool, hashing, copy pipeline)
 ///   generate large|small|mixed &lt;folder&gt; [--scale N]   creates a test data set (N divides the default size, for quick trials)
 ///   sweep &lt;source&gt; &lt;dest&gt; [--rounds N] [--json &lt;file&gt;]  times FileCopier with each tuning choice
+///   jobs <source> <destRoot> [--workers 1,2,4,8] [--verify]  times whole copy jobs at each worker count
 ///   flush                                         empties the Windows standby cache (needs an administrator)
 /// </summary>
 internal static class Program
@@ -16,7 +17,7 @@ internal static class Program
     {
         if (args.Length == 0)
         {
-            Console.Error.WriteLine("Usage: Ferry.Bench micro | generate <large|small|mixed> <folder> [--scale N] | sweep <source> <dest> [--rounds N] [--json <file>] | flush");
+            Console.Error.WriteLine("Usage: Ferry.Bench micro | generate <large|small|mixed> <folder> [--scale N] | sweep <source> <dest> [--rounds N] [--json <file>] | jobs <source> <destRoot> [--workers 1,2,4,8] [--verify] | flush");
             return 2;
         }
 
@@ -32,6 +33,8 @@ internal static class Program
                     return 0;
                 case "sweep" when args.Length >= 3:
                     return await Sweep.RunAsync(args[1], args[2], IntOption(args, "--rounds", 3), StringOption(args, "--json")).ConfigureAwait(false);
+                case "jobs" when args.Length >= 3:
+                    return await JobsProbe.RunAsync(args[1], args[2], WorkerCounts(StringOption(args, "--workers")), args.Contains("--verify")).ConfigureAwait(false);
                 case "flush":
                     return StandbyCache.TryFlush(out var why) ? 0 : Fail(why);
                 default:
@@ -52,6 +55,9 @@ internal static class Program
 
     private static int IntOption(string[] args, string name, int fallback) =>
         StringOption(args, name) is { } value ? int.Parse(value, CultureInfo.InvariantCulture) : fallback;
+
+    private static int[] WorkerCounts(string? list) =>
+        list is null ? [1, 2, 4, 8] : [.. list.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Select(x => int.Parse(x, CultureInfo.InvariantCulture))];
 
     private static string? StringOption(string[] args, string name)
     {
