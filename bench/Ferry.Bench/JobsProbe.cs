@@ -48,6 +48,18 @@ internal static class JobsProbe
         Console.WriteLine(string.Create(CultureInfo.InvariantCulture, $"Jobs: {files.Count} files, {bytes / (double)MiB:F0} MiB, verify {(verify ? "on" : "off")}."));
         Console.WriteLine($"Drive kind reported for source and destination: {kind}" + (kind == DriveKind.SolidState ? "." : " (more than one worker is not allowed here, so every count runs one file at a time)."));
 
+        // Every count copies into a fresh destination, so only the source can be cached. Read it once, write nothing, so the source is warm for
+        // all counts and the first count is not penalised for running first.
+        Console.WriteLine("Warming the read cache...");
+        var scratch = new byte[MiB];
+        foreach (var file in files)
+        {
+            using var stream = new FileStream(file.FullName, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 1, FileOptions.SequentialScan);
+            while (stream.Read(scratch, 0, scratch.Length) > 0)
+            {
+            }
+        }
+
         var jobsDir = Path.Combine(Path.GetTempPath(), "ferry-bench-jobs-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(jobsDir);
         try

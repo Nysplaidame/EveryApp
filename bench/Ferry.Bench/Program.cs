@@ -34,7 +34,7 @@ internal static class Program
                 case "sweep" when args.Length >= 3:
                     return await Sweep.RunAsync(args[1], args[2], IntOption(args, "--rounds", 3), StringOption(args, "--json")).ConfigureAwait(false);
                 case "jobs" when args.Length >= 3:
-                    return await JobsProbe.RunAsync(args[1], args[2], WorkerCounts(StringOption(args, "--workers")), args.Contains("--verify")).ConfigureAwait(false);
+                    return await JobsProbe.RunAsync(args[1], args[2], WorkerCounts(args), args.Contains("--verify")).ConfigureAwait(false);
                 case "flush":
                     return StandbyCache.TryFlush(out var why) ? 0 : Fail(why);
                 default:
@@ -56,8 +56,28 @@ internal static class Program
     private static int IntOption(string[] args, string name, int fallback) =>
         StringOption(args, name) is { } value ? int.Parse(value, CultureInfo.InvariantCulture) : fallback;
 
-    private static int[] WorkerCounts(string? list) =>
-        list is null ? [1, 2, 4, 8] : [.. list.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Select(x => int.Parse(x, CultureInfo.InvariantCulture))];
+    private static int[] WorkerCounts(string[] args)
+    {
+        const string hint = "Give worker counts as a comma-separated list of whole numbers from 1 to 64, each once, for example --workers 1,2,4,8.";
+        if (Array.IndexOf(args, "--workers") < 0)
+        {
+            return [1, 2, 4, 8];
+        }
+
+        var list = StringOption(args, "--workers") ?? throw new ArgumentException("--workers needs a value. " + hint);
+        var counts = new List<int>();
+        foreach (var part in list.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            if (!int.TryParse(part, NumberStyles.None, CultureInfo.InvariantCulture, out var n) || n < 1 || n > 64 || counts.Contains(n))
+            {
+                throw new ArgumentException($"'{part}' is not a usable worker count. " + hint);
+            }
+
+            counts.Add(n);
+        }
+
+        return counts.Count > 0 ? [.. counts] : throw new ArgumentException("No worker counts given. " + hint);
+    }
 
     private static string? StringOption(string[] args, string name)
     {
