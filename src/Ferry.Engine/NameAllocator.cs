@@ -7,8 +7,11 @@ internal static class NameAllocator
 {
     private const int MaxNumber = 9999;
 
-    /// <summary>"name (2).ext", "name (3).ext"... the first one not taken. Null if none is free.</summary>
-    public static string? NextFreeName(IFileSystem fs, string target)
+    /// <summary>
+    /// "name (2).ext", "name (3).ext"... the first one not taken. Null if none is free. A name is taken when it is on disk or when
+    /// <paramref name="reserved"/> says so (a name already chosen for a copy that is still running).
+    /// </summary>
+    public static string? NextFreeName(IFileSystem fs, string target, Func<string, bool>? reserved = null)
     {
         var folder = Path.GetDirectoryName(target) ?? string.Empty;
         var name = Path.GetFileName(target);
@@ -17,7 +20,7 @@ internal static class NameAllocator
         for (var n = 2; n <= MaxNumber; n++)
         {
             var candidate = Path.Combine(folder, $"{stem} ({n}){extension}");
-            if (!IsTaken(fs, candidate))
+            if (reserved?.Invoke(candidate) != true && !IsTaken(fs, candidate))
             {
                 return candidate;
             }

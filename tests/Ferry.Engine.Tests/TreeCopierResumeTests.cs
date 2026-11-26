@@ -13,6 +13,7 @@ public sealed class TreeCopierResumeTests : TreeCopierTestBase
     [Fact]
     public async Task Resume_SkipsCompletedFiles()
     {
+        _rig.Workers = 1; // Counts which files finished before the stop, which depends on copying one at a time.
         for (var i = 0; i < 5; i++)
         {
             Add($@"C:\src\f{i}.bin", 10 + i, seed: i);
@@ -181,6 +182,7 @@ public sealed class TreeCopierResumeTests : TreeCopierTestBase
     [Fact]
     public async Task Resume_DeletesOnlyTheJournaledPartFiles()
     {
+        _rig.Workers = 1; // Cancels when b.bin starts, so how many files finished first depends on copying one at a time.
         Add(@"C:\src\a.bin", 100);
         Add(@"C:\src\b.bin", 200);
         AddText(@"D:\dst\src\other.bin.deadbeef.ferrypart", "not ours"); // someone else's part file: never touched

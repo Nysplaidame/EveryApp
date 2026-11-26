@@ -49,6 +49,7 @@ public sealed class TreeCopierFailureTests : TreeCopierTestBase
     [Fact]
     public async Task Failure_Stop_StopsAndKeepsCompleted()
     {
+        _rig.Workers = 1; // Counts which files finished before the stop, which depends on copying one at a time.
         for (var i = 0; i < 5; i++)
         {
             Add($@"C:\src\f{i}.bin", 10 + i, seed: i); // sizes rise with i, so small-first keeps this order

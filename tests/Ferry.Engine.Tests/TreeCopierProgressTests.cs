@@ -110,6 +110,7 @@ public sealed class TreeCopierProgressTests : TreeCopierTestBase
     [Fact]
     public async Task Cancel_ReleasesEverything_AndLeavesJobResumable()
     {
+        _rig.Workers = 1; // Cancels when b.bin starts, so how many files finished first depends on copying one at a time.
         Add(@"C:\src\a.bin", 100);
         Add(@"C:\src\b.bin", 200);
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(Ct);

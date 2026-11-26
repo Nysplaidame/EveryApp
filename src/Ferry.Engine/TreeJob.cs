@@ -1,12 +1,14 @@
 using EveryApp.Core.FileSystem;
 using EveryApp.Core.Jobs;
+using EveryApp.Core.Scheduling;
 
 namespace Ferry.Engine;
 
 /// <summary>
-/// One run of one job: drives the phases (checking, waiting, copying) and copies files one at a time with the components
-/// <see cref="TreePlanner"/>, <see cref="TreeMover"/>, <see cref="ResumeRecovery"/>, <see cref="ChecksumWriter"/> and
-/// <see cref="ProgressTracker"/>. See <see cref="TreeCopier"/> for the rules it keeps.
+/// One run of one job: drives the phases (checking, waiting, copying) with the components <see cref="TreePlanner"/>, <see cref="TreeMover"/>,
+/// <see cref="ResumeRecovery"/>, <see cref="ChecksumWriter"/> and <see cref="ProgressTracker"/>. Every decision about a file is made here one
+/// file at a time in planned order; only the copy itself may run alongside others (<see cref="InFlightCopies"/>). See <see cref="TreeCopier"/>
+/// for the rules it keeps.
 /// </summary>
 internal sealed class TreeJob
 {
@@ -36,6 +38,8 @@ internal sealed class TreeJob
     private bool _sameVolume;
     private bool _localDrives;
     private readonly SpeedLimiter? _limiter;
+    private LargeFileGates? _gates; // one per job, shared by every copy; disposed only once every copy has ended
+    private int _workers = 1;
 
     public TreeJob(TreeCopier owner, Guid jobId, JobSpec spec, JobJournal? journal, PauseGate pause, IProgress<JobProgress> sink, CancellationToken ct)
     {
@@ -63,6 +67,9 @@ internal sealed class TreeJob
 
     public async Task<CopyResult> RunAsync()
     {
+        // Every root waits for all of its copies before it ends (even when cancelled or failing), so nothing uses these once this returns.
+        using var gates = new LargeFileGates();
+        _gates = gates;
         try
         {
             return await RunCoreAsync().ConfigureAwait(false);
@@ -109,6 +116,7 @@ internal sealed class TreeJob
 
         // ---- Wait for every drive involved (all sources and the destination), keep awake, journal: all before the first write.
         var devices = _owner.Scheduler.DevicesOf([.. _spec.Sources, _destination]);
+        _workers = ChooseWorkers(devices);
         var label = _spec.Sources.Count == 1 ? $"{_spec.Sources[0]} to {_destination}" : $"{_spec.Sources.Count} items to {_destination}";
         var acquire = _owner.Scheduler.AcquireAsync(devices, label, _ct);
         if (!acquire.IsCompleted)
@@ -173,6 +181,17 @@ internal sealed class TreeJob
         }
     }
 
+    /// <summary>
+    /// Several copies at once only when every drive (each source and the destination) is a fixed local solid-state drive and the job is not
+    /// rescuing a failing drive; anything unknown means one at a time. The drive kind is asked last, so a network path is never queried.
+    /// </summary>
+    private int ChooseWorkers(DeviceSet devices) =>
+        _owner.Workers > 1 && !_options.RescueMode
+        && _owner.DestinationInfo.IsFixedLocalDrive(_destination) && _spec.Sources.All(_owner.DestinationInfo.IsFixedLocalDrive)
+        && _owner.DriveKinds.KindOf(devices) == DriveKind.SolidState
+            ? _owner.Workers
+            : 1;
+
     private async Task ProcessRootAsync(TreeRoot root)
     {
         if (root.MoveByRename)
@@ -186,12 +205,31 @@ internal sealed class TreeJob
             _sameVolume = false; // Windows says another volume after all: copy and verify item by item
         }
 
+        // A same-volume move is renames: nothing to gain from several at once, and its fall-back to copying must stay in planned order.
+        using var inFlight = new InFlightCopies(root.SameVolume ? 1 : _workers);
+        try
+        {
+            await DispatchAsync(root, inFlight).ConfigureAwait(false);
+        }
+        finally
+        {
+            await inFlight.WaitForAllAsync().ConfigureAwait(false); // the root (and the job) never ends with a copy still running
+        }
+
+        inFlight.ThrowIfFailed();
+    }
+
+    /// <summary>Walks the root's items in planned order, deciding each one here and handing only file copies to <paramref name="inFlight"/>.</summary>
+    private async Task DispatchAsync(TreeRoot root, InFlightCopies inFlight)
+    {
         // Counted once per root (not once per folder), and skipped folders kept in a set: no quadratic work on huge trees.
         var counts = CountFiles(root);
         var skipped = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var clone = _clone;
+        var localDrives = _localDrives;
         foreach (var item in root.Items)
         {
-            if (_outcome.Stopped)
+            if (_outcome.Stopped || StopForFailure(inFlight))
             {
                 return;
             }
@@ -205,6 +243,8 @@ internal sealed class TreeJob
             switch (item.Kind)
             {
                 case TreeItemKind.Folder:
+                    // A copy still running may hold this very name (a renamed file): decide once it has landed, as one at a time would.
+                    await inFlight.EndOf(Path.Combine(_destination, item.Key)).WaitAsync(_ct).ConfigureAwait(false);
                     if (!ProcessFolder(root, item, counts))
                     {
                         skipped.Add(item.Key);
@@ -215,10 +255,22 @@ internal sealed class TreeJob
                     _mover.MoveLink(_sameVolume, item);
                     break;
                 default:
-                    await ProcessFileAsync(root, item).ConfigureAwait(false);
+                    await ProcessFileAsync(root, item, inFlight, clone, localDrives).ConfigureAwait(false);
                     break;
             }
         }
+    }
+
+    /// <summary>True when a copy ended with an unexpected error: the job starts nothing new, waits for the others, then rethrows it.</summary>
+    private bool StopForFailure(InFlightCopies inFlight)
+    {
+        if (!inFlight.Failed)
+        {
+            return false;
+        }
+
+        _outcome.MarkStopped();
+        return true;
     }
 
     /// <summary>Files and bytes under every folder key of the root (each file adds to each of its ancestors).</summary>
@@ -318,7 +370,11 @@ internal sealed class TreeJob
         }
     }
 
-    private async Task ProcessFileAsync(TreeRoot root, TreeItem item)
+    /// <summary>
+    /// Decides one file (resume checks, existing target, conflict rule or question, free name) right here, in planned order, then hands its
+    /// copy to <paramref name="inFlight"/>. Waits for a free place first, so no question is asked and no name chosen ahead of a free copy.
+    /// </summary>
+    private async Task ProcessFileAsync(TreeRoot root, TreeItem item, InFlightCopies inFlight, bool clone, bool localDrives)
     {
         var entry = item.Entry;
         if (_recovery.Completed.Contains(item.JournalKey))
@@ -327,9 +383,30 @@ internal sealed class TreeJob
         }
 
         await _pause.WaitIfPausedAsync(_ct).ConfigureAwait(false);
-        var slot = _progress.StartFile(item.Key);
+        await inFlight.WaitForPlaceAsync(_ct).ConfigureAwait(false);
+        ProgressTracker.FileSlot? slot = null;
+        var handedOver = false;
         try
         {
+            if (_outcome.Stopped || inFlight.Failed)
+            {
+                return; // a copy that was running stopped the job while this file waited for its turn
+            }
+
+            var started = _progress.StartFile(item.Key);
+            slot = started;
+            Task CopyAsync(string target, string targetKey, bool replace)
+            {
+                handedOver = true; // from here the copy ends the file's progress and gives its place back, whatever happens
+                return inFlight.StartAsync(target, () => CopyAndEndAsync(root, item, target, targetKey, replace, started, clone, localDrives));
+            }
+
+            if (_recovery.IsResume)
+            {
+                // The resume checks read files in the destination folder: never while another copy is still committing one there.
+                await inFlight.EndOfAllIn(Path.GetDirectoryName(Path.Combine(_destination, item.Key)) ?? _destination).WaitAsync(_ct).ConfigureAwait(false);
+            }
+
             var notOnDisk = _recovery.IsNotOnDisk(item.JournalKey);
             if (!notOnDisk && !_sameVolume && await TryRecoverAsync(item, root).ConfigureAwait(false))
             {
@@ -349,13 +426,16 @@ internal sealed class TreeJob
 
                 if (recheck.Result == RecheckResult.Damaged)
                 {
-                    await CopyFileAsync(root, item, Path.Combine(_destination, recheck.TargetKey), recheck.TargetKey, replace: true, slot).ConfigureAwait(false);
+                    await CopyAsync(Path.Combine(_destination, recheck.TargetKey), recheck.TargetKey, replace: true).ConfigureAwait(false);
                     return;
                 }
             }
 
             var target = Path.Combine(_destination, item.Key);
             var targetKey = item.Key;
+
+            // Another file's copy may be heading for this name (it was renamed to it): once it lands, decide as one at a time would.
+            await inFlight.EndOf(target).WaitAsync(_ct).ConfigureAwait(false);
             var existing = TreePaths.TryGet(_fs, target, follow: false);
             var replace = false;
             if (existing is not null)
@@ -372,7 +452,7 @@ internal sealed class TreeJob
                         replace = true;
                         break;
                     case ConflictRule.Rename: // also KeepBoth (R30): the incoming file gets the new name, the existing file is never touched
-                        var renamed = NameAllocator.NextFreeName(_fs, target);
+                        var renamed = NameAllocator.NextFreeName(_fs, target, inFlight.IsReserved); // a name held by a running copy is taken
                         if (renamed is null)
                         {
                             Fail(item, new Problem(TreePaths.Display(entry.FullPath), IoErrorKind.AlreadyExists, CopyMessages.NoFreeName));
@@ -399,16 +479,38 @@ internal sealed class TreeJob
                 _sameVolume = false; // the rename was refused as crossing volumes: copy and verify instead (never an unverified copy)
             }
 
-            await CopyFileAsync(root, item, target, targetKey, replace, slot).ConfigureAwait(false);
+            await CopyAsync(target, targetKey, replace).ConfigureAwait(false);
         }
         finally
         {
-            slot.End(entry.Length);
+            if (!handedOver)
+            {
+                slot?.End(entry.Length); // skipped, failed, moved by rename or recovered: done here
+                inFlight.GiveBack();
+            }
         }
     }
 
-    /// <summary>Copies one file with retries; on success applies permissions, deletes the source of a move, and journals it done.</summary>
-    private async Task CopyFileAsync(TreeRoot root, TreeItem item, string target, string targetKey, bool replace, ProgressTracker.FileSlot slot)
+    /// <summary>The part of a file that may run alongside others: its copy, then the end of its progress whatever happened.</summary>
+    private async Task CopyAndEndAsync(
+        TreeRoot root, TreeItem item, string target, string targetKey, bool replace, ProgressTracker.FileSlot slot, bool clone, bool localDrives)
+    {
+        try
+        {
+            await CopyFileAsync(root, item, target, targetKey, replace, slot, clone, localDrives).ConfigureAwait(false);
+        }
+        finally
+        {
+            slot.End(item.Entry.Length);
+        }
+    }
+
+    /// <summary>
+    /// Copies one file with retries; on success applies permissions, deletes the source of a move, and journals it done. Everything it needs
+    /// that differs per root comes in as arguments, never from fields the dispatcher changes while copies run.
+    /// </summary>
+    private async Task CopyFileAsync(
+        TreeRoot root, TreeItem item, string target, string targetKey, bool replace, ProgressTracker.FileSlot slot, bool clone, bool localDrives)
     {
         var entry = item.Entry;
         var source = entry.FullPath;
@@ -444,8 +546,9 @@ internal sealed class TreeJob
                     JournalRecordKind.FilePartStarted, item.JournalKey, entry.Length, entry.LastWriteTimeUtc, null,
                     TreePaths.Combine(targetFolderKey, Path.GetFileName(part)), targetKey)),
                 SharedLimiter = _limiter,
+                LargeGates = _gates,
                 ReplaceExisting = replace,
-                TryBlockClone = _clone,
+                TryBlockClone = clone,
 
                 // Forcing each small file to disk is most of its copy time. The journal marks such files and a resume checks them again;
                 // a move never skips it, because the source is deleted right after.
@@ -514,7 +617,7 @@ internal sealed class TreeJob
             _outcome.Problems.Add(warning with { Path = TreePaths.Display(warning.Path) });
         }
 
-        CopyPermissions(source, target);
+        CopyPermissions(source, target, localDrives);
         if (expected is not null && outcome.Lost.Count == 0)
         {
             DeleteSource(source, expected, root.Path); // only now: the copy is complete and matched

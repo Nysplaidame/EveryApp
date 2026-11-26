@@ -40,7 +40,16 @@ internal sealed class TreeCopierRig : IDisposable
 
     public FakeConfirmation Confirmation { get; } = new();
 
-    public TreeCopier NewCopier() => new(Fs, Scheduler, Resolver, JobsDir, Sleep, Destination, new AutoAdvancingTime(), Elevation);
+    /// <summary>What every drive is reported as (solid state by default, so jobs copy several files at once).</summary>
+    public FakeDriveKindProbe DriveKinds { get; } = new();
+
+    /// <summary>How many files a job may copy at once (used only when the drives allow several).</summary>
+    public int Workers { get; set; } = TreeCopier.DefaultWorkers;
+
+    /// <summary>Clock for the next copier; null gives each copier its own auto-advancing clock.</summary>
+    public TimeProvider? Time { get; set; }
+
+    public TreeCopier NewCopier() => new(Fs, Scheduler, Resolver, JobsDir, Sleep, Destination, Time ?? new AutoAdvancingTime(), Elevation, DriveKinds, Workers);
 
     /// <summary>Resumes the job with <see cref="Confirmation"/> answering the question.</summary>
     public Task<CopyResult> ResumeAsync(Guid jobId, IProgress<JobProgress>? progress = null) =>
@@ -186,6 +195,14 @@ internal sealed class FakeElevation : IElevationCheck
     public bool IsElevated { get; set; }
 }
 
+/// <summary>Reports every set of drives as <see cref="Kind"/>.</summary>
+internal sealed class FakeDriveKindProbe : IDriveKindProbe
+{
+    public DriveKind Kind { get; set; } = DriveKind.SolidState;
+
+    public DriveKind KindOf(DeviceSet devices) => Kind;
+}
+
 /// <summary>Answers the resume question with <see cref="Answer"/> and keeps what it was shown.</summary>
 internal sealed class FakeConfirmation : IResumeConfirmation
 {
@@ -207,10 +224,18 @@ internal sealed class ScriptedResolver : IConflictResolver
 
     public List<(FileEntry Source, FileEntry Existing)> Questions { get; } = [];
 
-    public ValueTask<ConflictRule> ResolveAsync(FileEntry source, FileEntry existing, CancellationToken ct)
+    /// <summary>Awaited before answering, so a test can keep a question open.</summary>
+    public Func<FileEntry, CancellationToken, Task>? Hold { get; set; }
+
+    public async ValueTask<ConflictRule> ResolveAsync(FileEntry source, FileEntry existing, CancellationToken ct)
     {
         Questions.Add((source, existing));
-        return ValueTask.FromResult(Answer);
+        if (Hold is { } hold)
+        {
+            await hold(source, ct).ConfigureAwait(false);
+        }
+
+        return Answer;
     }
 }
 
@@ -247,6 +272,9 @@ internal sealed class RecordingFileSystem(IFileSystem inner) : IFileSystem
 
     /// <summary>Returns an exception to throw for a write to (path, offset), or null.</summary>
     public Func<string, long, Exception?>? OnWrite { get; set; }
+
+    /// <summary>Awaited before each write to (path, offset), so a test can hold a copy mid-write.</summary>
+    public Func<string, long, CancellationToken, Task>? BeforeWrite { get; set; }
 
     /// <summary>Returns an exception to throw for opening (path, unbuffered) to read, or null.</summary>
     public Func<string, bool, Exception?>? OnOpenRead { get; set; }
@@ -430,7 +458,16 @@ internal sealed class RecordingFileSystem(IFileSystem inner) : IFileSystem
 
     private sealed class WriteHandle(RecordingFileSystem fs, string path, IWriteHandle inner, bool unbuffered = false) : IWriteHandle
     {
-        public ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, long offset, CancellationToken ct)
+        public ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, long offset, CancellationToken ct) =>
+            fs.BeforeWrite is { } hold ? WriteAfterAsync(hold, buffer, offset, ct) : WriteNowAsync(buffer, offset, ct);
+
+        private async ValueTask WriteAfterAsync(Func<string, long, CancellationToken, Task> hold, ReadOnlyMemory<byte> buffer, long offset, CancellationToken ct)
+        {
+            await hold(path, offset, ct).ConfigureAwait(false);
+            await WriteNowAsync(buffer, offset, ct).ConfigureAwait(false);
+        }
+
+        private ValueTask WriteNowAsync(ReadOnlyMemory<byte> buffer, long offset, CancellationToken ct)
         {
             if (fs.OnWrite?.Invoke(path, offset) is { } ex)
             {

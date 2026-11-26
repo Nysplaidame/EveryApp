@@ -33,14 +33,27 @@ namespace Ferry.Engine;
 /// crash: its metadata is re-applied and it is journaled done instead of being copied again.
 /// </para>
 /// <para>
-/// Files are processed one at a time within a job. Copying many small files in parallel is a Task 16 speed lever (it would need per-file
-/// progress and journal ordering to stay correct); it is deliberately not done here.
+/// Several files are copied at once only when every drive involved (each source and the destination) is a fixed local solid-state drive,
+/// the job is not in rescue mode, and the root is not a same-volume move; otherwise files are copied one at a time, exactly in walk order.
+/// Even with several copies running, everything that decides a file's fate (the resume checks, whether the target exists, the conflict rule
+/// or question, and the free name) is done one file at a time in walk order, so the same tree gives the same names and totals at any
+/// number of copies. A name chosen for a copy still running counts as taken. The job never finishes, and its record is never closed,
+/// while a copy is still running.
 /// </para>
 /// </summary>
 public sealed class TreeCopier
 {
     /// <summary>Waits before each retry of a failure that might clear up (bad read, network blip, file in use).</summary>
     internal static readonly TimeSpan[] RetryDelays = [TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(3)];
+
+    /// <summary>How many files a job copies at once when every drive is a solid-state drive.</summary>
+    internal const int DefaultWorkers = 4;
+
+    /// <summary>Tells solid-state drives from spinning ones (several copies at once only on solid state).</summary>
+    internal IDriveKindProbe DriveKinds { get; }
+
+    /// <summary>How many files a job copies at once when it is allowed to copy several.</summary>
+    internal int Workers { get; }
 
     internal IFileSystem FileSystem { get; }
 
@@ -84,7 +97,10 @@ public sealed class TreeCopier
     {
     }
 
-    /// <summary>For tests only: the elevation check is not public, so a host cannot switch the refusal off.</summary>
+    /// <summary>
+    /// For tests only: the elevation check is not public, so a host cannot switch the refusal off; nor can it choose the drive-kind probe or
+    /// how many files are copied at once (nothing may turn on several copies for a spinning drive).
+    /// </summary>
     internal TreeCopier(
         IFileSystem fs,
         DriveAwareScheduler scheduler,
@@ -93,8 +109,13 @@ public sealed class TreeCopier
         ISleepBlocker? sleepBlocker,
         IDestinationInfo? destinationInfo,
         TimeProvider? time,
-        IElevationCheck elevation)
+        IElevationCheck elevation,
+        IDriveKindProbe? driveKinds = null,
+        int workers = DefaultWorkers)
     {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(workers);
+        DriveKinds = driveKinds ?? WindowsDriveKindProbe.Instance;
+        Workers = workers;
         ArgumentNullException.ThrowIfNull(fs);
         ArgumentNullException.ThrowIfNull(scheduler);
         ArgumentNullException.ThrowIfNull(resolver);

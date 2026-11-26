@@ -67,6 +67,7 @@ public sealed class TreeCopierCopyTests : TreeCopierTestBase
     [Fact]
     public async Task Copy_CreatesFoldersBeforeTheirFiles_SmallFilesFirst()
     {
+        _rig.Workers = 1; // Checks the order files are committed in, which only one at a time fixes.
         Add(@"C:\src\big.bin", 3000);
         Add(@"C:\src\small.bin", 10);
         Add(@"C:\src\mid.bin", 500);
