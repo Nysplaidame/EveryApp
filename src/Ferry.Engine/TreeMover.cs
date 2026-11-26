@@ -27,7 +27,7 @@ internal sealed class TreeMover(
         {
             fs.Move(source, Path.Combine(destination, key), overwrite: false);
             journal.Done(journalKey, 0, DateTime.UtcNow, null);
-            outcome.Copied += files;
+            outcome.AddCopied(files);
         }
         catch (FileSystemException ex) when (ex.Kind == IoErrorKind.NotSameDevice)
         {
@@ -35,7 +35,7 @@ internal sealed class TreeMover(
         }
         catch (FileSystemException ex)
         {
-            outcome.Failed += files;
+            outcome.AddFailed(files);
             outcome.Problems.Add(new Problem(TreePaths.Display(source), ex.Kind, WriteMessage(ex.Kind)));
             progress.CompleteFiles(files, bytes);
             return MoveOutcome.Failed;
@@ -108,7 +108,7 @@ internal sealed class TreeMover(
                 fs.Move(source, target, overwrite: false);
             }
 
-            outcome.Copied++;
+            outcome.AddCopied();
             journal.Done(item.JournalKey, item.Entry.Length, item.Entry.LastWriteTimeUtc, null);
             return MoveOutcome.Moved;
         }

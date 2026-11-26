@@ -13,6 +13,23 @@ public sealed class FileCopierTests
     private const int KiB = 1024;
     private const int MiB = 1024 * 1024;
 
+    [Fact]
+    public async Task SharedLimiter_FourWriters_StayWithinRate()
+    {
+        var time = new RecordingTime();
+        var limiter = new SpeedLimiter(MiB, time); // 1 MiB/s shared by four writers, 8 MiB in all
+
+        await Task.WhenAll(Enumerable.Range(0, 4).Select(w => Task.Run(() =>
+        {
+            for (var i = 0; i < 8; i++)
+            {
+                _ = limiter.WaitAsync(256 * KiB, CancellationToken.None).AsTask();
+            }
+        })));
+
+        Assert.True(time.LongestDelay >= TimeSpan.FromSeconds(8) - TimeSpan.FromMilliseconds(1), $"last chunk was due after {time.LongestDelay}");
+    }
+
     public static TheoryData<string> Backends() => new() { Backend.InMemory, Backend.RealFiles };
 
     public static TheoryData<string, int> BackendsAndSizes()
@@ -1001,5 +1018,40 @@ internal sealed class Backend : IDisposable
         catch (UnauthorizedAccessException)
         {
         }
+    }
+}
+
+/// <summary>Frozen clock that never fires its timers and remembers the longest delay asked for.</summary>
+internal sealed class RecordingTime : TimeProvider
+{
+    private long _longestTicks;
+
+    public TimeSpan LongestDelay => TimeSpan.FromTicks(Interlocked.Read(ref _longestTicks));
+
+    public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+
+    public override long GetTimestamp() => 0;
+
+    public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+    {
+        long seen;
+        do
+        {
+            seen = Interlocked.Read(ref _longestTicks);
+        }
+        while (dueTime.Ticks > seen && Interlocked.CompareExchange(ref _longestTicks, dueTime.Ticks, seen) != seen);
+
+        return new NoTimer();
+    }
+
+    private sealed class NoTimer : ITimer
+    {
+        public bool Change(TimeSpan dueTime, TimeSpan period) => true;
+
+        public void Dispose()
+        {
+        }
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 }

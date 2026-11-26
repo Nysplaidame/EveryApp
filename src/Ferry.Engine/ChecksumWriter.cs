@@ -7,13 +7,30 @@ namespace Ferry.Engine;
 /// <summary>Collects "hash  relative-path" lines and writes &lt;destination&gt;\ferry-checksums.&lt;algorithm&gt; through a part file, never over an existing file.</summary>
 internal sealed class ChecksumWriter(IFileSystem fs, string destination, HashAlgorithmKind algorithm, JobJournalWriter journal, JobOutcome outcome)
 {
-    private readonly List<string> _lines = [];
+    private readonly object _gate = new();
+    private readonly List<(string Key, string Line)> _lines = [];
 
-    public void Add(string hashHex, string targetKey) => _lines.Add($"{hashHex}  {targetKey}");
+    /// <summary>Adds one line; safe to call from several copies at once.</summary>
+    public void Add(string hashHex, string targetKey)
+    {
+        lock (_gate)
+        {
+            _lines.Add((targetKey, $"{hashHex}  {targetKey}"));
+        }
+    }
 
     public void Write(string? mustBeUnder, CancellationToken ct)
     {
-        if (_lines.Count == 0)
+        string[] lines;
+        lock (_gate)
+        {
+            lines = [.. _lines
+                .OrderBy(l => l.Key, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(l => l.Key, StringComparer.Ordinal)
+                .Select(l => l.Line)];
+        }
+
+        if (lines.Length == 0)
         {
             return;
         }
@@ -32,7 +49,7 @@ internal sealed class ChecksumWriter(IFileSystem fs, string destination, HashAlg
             return;
         }
 
-        var data = System.Text.Encoding.UTF8.GetBytes(string.Join('\n', _lines) + "\n");
+        var data = System.Text.Encoding.UTF8.GetBytes(string.Join('\n', lines) + "\n");
         var created = false;
         try
         {

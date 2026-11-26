@@ -78,7 +78,7 @@ internal sealed class TreePlanner(IFileSystem fs, JobSpec spec, IReadOnlySet<str
             }
             catch (FileSystemException ex)
             {
-                outcome.Failed++;
+                outcome.AddFailed();
                 outcome.Problems.Add(new Problem(TreePaths.Display(source), ex.Kind, CopyMessages.For(ex.Kind, whileWriting: false, CopyMessages.DriveOf(_destination))));
                 continue;
             }

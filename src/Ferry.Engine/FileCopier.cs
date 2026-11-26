@@ -186,7 +186,7 @@ public sealed class FileCopier
                 _pool,
                 _time,
                 hasher,
-                options.SpeedLimitBytesPerSecond is { } rate ? new SpeedLimiter(rate, _time) : null,
+                hooks?.SharedLimiter ?? (options.SpeedLimitBytesPerSecond is { } rate ? new SpeedLimiter(rate, _time) : null),
                 pause,
                 progress,
                 Path.GetFileName(source),

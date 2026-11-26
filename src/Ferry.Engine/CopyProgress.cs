@@ -44,6 +44,12 @@ public sealed class FileCopyHooks
     public Func<string, bool>? PartChosen { get; init; }
 
     /// <summary>
+    /// One speed limiter shared by every copy of a job running at once, so together they stay within the limit. When null the copier makes its
+    /// own from <see cref="CopyOptions.SpeedLimitBytesPerSecond"/>.
+    /// </summary>
+    internal SpeedLimiter? SharedLimiter { get; init; }
+
+    /// <summary>
     /// Called once the part file is complete, flushed (see <see cref="SkipSmallFileFlush"/>) and the right size, just before it takes the real name, with the source hash (null when
     /// neither verify nor checksum export is on). Return a <see cref="Problem"/> to refuse: the copy then fails and the part file is deleted.
     /// Used to verify the copy and to add extra data streams before the real name ever appears.

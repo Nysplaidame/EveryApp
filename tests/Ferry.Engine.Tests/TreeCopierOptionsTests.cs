@@ -28,6 +28,20 @@ public sealed class TreeCopierOptionsTests : TreeCopierTestBase
     }
 
     [Fact]
+    public async Task ExportChecksums_LinesSortedByPath()
+    {
+        AddText(@"C:\src\b.txt", "b");
+        AddText(@"C:\src\A\z.txt", "z");
+        AddText(@"C:\src\a.txt", "a");
+
+        await _rig.RunAsync([@"C:\src"], @"D:\dst", new CopyOptions { ExportChecksums = true, HashAlgorithm = HashAlgorithmKind.Sha256 });
+
+        var paths = Text(@"D:\dst\ferry-checksums.sha256").Split('\n', StringSplitOptions.RemoveEmptyEntries).Select(l => l[(l.IndexOf("  ", StringComparison.Ordinal) + 2)..]).ToArray();
+        // Ordinal ignore-case on the whole key: "." sorts before the "\" separator, so a.txt comes before A\z.txt.
+        Assert.Equal([@"src\a.txt", @"src\A\z.txt", @"src\b.txt"], paths);
+    }
+
+    [Fact]
     public async Task CopyPermissions_On_CopiesSecurityInTheFake()
     {
         AddText(@"C:\src\a.txt", "a");

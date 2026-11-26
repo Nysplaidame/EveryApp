@@ -35,6 +35,7 @@ internal sealed class TreeJob
     private bool _clone;
     private bool _sameVolume;
     private bool _localDrives;
+    private readonly SpeedLimiter? _limiter;
 
     public TreeJob(TreeCopier owner, Guid jobId, JobSpec spec, JobJournal? journal, PauseGate pause, IProgress<JobProgress> sink, CancellationToken ct)
     {
@@ -53,6 +54,7 @@ internal sealed class TreeJob
         _recovery = new ResumeRecovery(_fs, _destination, journal, p => _outcome.Problems.Add(p));
         _mover = new TreeMover(_fs, _destination, _outcome, _journal, _progress, Fail);
         _checksums = new ChecksumWriter(_fs, _destination, _options.HashAlgorithm, _journal, _outcome);
+        _limiter = _options.SpeedLimitBytesPerSecond is { } rate ? new SpeedLimiter(rate, owner.Time) : null; // one per job, shared by every copy in it
     }
 
     private bool VerifyOn => _options.Verify || _isMove;
@@ -267,7 +269,7 @@ internal sealed class TreeJob
         if (existing is not null && TreePaths.IsNameSurrogate(existing))
         {
             // Never write through a link that is already in the destination: it could lead anywhere.
-            _outcome.Failed += files;
+            _outcome.AddFailed(files);
             _outcome.Problems.Add(new Problem(TreePaths.Display(target), IoErrorKind.None, CopyMessages.DestinationFolderIsLink));
             _progress.CompleteFiles(files, bytes);
             return false;
@@ -275,7 +277,7 @@ internal sealed class TreeJob
 
         if (existing is not null && !existing.Attributes.HasFlag(FileAttributes.Directory))
         {
-            _outcome.Failed += files;
+            _outcome.AddFailed(files);
             _outcome.Problems.Add(new Problem(TreePaths.Display(item.Entry.FullPath), IoErrorKind.AlreadyExists, CopyMessages.FileInTheWay));
             _progress.CompleteFiles(files, bytes);
             return false;
@@ -309,7 +311,7 @@ internal sealed class TreeJob
         }
         catch (FileSystemException ex)
         {
-            _outcome.Failed += files;
+            _outcome.AddFailed(files);
             _outcome.Problems.Add(new Problem(TreePaths.Display(target), ex.Kind, WriteMessage(ex.Kind)));
             _progress.CompleteFiles(files, bytes);
             return false;
@@ -381,7 +383,7 @@ internal sealed class TreeJob
                         targetKey = TreePaths.Combine(Path.GetDirectoryName(item.Key) ?? string.Empty, Path.GetFileName(renamed));
                         break;
                     default:
-                        _outcome.Skipped++;
+                        _outcome.AddSkipped();
                         _journal.Append(new JournalRecord(JournalRecordKind.FileSkipped, item.JournalKey, entry.Length, entry.LastWriteTimeUtc, null, null));
                         return;
                 }
@@ -441,6 +443,7 @@ internal sealed class TreeJob
                 PartChosen = part => _journal.TryAppend(new JournalRecord(
                     JournalRecordKind.FilePartStarted, item.JournalKey, entry.Length, entry.LastWriteTimeUtc, null,
                     TreePaths.Combine(targetFolderKey, Path.GetFileName(part)), targetKey)),
+                SharedLimiter = _limiter,
                 ReplaceExisting = replace,
                 TryBlockClone = _clone,
 
@@ -491,7 +494,11 @@ internal sealed class TreeJob
 
         if (!outcome.Success)
         {
-            _outcome.VerifyFailed |= verifyFailed;
+            if (verifyFailed)
+            {
+                _outcome.MarkVerifyFailed();
+            }
+
             var p = outcome.Problem!;
             Fail(item, p with { Path = TreePaths.Display(p.Path) });
             return;
@@ -499,7 +506,7 @@ internal sealed class TreeJob
 
         if (options.Verify && outcome.Lost.Count == 0)
         {
-            _outcome.Verified++; // BeforeCommit only lets a matching copy through
+            _outcome.AddVerified(); // BeforeCommit only lets a matching copy through
         }
 
         _outcome.Problems.AddRange(warnings);
@@ -524,7 +531,7 @@ internal sealed class TreeJob
             _checksums.Add(hex, targetKey);
         }
 
-        _outcome.Copied++;
+        _outcome.AddCopied();
         // A rescued copy must not be recovered later as a verified move that can delete its source.
         if (outcome.Lost.Count == 0)
         {
@@ -599,8 +606,8 @@ internal sealed class TreeJob
             _checksums.Add(hex, found.TargetKey);
         }
 
-        _outcome.Copied++;
-        _outcome.Verified++;
+        _outcome.AddCopied();
+        _outcome.AddVerified();
         _journal.Done(item.JournalKey, item.Entry.Length, item.Entry.LastWriteTimeUtc, hex);
         return true;
     }
@@ -631,13 +638,13 @@ internal sealed class TreeJob
 
     private void Fail(TreeItem item, Problem problem)
     {
-        _outcome.Failed++;
+        _outcome.AddFailed();
         _outcome.Problems.Add(problem);
         _journal.Append(new JournalRecord(JournalRecordKind.FileFailed, item.JournalKey, item.Entry.Length, item.Entry.LastWriteTimeUtc, null, problem.Message));
         switch (_options.IfUnreadable)
         {
             case FailureRule.Stop:
-                _outcome.Stopped = true;
+                _outcome.MarkStopped();
                 _outcome.Problems.Add(new Problem(problem.Path, IoErrorKind.None, CopyMessages.StoppedAfterProblem));
                 break;
             case FailureRule.Ask:

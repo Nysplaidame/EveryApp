@@ -4,27 +4,88 @@ using EveryApp.Core.Preflight;
 
 namespace Ferry.Engine;
 
-/// <summary>Counters and lists that become the <see cref="CopyResult"/>. One job, one thread at a time.</summary>
+/// <summary>Counters and lists that become the <see cref="CopyResult"/>. Safe to share between the copies of one job running at once.</summary>
 internal sealed class JobOutcome(bool verifyOn, int maxProblems = JobOutcome.DefaultMaxProblems)
 {
     public const int DefaultMaxProblems = 10_000;
 
+    private readonly object _gate = new();
+    private int _copied;
+    private int _skipped;
+    private int _failed;
+    private int _verified;
+    private bool _verifyFailed;
+    private bool _stopped;
     private bool _ownerWarned;
     private bool _notLocalWarned;
 
-    public int Copied { get; set; }
+    public int Copied { get { lock (_gate) { return _copied; } } }
 
-    public int Skipped { get; set; }
+    public int Skipped { get { lock (_gate) { return _skipped; } } }
 
-    public int Failed { get; set; }
+    public int Failed { get { lock (_gate) { return _failed; } } }
 
     /// <summary>Files whose copy was read back and matched (or, on resume, found to match).</summary>
-    public int Verified { get; set; }
+    public int Verified { get { lock (_gate) { return _verified; } } }
 
     /// <summary>A copy failed its check, or could not be read back to check it.</summary>
-    public bool VerifyFailed { get; set; }
+    public bool VerifyFailed { get { lock (_gate) { return _verifyFailed; } } }
 
-    public bool Stopped { get; set; }
+    public bool Stopped { get { lock (_gate) { return _stopped; } } }
+
+    /// <summary>Counts <paramref name="n"/> more files copied.</summary>
+    public void AddCopied(int n = 1)
+    {
+        lock (_gate)
+        {
+            _copied += n;
+        }
+    }
+
+    /// <summary>Counts one more file skipped.</summary>
+    public void AddSkipped()
+    {
+        lock (_gate)
+        {
+            _skipped++;
+        }
+    }
+
+    /// <summary>Counts <paramref name="n"/> more files failed.</summary>
+    public void AddFailed(int n = 1)
+    {
+        lock (_gate)
+        {
+            _failed += n;
+        }
+    }
+
+    /// <summary>Counts one more file read back and matched.</summary>
+    public void AddVerified()
+    {
+        lock (_gate)
+        {
+            _verified++;
+        }
+    }
+
+    /// <summary>Notes that a copy failed its check or could not be read back.</summary>
+    public void MarkVerifyFailed()
+    {
+        lock (_gate)
+        {
+            _verifyFailed = true;
+        }
+    }
+
+    /// <summary>Notes that the job was stopped before it finished.</summary>
+    public void MarkStopped()
+    {
+        lock (_gate)
+        {
+            _stopped = true;
+        }
+    }
 
     /// <summary>Every problem, but only the first <c>maxProblems</c> are kept (the rest are counted), so a hostile tree cannot exhaust memory.</summary>
     public ProblemList Problems { get; } = new(maxProblems);
@@ -35,23 +96,41 @@ internal sealed class JobOutcome(bool verifyOn, int maxProblems = JobOutcome.Def
     /// AllVerified: verification was on, the job got past its checks, nothing failed its check or could not be read back, and every file
     /// copied this run was verified (at least one). Same-drive moves are renames that read nothing back, so they do not count as verified.
     /// </summary>
-    public CopyResult ToResult(bool stopped, bool refused = false) =>
-        new(Copied, Skipped, Failed, Problems.Items, [.. Issues], AllVerified: verifyOn && !refused && !VerifyFailed && Verified > 0 && Verified == Copied)
+    public CopyResult ToResult(bool stopped, bool refused = false)
+    {
+        lock (_gate)
         {
-            Stopped = stopped,
-            MoreProblems = Problems.More,
-        };
+            return new(_copied, _skipped, _failed, Problems.Items, [.. Issues], AllVerified: verifyOn && !refused && !_verifyFailed && _verified > 0 && _verified == _copied)
+            {
+                Stopped = stopped,
+                MoreProblems = Problems.More,
+            };
+        }
+    }
 
     /// <summary>A job that was refused before it started: one plain reason, nothing done.</summary>
     public static CopyResult Refused(string path, string message) =>
         new(0, 0, 0, [new Problem(path, IoErrorKind.None, message)], [], AllVerified: false) { Stopped = true };
 
+    private bool TakeOnce(ref bool flag)
+    {
+        lock (_gate)
+        {
+            if (flag)
+            {
+                return false;
+            }
+
+            flag = true;
+            return true;
+        }
+    }
+
     /// <summary>How copying permissions went for one item. Advice that applies to the whole job is given once.</summary>
     public void PermissionOutcome(string target, SecurityCopyResult result)
     {
-        if (result == SecurityCopyResult.OwnerNotKept && !_ownerWarned)
+        if (result == SecurityCopyResult.OwnerNotKept && TakeOnce(ref _ownerWarned))
         {
-            _ownerWarned = true;
             Problems.Add(new Problem(TreePaths.Display(target), IoErrorKind.AccessDenied, CopyMessages.OwnerNotKept));
         }
         else if (result == SecurityCopyResult.Reverted)
@@ -71,34 +150,38 @@ internal sealed class JobOutcome(bool verifyOn, int maxProblems = JobOutcome.Def
     /// <summary>Permissions are only copied between fixed local drives; said once per job.</summary>
     public void PermissionsNotLocal(string path)
     {
-        if (!_notLocalWarned)
+        if (TakeOnce(ref _notLocalWarned))
         {
-            _notLocalWarned = true;
             Problems.Add(new Problem(TreePaths.Display(path), IoErrorKind.None, CopyMessages.PermissionsNotLocal));
         }
     }
 }
 
-/// <summary>Keeps the first problems and counts the rest.</summary>
+/// <summary>Keeps the first problems and counts the rest. Safe to share between threads.</summary>
 internal sealed class ProblemList(int max)
 {
+    private readonly object _gate = new();
     private readonly List<Problem> _items = [];
+    private int _more;
 
-    public int Count => _items.Count + More;
+    public int Count { get { lock (_gate) { return _items.Count + _more; } } }
 
-    public int More { get; private set; }
+    public int More { get { lock (_gate) { return _more; } } }
 
-    public IReadOnlyList<Problem> Items => [.. _items];
+    public IReadOnlyList<Problem> Items { get { lock (_gate) { return [.. _items]; } } }
 
     public void Add(Problem problem)
     {
-        if (_items.Count < max)
+        lock (_gate)
         {
-            _items.Add(problem);
-        }
-        else
-        {
-            More++;
+            if (_items.Count < max)
+            {
+                _items.Add(problem);
+            }
+            else
+            {
+                _more++;
+            }
         }
     }
 
