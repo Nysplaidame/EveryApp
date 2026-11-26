@@ -397,6 +397,13 @@ internal sealed class TreeJob
             slot = started;
             Task CopyAsync(string target, string targetKey, bool replace)
             {
+                // A running copy may have stopped the job while this file was being decided (a question, a wait for another copy, the
+                // resume checks): then it is not started at all, just as a one-at-a-time job would never have reached it.
+                if (_outcome.Stopped || inFlight.Failed)
+                {
+                    return Task.CompletedTask;
+                }
+
                 handedOver = true; // from here the copy ends the file's progress and gives its place back, whatever happens
                 return inFlight.StartAsync(target, () => CopyAndEndAsync(root, item, target, targetKey, replace, started, clone, localDrives));
             }

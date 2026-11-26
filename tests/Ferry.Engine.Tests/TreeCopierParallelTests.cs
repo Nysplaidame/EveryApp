@@ -263,6 +263,43 @@ public sealed class TreeCopierParallelTests : TreeCopierTestBase
     }
 
     [Fact]
+    public async Task StopWhileQuestionOpen_AnsweredFileIsNotCopied()
+    {
+        AddFiles(3);
+        Add(@"D:\dst\src\f2.bin", 5, seed: 50);
+        var existing = _rig.Mem.ReadAllBytes(@"D:\dst\src\f2.bin");
+        _rig.Fs.OnOpenRead = (path, _) => RecordingFileSystem.Plain(path).Equals(@"C:\src\f1.bin", StringComparison.OrdinalIgnoreCase)
+            ? new FileSystemException(path, IoErrorKind.AccessDenied, null)
+            : null;
+
+        // f2's question stays open until f1's copy has failed and stopped the job (f1's end is reported after the stop).
+        var f1Ended = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var progress = new ListProgress
+        {
+            OnReport = p =>
+            {
+                if (p.FilesDone >= 1)
+                {
+                    f1Ended.TrySetResult();
+                }
+            },
+        };
+        _rig.Resolver.Answer = ConflictRule.Overwrite;
+        _rig.Resolver.Hold = (_, ct) => f1Ended.Task.WaitAsync(ct);
+
+        var result = await _rig.RunAsync([@"C:\src"], @"D:\dst", new CopyOptions { IfExists = ConflictRule.Ask, IfUnreadable = FailureRule.Stop }, progress: progress);
+
+        Assert.True(result.Stopped);
+        Assert.Equal((0, 0, 1), (result.Copied, result.Skipped, result.Failed));
+        Assert.Single(_rig.Resolver.Questions);
+        Assert.Equal(existing, _rig.Mem.ReadAllBytes(@"D:\dst\src\f2.bin")); // the answer came after the stop: never acted on
+        Assert.DoesNotContain(_rig.Fs.Log, l => l.StartsWith(@"OpenRead C:\src\f2.bin", StringComparison.Ordinal) || l.StartsWith(@"OpenRead C:\src\f3.bin", StringComparison.Ordinal));
+        Assert.Empty(_rig.PartFiles(@"D:\dst"));
+        var last = progress.Reports[^1];
+        Assert.Equal(0, last.InFlight); // f2's progress was ended
+    }
+
+    [Fact]
     public async Task Resume_AfterKillWithSeveralInFlight_CompletesWithSameFiles()
     {
         AddFiles(6);
