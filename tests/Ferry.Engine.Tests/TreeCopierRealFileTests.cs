@@ -166,6 +166,102 @@ public sealed class TreeCopierRealFileTests : IDisposable
         }
     }
 
+    // ---- Several files at once on the real disk (solid-state forced, four workers)
+
+    private const int SmallFiles = 300;
+    private const int LargeFiles = 3;
+
+    /// <summary>A source folder with many small files (1 to 64 KiB) and a few large ones (12 MiB, past the unbuffered threshold).</summary>
+    private string ManySmallAndSomeLargeSource()
+    {
+        var src = Directory.CreateDirectory(Path.Combine(_root, "src")).FullName;
+        var random = new Random(11);
+        for (var i = 0; i < SmallFiles; i++)
+        {
+            var folder = Directory.CreateDirectory(Path.Combine(src, "d" + (i % 10).ToString(System.Globalization.CultureInfo.InvariantCulture))).FullName;
+            var data = new byte[random.Next(1, 64 * 1024 + 1)];
+            random.NextBytes(data);
+            File.WriteAllBytes(Path.Combine(folder, $"small{i}.bin"), data);
+        }
+
+        for (var i = 0; i < LargeFiles; i++)
+        {
+            var data = new byte[12 * 1024 * 1024];
+            random.NextBytes(data);
+            File.WriteAllBytes(Path.Combine(src, $"large{i}.bin"), data);
+        }
+
+        return src;
+    }
+
+    private static async Task<(CopyResult Result, ListProgress Progress)> RunParallel(string source, string destination, CopyMode mode, string jobs, IFileSystem? fs = null)
+    {
+        var progress = new ListProgress();
+        var result = await new TreeCopier(
+                fs ?? new WindowsFileSystem(), new DriveAwareScheduler(new FakeDeviceResolver()), new ScriptedResolver(), jobs, new FakeSleepBlocker(), null, null,
+                new FakeElevation(), new FakeDriveKindProbe { Kind = DriveKind.SolidState }, workers: 4)
+            .RunAsync(Guid.NewGuid(), [source], destination, mode, new CopyOptions { Verify = true }, new PauseGate(), progress, Ct);
+        return (result, progress);
+    }
+
+    private static void AssertSameTree(string source, string copy)
+    {
+        var sourceFiles = Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories).ToList();
+        Assert.Equal(SmallFiles + LargeFiles, sourceFiles.Count);
+        foreach (var file in sourceFiles)
+        {
+            var other = Path.Combine(copy, Path.GetRelativePath(source, file));
+            Assert.True(File.Exists(other), "Missing copy of " + Path.GetRelativePath(source, file));
+            Assert.True(File.ReadAllBytes(file).AsSpan().SequenceEqual(File.ReadAllBytes(other)), "Different data in " + Path.GetRelativePath(source, file));
+        }
+
+        Assert.Empty(Directory.EnumerateFiles(copy, "*.ferrypart", SearchOption.AllDirectories));
+    }
+
+    [Fact]
+    public async Task Parallel_ManySmallAndSomeLarge_VerifyOn_AllMatch()
+    {
+        var src = ManySmallAndSomeLargeSource();
+        var dst = Path.Combine(_root, "dst");
+
+        var (result, progress) = await RunParallel(src, dst, CopyMode.Copy, _jobs);
+
+        Assert.Equal(SmallFiles + LargeFiles, result.Copied);
+        Assert.True(result.AllVerified);
+        Assert.Empty(result.Problems);
+        Assert.Contains(progress.Reports, r => r.InFlight > 1); // really ran several at once
+        AssertSameTree(src, Path.Combine(dst, "src"));
+    }
+
+    [Fact]
+    public async Task Parallel_ManySmallAndSomeLarge_Move_SourcesGoneDestinationsEqual()
+    {
+        var src = ManySmallAndSomeLargeSource();
+        var dst = Path.Combine(_root, "dst");
+        var expected = Directory.EnumerateFiles(src, "*", SearchOption.AllDirectories)
+            .ToDictionary(f => Path.GetRelativePath(src, f), File.ReadAllBytes);
+
+        // Both folders sit on one real volume, where a move is a single rename; call the source another volume so every file is copied, checked, then deleted.
+        var fs = new RecordingFileSystem(new WindowsFileSystem())
+        {
+            VolumeIdOverride = path => path.StartsWith(src, StringComparison.OrdinalIgnoreCase) ? "other-volume" : null,
+        };
+
+        var (result, progress) = await RunParallel(src, dst, CopyMode.Move, _jobs, fs);
+
+        Assert.Equal(SmallFiles + LargeFiles, result.Copied);
+        Assert.True(result.AllVerified);
+        Assert.Empty(result.Problems);
+        Assert.Contains(progress.Reports, r => r.InFlight > 1);
+        Assert.True(!Directory.Exists(src) || !Directory.EnumerateFiles(src, "*", SearchOption.AllDirectories).Any(), "Moved files must be gone from the source.");
+        foreach (var (relative, data) in expected)
+        {
+            Assert.True(data.AsSpan().SequenceEqual(File.ReadAllBytes(Path.Combine(dst, "src", relative))), "Different data in " + relative);
+        }
+
+        Assert.Empty(Directory.EnumerateFiles(Path.Combine(dst, "src"), "*.ferrypart", SearchOption.AllDirectories));
+    }
+
     // ---- N2: a link inside the destination cannot redirect what resume deletes or rewrites
 
     private static void MakeJunction(string link, string target)
