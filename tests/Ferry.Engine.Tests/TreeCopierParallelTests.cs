@@ -379,6 +379,49 @@ public sealed class TreeCopierParallelTests : TreeCopierTestBase
         Assert.True(time.LongestDelay >= floor, $"the last chunk was due after {time.LongestDelay}; {Files * Size} bytes at {Rate} bytes a second need {floor}.");
     }
 
+    [Fact]
+    public Task ShortNameLookalike_WaitsForSameFolderCopies() => AssertWaitsForHeldCopy(@"C:\src\verylongname.txt", @"VERYLO~1.TXT");
+
+    [Fact]
+    public Task TrailingDotName_WaitsForSameFolderCopies() => AssertWaitsForHeldCopy(@"C:\src\verylongname.txt", "later.");
+
+    [Fact]
+    public Task TrailingSpaceName_WaitsForSameFolderCopies() => AssertWaitsForHeldCopy(@"C:\src\verylongname.txt", "later ");
+
+    /// <summary>
+    /// A held copy of <paramref name="first"/>; the next file <paramref name="lookalike"/> (same folder, an existing target, so a question is
+    /// asked once it is decided) must not be decided until the held copy has ended.
+    /// </summary>
+    private async Task AssertWaitsForHeldCopy(string first, string lookalike)
+    {
+        Add(first, 101, seed: 1);
+        Add(@"C:\src\" + lookalike, 102, seed: 2);
+        Add(@"D:\dst\src\" + lookalike, 5, seed: 3);
+        var hold = new WriteHold(path => IsPartOf(path, "verylongname.txt"));
+        _rig.Fs.BeforeWrite = hold.WaitAsync;
+        var asked = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _rig.Resolver.Hold = (_, _) =>
+        {
+            asked.TrySetResult();
+            return Task.CompletedTask;
+        };
+
+        var job = _rig.RunAsync([@"C:\src"], @"D:\dst", new CopyOptions { IfExists = ConflictRule.Ask });
+        await hold.Entered(1).WaitAsync(Patience, Ct);
+
+        // Nothing can be waited for here (the file must NOT be decided), so give the dispatcher a short while to wrongly reach it.
+        var wrongly = await Task.WhenAny(asked.Task, Task.Delay(TimeSpan.FromMilliseconds(500), Ct));
+        Assert.NotSame(asked.Task, wrongly);
+        Assert.Empty(_rig.Resolver.Questions);
+
+        hold.Release();
+        var result = await job;
+
+        Assert.Single(_rig.Resolver.Questions);
+        Assert.Equal(1, result.Copied);
+        Assert.Equal(_rig.Mem.ReadAllBytes(first), _rig.Mem.ReadAllBytes(@"D:\dst\src\verylongname.txt"));
+    }
+
     // ---- helpers
 
     private async Task AssertOneAtATime(CopyOptions options)

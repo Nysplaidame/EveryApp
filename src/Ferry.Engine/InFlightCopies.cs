@@ -86,6 +86,12 @@ internal sealed class InFlightCopies : IDisposable
         var end = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         lock (_lock)
         {
+            // The dispatcher never starts a copy into a name a running copy holds; if it ever did, two copies would write one file. Fail closed.
+            if (_targets.ContainsKey(target))
+            {
+                throw new InvalidOperationException("A copy is already running into this name.");
+            }
+
             _targets[target] = end.Task; // before the copy starts: it may end before this method returns
         }
 

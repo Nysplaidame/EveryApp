@@ -10,7 +10,7 @@ namespace Ferry.Engine;
 /// file at a time in planned order; only the copy itself may run alongside others (<see cref="InFlightCopies"/>). See <see cref="TreeCopier"/>
 /// for the rules it keeps.
 /// </summary>
-internal sealed class TreeJob
+internal sealed partial class TreeJob
 {
     /// <summary>Free space the journal's drive must have before a job starts.</summary>
     internal const long JournalSpaceFloor = 50L * 1024 * 1024;
@@ -261,6 +261,19 @@ internal sealed class TreeJob
         }
     }
 
+    /// <summary>
+    /// True when the file system may resolve this file's name to a different file's name: it looks like a short 8.3 name (a tilde and digits at
+    /// the end of the name or just before the extension), or ends with a dot or a space.
+    /// </summary>
+    private static bool MayResolveToAnotherName(string key)
+    {
+        var name = Path.GetFileName(key);
+        return name.Length > 0 && (name[^1] is '.' or ' ' || ShortNameLike().IsMatch(name));
+    }
+
+    [System.Text.RegularExpressions.GeneratedRegex(@"~[0-9]+(\.[^.]*)?$")]
+    private static partial System.Text.RegularExpressions.Regex ShortNameLike();
+
     /// <summary>True when a copy ended with an unexpected error: the job starts nothing new, waits for the others, then rethrows it.</summary>
     private bool StopForFailure(InFlightCopies inFlight)
     {
@@ -406,6 +419,13 @@ internal sealed class TreeJob
 
                 handedOver = true; // from here the copy ends the file's progress and gives its place back, whatever happens
                 return inFlight.StartAsync(target, () => CopyAndEndAsync(root, item, target, targetKey, replace, started, clone, localDrives));
+            }
+
+            if (MayResolveToAnotherName(item.Key))
+            {
+                // The file system may treat this name as the same file as another one (a short 8.3 name, or a trailing dot or space): so the
+                // existence check and the free-name search must not run while a copy into this folder is still landing.
+                await inFlight.EndOfAllIn(Path.GetDirectoryName(Path.Combine(_destination, item.Key)) ?? _destination).WaitAsync(_ct).ConfigureAwait(false);
             }
 
             if (_recovery.IsResume)
