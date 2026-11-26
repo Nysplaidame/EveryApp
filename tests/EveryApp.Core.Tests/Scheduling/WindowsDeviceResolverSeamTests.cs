@@ -37,6 +37,8 @@ public sealed class WindowsDeviceResolverSeamTests
         public string? GetVolumeGuidPath(string root) => Guids.TryGetValue(root, out var g) ? g : null;
 
         public IReadOnlyList<uint> GetDiskNumbers(string guidPath) => Disks.TryGetValue(guidPath, out var d) ? d : [];
+
+        public bool? HasSeekPenalty(uint diskNumber) => null;
     }
 
     private static Dictionary<uint, uint[]> NoSpaces() => [];

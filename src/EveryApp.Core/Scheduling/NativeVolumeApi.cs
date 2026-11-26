@@ -2,6 +2,7 @@ using System.Runtime.InteropServices;
 using Windows.Win32;
 using Windows.Win32.Foundation;
 using Windows.Win32.Storage.FileSystem;
+using Windows.Win32.System.Ioctl;
 
 namespace EveryApp.Core.Scheduling;
 
@@ -153,6 +154,62 @@ internal sealed class NativeVolumeApi : IVolumeApi
         }
 
         return result;
+    }
+
+    public unsafe bool? HasSeekPenalty(uint diskNumber)
+    {
+        try
+        {
+            // Opened with no access rights: enough for a property query, and works without elevation.
+            using var handle = PInvoke.CreateFile(
+                @"\\.\PhysicalDrive" + diskNumber.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                0,
+                FILE_SHARE_MODE.FILE_SHARE_READ | FILE_SHARE_MODE.FILE_SHARE_WRITE | FILE_SHARE_MODE.FILE_SHARE_DELETE,
+                null,
+                FILE_CREATION_DISPOSITION.OPEN_EXISTING,
+                0,
+                null);
+            if (handle.IsInvalid)
+            {
+                return null;
+            }
+
+            var query = new STORAGE_PROPERTY_QUERY
+            {
+                PropertyId = STORAGE_PROPERTY_ID.StorageDeviceSeekPenaltyProperty,
+                QueryType = STORAGE_QUERY_TYPE.PropertyStandardQuery,
+            };
+            var descriptor = default(DEVICE_SEEK_PENALTY_DESCRIPTOR);
+            uint returned = 0;
+            var added = false;
+            bool ok;
+            try
+            {
+                handle.DangerousAddRef(ref added);
+                ok = PInvoke.DeviceIoControl(
+                    new HANDLE(handle.DangerousGetHandle()),
+                    PInvoke.IOCTL_STORAGE_QUERY_PROPERTY,
+                    &query,
+                    (uint)sizeof(STORAGE_PROPERTY_QUERY),
+                    &descriptor,
+                    (uint)sizeof(DEVICE_SEEK_PENALTY_DESCRIPTOR),
+                    &returned,
+                    null);
+            }
+            finally
+            {
+                if (added)
+                {
+                    handle.DangerousRelease();
+                }
+            }
+
+            return ok && returned >= sizeof(DEVICE_SEEK_PENALTY_DESCRIPTOR) ? descriptor.IncursSeekPenalty : null;
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            return null; // never throws: "don't know" just means the engine copies one file at a time
+        }
     }
 
     private static string EnsureTrailingSlash(string s) => s.EndsWith('\\') ? s : s + "\\";
