@@ -327,7 +327,7 @@ internal sealed class TreeJob
         }
 
         await _pause.WaitIfPausedAsync(_ct).ConfigureAwait(false);
-        _progress.StartFile(item.Key);
+        var slot = _progress.StartFile(item.Key);
         try
         {
             var notOnDisk = _recovery.IsNotOnDisk(item.JournalKey);
@@ -349,7 +349,7 @@ internal sealed class TreeJob
 
                 if (recheck.Result == RecheckResult.Damaged)
                 {
-                    await CopyFileAsync(root, item, Path.Combine(_destination, recheck.TargetKey), recheck.TargetKey, replace: true).ConfigureAwait(false);
+                    await CopyFileAsync(root, item, Path.Combine(_destination, recheck.TargetKey), recheck.TargetKey, replace: true, slot).ConfigureAwait(false);
                     return;
                 }
             }
@@ -399,16 +399,16 @@ internal sealed class TreeJob
                 _sameVolume = false; // the rename was refused as crossing volumes: copy and verify instead (never an unverified copy)
             }
 
-            await CopyFileAsync(root, item, target, targetKey, replace).ConfigureAwait(false);
+            await CopyFileAsync(root, item, target, targetKey, replace, slot).ConfigureAwait(false);
         }
         finally
         {
-            _progress.EndFile(entry.Length);
+            slot.End(entry.Length);
         }
     }
 
     /// <summary>Copies one file with retries; on success applies permissions, deletes the source of a move, and journals it done.</summary>
-    private async Task CopyFileAsync(TreeRoot root, TreeItem item, string target, string targetKey, bool replace)
+    private async Task CopyFileAsync(TreeRoot root, TreeItem item, string target, string targetKey, bool replace, ProgressTracker.FileSlot slot)
     {
         var entry = item.Entry;
         var source = entry.FullPath;
@@ -455,7 +455,7 @@ internal sealed class TreeJob
 
                 // The copier reads the copy back before the real name appears (small files before their handle closes, see VerifyInCopier).
                 VerifyInCopier = true,
-                Verifying = () => _progress.SetPhase("Verifying"),
+                Verifying = slot.Verifying,
                 BeforeCommit = (part, hash, token) =>
                 {
                     // The "downloaded from the internet" marker always travels with the file; other streams only when asked.
@@ -480,15 +480,14 @@ internal sealed class TreeJob
                 },
             };
 
-            outcome = await _owner.Copier.CopyAsync(source, target, options, _pause, _progress.FileSink(), hooks, _ct).ConfigureAwait(false);
+            outcome = await _owner.Copier.CopyAsync(source, target, options, _pause, slot.Bytes, hooks, _ct).ConfigureAwait(false);
             verifyFailed = outcome.VerifyFailed;
-            _progress.SetPhase(CopyMessages.Copying);
             if (outcome.Success || outcome.NoRetry || attempt >= TreeCopier.RetryDelays.Length || !IsWorthRetrying(outcome.Problem!.Kind))
             {
                 break;
             }
 
-            _progress.ResetCurrentFile();
+            slot.Reset();
             await Task.Delay(TreeCopier.RetryDelays[attempt], _owner.Time, _ct).ConfigureAwait(false);
         }
 

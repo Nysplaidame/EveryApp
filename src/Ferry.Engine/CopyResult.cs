@@ -22,7 +22,11 @@ public sealed record JobProgress(
     double BytesPerSecond,
     TimeSpan? Remaining,
     string? CurrentFile,
-    string Phase);
+    string Phase)
+{
+    /// <summary>How many files are being copied at this moment.</summary>
+    public int InFlight { get; init; }
+}
 
 /// <summary>
 /// Outcome of a job. <paramref name="Copied"/> counts files copied (or moved) this run, <paramref name="Skipped"/> files left alone by a

@@ -7,11 +7,10 @@ internal sealed class ProgressTracker(IProgress<JobProgress> sink, TimeProvider 
     private readonly SpeedWindow _speed = new(time.TimestampFrequency);
     private long _bytesTotal;
     private long _bytesDone;
-    private long _currentFileBytes;
     private int _filesTotal;
     private int _filesDone;
     private string _phase = "Checking";
-    private string? _currentFile;
+    private readonly List<FileSlot> _slots = []; // in start order; keyed by the slot object, never by file key
 
     public void AddToTotal(int files, long bytes)
     {
@@ -32,41 +31,29 @@ internal sealed class ProgressTracker(IProgress<JobProgress> sink, TimeProvider 
         Report();
     }
 
-    public void StartFile(string key)
+    /// <summary>Starts tracking one file; the returned slot reports that file's bytes and phase until <see cref="FileSlot.End"/>.</summary>
+    public FileSlot StartFile(string key)
     {
+        var slot = new FileSlot(this, key);
         lock (_lock)
         {
-            _currentFile = key;
-            _currentFileBytes = 0;
+            _slots.Add(slot);
         }
 
         Report();
+        return slot;
     }
-
-    public void ResetCurrentFile()
-    {
-        lock (_lock)
-        {
-            _currentFileBytes = 0;
-        }
-    }
-
-    public void EndFile(long length) => CompleteFiles(1, length);
 
     public void CompleteFiles(int files, long bytes)
     {
         lock (_lock)
         {
-            _currentFileBytes = 0;
             _bytesDone += bytes;
             _filesDone += files;
         }
 
         Report();
     }
-
-    /// <summary>Adapter for <see cref="FileCopier"/>'s per-file progress.</summary>
-    public IProgress<FileProgress> FileSink() => new FileProgressSink(this);
 
     public IProgress<string> StatusSink() => new StatusProgressSink(this);
 
@@ -80,11 +67,19 @@ internal sealed class ProgressTracker(IProgress<JobProgress> sink, TimeProvider 
         JobProgress snapshot;
         lock (_lock)
         {
-            var done = _bytesDone + _currentFileBytes;
+            var inFlightBytes = 0L;
+            var allVerifying = _slots.Count > 0;
+            foreach (var slot in _slots)
+            {
+                inFlightBytes += slot.Done;
+                allVerifying &= slot.IsVerifying;
+            }
+
+            var done = _bytesDone + inFlightBytes;
             _speed.Add(time.GetTimestamp(), done);
             var speed = _speed.BytesPerSecond;
             TimeSpan? remaining = speed > 0 ? TimeSpan.FromSeconds(Math.Max(0, _bytesTotal - done) / speed) : null;
-            snapshot = new JobProgress(done, _bytesTotal, _filesDone, _filesTotal, speed, remaining, _currentFile, _phase);
+            snapshot = new JobProgress(done, _bytesTotal, _filesDone, _filesTotal, speed, remaining, _slots.Count > 0 ? _slots[^1].Key : null, allVerifying ? "Verifying" : _phase) { InFlight = _slots.Count };
         }
 
 #pragma warning disable CA1031 // The progress callback belongs to the caller; it must never break the copy.
@@ -98,18 +93,77 @@ internal sealed class ProgressTracker(IProgress<JobProgress> sink, TimeProvider 
 #pragma warning restore CA1031
     }
 
-    private void FileBytes(long done)
+    /// <summary>One file being copied. Each slot keeps its own bytes and verifying flag; every member is safe to call from any thread.</summary>
+    internal sealed class FileSlot
     {
-        lock (_lock)
+        private readonly ProgressTracker _tracker;
+
+        internal FileSlot(ProgressTracker tracker, string key)
         {
-            _currentFileBytes = done;
+            _tracker = tracker;
+            Key = key;
+            Bytes = new BytesSink(this);
         }
 
-        Report();
-    }
+        /// <summary>Receives this file's byte progress.</summary>
+        public IProgress<FileProgress> Bytes { get; }
 
-    private sealed class FileProgressSink(ProgressTracker tracker) : IProgress<FileProgress>
-    {
-        public void Report(FileProgress value) => tracker.FileBytes(value.Done);
+        internal string Key { get; }
+
+        // Guarded by the tracker's lock.
+        internal long Done { get; private set; }
+
+        internal bool IsVerifying { get; private set; }
+
+        private bool Ended { get; set; }
+
+        /// <summary>Marks this file as being read back to check it.</summary>
+        public void Verifying() => Change(() => IsVerifying = true);
+
+        /// <summary>A retry starts over: this file's bytes go back to zero (other files are untouched).</summary>
+        public void Reset() => Change(() =>
+        {
+            Done = 0;
+            IsVerifying = false;
+        });
+
+        /// <summary>Counts the file as done with <paramref name="length"/> bytes and frees the slot. Safe to call twice.</summary>
+        public void End(long length)
+        {
+            lock (_tracker._lock)
+            {
+                if (Ended)
+                {
+                    return;
+                }
+
+                Ended = true;
+                _tracker._slots.Remove(this);
+                _tracker._bytesDone += length;
+                _tracker._filesDone++;
+            }
+
+            _tracker.Report();
+        }
+
+        private void Change(Action change)
+        {
+            lock (_tracker._lock)
+            {
+                if (Ended)
+                {
+                    return;
+                }
+
+                change();
+            }
+
+            _tracker.Report();
+        }
+
+        private sealed class BytesSink(FileSlot slot) : IProgress<FileProgress>
+        {
+            public void Report(FileProgress value) => slot.Change(() => slot.Done = value.Done);
+        }
     }
 }
