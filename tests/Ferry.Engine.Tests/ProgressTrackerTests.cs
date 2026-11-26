@@ -90,4 +90,17 @@ public sealed class ProgressTrackerTests
         Assert.Equal(0, last.InFlight);
         Assert.Null(last.CurrentFile);
     }
+
+    [Fact]
+    public void StatusLine_ClearsWhenSlotEnds()
+    {
+        var (tracker, sink) = Make();
+        var a = tracker.StartFile("a");
+        tracker.SetPhase("Waiting for the network drive…");
+        Assert.Equal("Waiting for the network drive…", sink.Reports[^1].Phase);
+
+        a.End(1);
+
+        Assert.Equal("Copying", sink.Reports[^1].Phase);
+    }
 }

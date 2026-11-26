@@ -125,6 +125,7 @@ internal sealed class ProgressTracker(IProgress<JobProgress> sink, TimeProvider 
         {
             Done = 0;
             IsVerifying = false;
+            _tracker._phase = CopyMessages.Copying; // a status line must not outlive the wait
         });
 
         /// <summary>Counts the file as done with <paramref name="length"/> bytes and frees the slot. Safe to call twice.</summary>
@@ -141,6 +142,7 @@ internal sealed class ProgressTracker(IProgress<JobProgress> sink, TimeProvider 
                 _tracker._slots.Remove(this);
                 _tracker._bytesDone += length;
                 _tracker._filesDone++;
+                _tracker._phase = CopyMessages.Copying; // a status line must not outlive the wait
             }
 
             _tracker.Report();
