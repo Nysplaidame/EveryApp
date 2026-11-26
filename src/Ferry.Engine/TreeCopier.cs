@@ -46,8 +46,11 @@ public sealed class TreeCopier
     /// <summary>Waits before each retry of a failure that might clear up (bad read, network blip, file in use).</summary>
     internal static readonly TimeSpan[] RetryDelays = [TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(3)];
 
-    /// <summary>How many files a job copies at once when every drive is a solid-state drive.</summary>
-    internal const int DefaultWorkers = 4;
+    /// <summary>
+    /// How many files a job copies at once when every drive is a solid-state drive. The value comes from the speed measurements in
+    /// docs/perf/results.md: the fastest count tried was 8, with or without verification.
+    /// </summary>
+    internal const int DefaultWorkers = 8;
 
     /// <summary>Tells solid-state drives from spinning ones (several copies at once only on solid state).</summary>
     internal IDriveKindProbe DriveKinds { get; }

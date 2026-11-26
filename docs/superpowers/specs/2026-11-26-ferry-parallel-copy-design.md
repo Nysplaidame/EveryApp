@@ -62,7 +62,7 @@ New seam: `IDriveKind` (or a method on `IDestinationInfo`) returning `SolidState
 
 ### Worker count
 
-An internal job-level setting `Workers` (default chosen by a short benchmark of 1, 2, 4, 8 on the small set; expected 4), used only in the several-workers mode above. One at a time is `Workers = 1` and must run exactly today's order. `CopierTuning` is internal to the copier, so `TreeCopier` gets its own internal constructor parameter (like `FileCopier`'s tuning seam). **No user-visible setting, CLI switch or environment variable** (Claude's call: no new public surface, and nothing that could turn on several workers for a spinning drive). The probe is a new `Ferry.Bench jobs` mode that runs whole jobs through `TreeCopier` with Workers 1/2/4/8 (internals are already visible to the bench project); the gated comparison still runs the real `ferry copy` with the chosen default.
+An internal job-level setting `Workers` (default 8, chosen by a short benchmark of 1, 2, 4, 8 on the small set), used only in the several-workers mode above. One at a time is `Workers = 1` and must run exactly today's order. `CopierTuning` is internal to the copier, so `TreeCopier` gets its own internal constructor parameter (like `FileCopier`'s tuning seam). **No user-visible setting, CLI switch or environment variable** (Claude's call: no new public surface, and nothing that could turn on several workers for a spinning drive). The probe is a new `Ferry.Bench jobs` mode that runs whole jobs through `TreeCopier` with Workers 1/2/4/8 (internals are already visible to the bench project); the gated comparison still runs the real `ferry copy` with the chosen default.
 
 ### The job loop
 
