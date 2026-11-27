@@ -10,7 +10,7 @@ namespace EveryApp.Core.Scheduling;
 /// <item>UNC paths (and drive letters mapped to a share) become <c>smb:&lt;server, lowercased&gt;</c>, so every share on one server queues together. A mapped letter is recognised before any volume call, so resolving it never touches the network.</item>
 /// <item>SUBST drives resolve to their backing path, so they queue with the real disk.</item>
 /// <item>Local paths become <c>disk:N</c> (Windows disk number) for each disk under the volume (IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS).</item>
-/// <item>Storage Spaces virtual disks also get <c>disk:M</c> for every member physical disk (WMI, root\Microsoft\Windows\Storage).</item>
+/// <item>Storage Spaces virtual disks also get <c>disk:M</c> for every member physical disk (WMI, root\Microsoft\Windows\Storage). WMI is only asked when a disk is, or might be, a Storage Space (a cheap per-disk bus-type check says so), because its first use costs about half a second.</item>
 /// <item>A volume that cannot be resolved (RAM disk, odd virtual disk) becomes <c>vol:&lt;volume GUID&gt;</c>, so it still queues with itself.</item>
 /// </list>
 /// Never throws. Volume results are cached by volume GUID (not drive letter, so a different drive under the same letter is seen).
@@ -28,6 +28,8 @@ public sealed class WindowsDeviceResolver : IDeviceResolver
     private readonly TimeProvider _time;
     private readonly TimeSpan _mapWait;
     private readonly ConcurrentDictionary<string, DeviceSet> _volumes = new(StringComparer.OrdinalIgnoreCase);
+
+    private readonly ConcurrentDictionary<uint, bool> _spaceDisks = new();
 
     private readonly Lock _mapGate = new();
     private Dictionary<uint, uint[]>? _map; // set only after a complete, successful load
@@ -147,7 +149,8 @@ public sealed class WindowsDeviceResolver : IDeviceResolver
                 return _volumes.GetOrAdd(guidPath, Fallback(guidPath.ToLowerInvariant()));
             }
 
-            var members = GetStorageSpaces();
+            // Skip the (slow, WMI) member map unless a disk is, or might be, a Storage Space.
+            var members = disks.Any(MightBeStorageSpace) ? GetStorageSpaces() : [];
             var ids = new HashSet<string>(StringComparer.Ordinal);
             foreach (var disk in disks)
             {
@@ -168,6 +171,24 @@ public sealed class WindowsDeviceResolver : IDeviceResolver
         {
             return Fallback(guidPath.ToLowerInvariant());
         }
+    }
+
+    /// <summary>True unless Windows says the disk is not a Storage Space. The answer is remembered per disk; "don't know" is never remembered.</summary>
+    private bool MightBeStorageSpace(uint disk)
+    {
+        if (_spaceDisks.TryGetValue(disk, out var known))
+        {
+            return known;
+        }
+
+        var answer = _api.IsStorageSpace(disk);
+        if (answer is null)
+        {
+            return true;
+        }
+
+        _spaceDisks[disk] = answer.Value;
+        return answer.Value;
     }
 
     /// <summary>The Storage Spaces member map, or null when it is not available right now (slow, failed or backing off). Never blocks longer than the wait budget.</summary>

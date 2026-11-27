@@ -38,6 +38,15 @@ public sealed class WindowsDeviceResolverSeamTests
 
         public IReadOnlyList<uint> GetDiskNumbers(string guidPath) => Disks.TryGetValue(guidPath, out var d) ? d : [];
 
+        public Dictionary<uint, bool?> Spaces { get; } = []; // disk number -> is a Storage Space (absent = unknown)
+        public Dictionary<uint, int> SpaceQueries { get; } = [];
+
+        public bool? IsStorageSpace(uint diskNumber)
+        {
+            SpaceQueries[diskNumber] = SpaceQueries.GetValueOrDefault(diskNumber) + 1;
+            return Spaces.TryGetValue(diskNumber, out var v) ? v : null;
+        }
+
         public bool? HasSeekPenalty(uint diskNumber) => null;
     }
 
@@ -47,6 +56,79 @@ public sealed class WindowsDeviceResolverSeamTests
         new(api, loader ?? NoSpaces, time ?? TimeProvider.System, TimeSpan.FromMilliseconds(waitMs));
 
     private static string[] Ids(DeviceSet set) => [.. set.Ids.Order(StringComparer.Ordinal)];
+
+    [Fact]
+    public void Resolve_NoStorageSpaceDisk_DoesNotLoadMemberMap()
+    {
+        var calls = 0;
+        var api = new FakeVolumeApi();
+        api.Guids[@"C:\"] = @"\\?\Volume{1}\";
+        api.Disks[@"\\?\Volume{1}\"] = [3, 4];
+        api.Spaces[3] = false;
+        api.Spaces[4] = false;
+        var resolver = Make(api, () =>
+        {
+            calls++;
+            return NoSpaces();
+        });
+
+        Assert.Equal(["disk:3", "disk:4"], Ids(resolver.Resolve(@"C:\x")));
+        Assert.Equal(0, calls);
+    }
+
+    [Fact]
+    public void Resolve_StorageSpaceDisk_LoadsMemberMap_AndAddsMembers()
+    {
+        var calls = 0;
+        var api = new FakeVolumeApi();
+        api.Guids[@"C:\"] = @"\\?\Volume{1}\";
+        api.Disks[@"\\?\Volume{1}\"] = [9];
+        api.Spaces[9] = true;
+        var resolver = Make(api, () =>
+        {
+            calls++;
+            return new Dictionary<uint, uint[]> { [9] = [6, 7] };
+        });
+
+        Assert.Equal(["disk:6", "disk:7", "disk:9"], Ids(resolver.Resolve(@"C:\x")));
+        Assert.Equal(1, calls);
+    }
+
+    [Fact]
+    public void Resolve_UnknownDiskKind_StillLoadsMemberMap()
+    {
+        var calls = 0;
+        var api = new FakeVolumeApi();
+        api.Guids[@"C:\"] = @"\\?\Volume{1}\";
+        api.Disks[@"\\?\Volume{1}\"] = [3, 9];
+        api.Spaces[3] = false; // 9 stays unknown (null)
+        var resolver = Make(api, () =>
+        {
+            calls++;
+            return new Dictionary<uint, uint[]> { [9] = [6, 7] };
+        });
+
+        Assert.Equal(["disk:3", "disk:6", "disk:7", "disk:9"], Ids(resolver.Resolve(@"C:\x")));
+        Assert.Equal(1, calls);
+    }
+
+    [Fact]
+    public void Resolve_IsStorageSpace_AnsweredOncePerDisk()
+    {
+        var api = new FakeVolumeApi();
+        api.Guids[@"C:\"] = @"\\?\Volume{1}\";
+        api.Guids[@"D:\"] = @"\\?\Volume{2}\";
+        api.Disks[@"\\?\Volume{1}\"] = [3];
+        api.Disks[@"\\?\Volume{2}\"] = [3]; // a second volume on the same disk
+        api.Spaces[3] = false;
+        var resolver = Make(api);
+
+        resolver.Resolve(@"C:\x");
+        resolver.Resolve(@"D:\x");
+        resolver.Resolve(@"C:\y");
+
+        Assert.Equal(1, api.SpaceQueries[3]);
+    }
 
     [Fact]
     public async Task WmiHang_DoesNotBlockScheduling_AndFallsBackToDiskNumber()

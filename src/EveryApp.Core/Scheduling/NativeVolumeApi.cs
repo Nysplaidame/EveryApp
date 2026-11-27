@@ -156,6 +156,67 @@ internal sealed class NativeVolumeApi : IVolumeApi
         return result;
     }
 
+    /// <summary>The bus type value Windows reports for a Storage Spaces virtual disk (BusTypeSpaces).</summary>
+    private const uint BusTypeSpaces = 16;
+
+    public unsafe bool? IsStorageSpace(uint diskNumber)
+    {
+        try
+        {
+            // Opened with no access rights: enough for a property query, and works without elevation.
+            using var handle = PInvoke.CreateFile(
+                @"\\.\PhysicalDrive" + diskNumber.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                0,
+                FILE_SHARE_MODE.FILE_SHARE_READ | FILE_SHARE_MODE.FILE_SHARE_WRITE | FILE_SHARE_MODE.FILE_SHARE_DELETE,
+                null,
+                FILE_CREATION_DISPOSITION.OPEN_EXISTING,
+                0,
+                null);
+            if (handle.IsInvalid)
+            {
+                return null;
+            }
+
+            var query = new STORAGE_PROPERTY_QUERY
+            {
+                PropertyId = STORAGE_PROPERTY_ID.StorageDeviceProperty,
+                QueryType = STORAGE_QUERY_TYPE.PropertyStandardQuery,
+            };
+            // STORAGE_DEVICE_DESCRIPTOR is followed by variable-length text; BusType sits at byte 28 of the fixed part.
+            const int BusTypeOffset = 28;
+            var buffer = stackalloc byte[1024];
+            uint returned = 0;
+            var added = false;
+            bool ok;
+            try
+            {
+                handle.DangerousAddRef(ref added);
+                ok = PInvoke.DeviceIoControl(
+                    new HANDLE(handle.DangerousGetHandle()),
+                    PInvoke.IOCTL_STORAGE_QUERY_PROPERTY,
+                    &query,
+                    (uint)sizeof(STORAGE_PROPERTY_QUERY),
+                    buffer,
+                    1024,
+                    &returned,
+                    null);
+            }
+            finally
+            {
+                if (added)
+                {
+                    handle.DangerousRelease();
+                }
+            }
+
+            return ok && returned >= BusTypeOffset + sizeof(uint) ? *(uint*)(buffer + BusTypeOffset) == BusTypeSpaces : null;
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            return null; // never throws: "don't know" just means the Storage Spaces lookup still runs
+        }
+    }
+
     public unsafe bool? HasSeekPenalty(uint diskNumber)
     {
         try

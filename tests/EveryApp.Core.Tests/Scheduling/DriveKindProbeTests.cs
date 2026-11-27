@@ -19,6 +19,8 @@ public sealed class DriveKindProbeTests
 
         public IReadOnlyList<uint> GetDiskNumbers(string guidPath) => [];
 
+        public bool? IsStorageSpace(uint diskNumber) => null;
+
         public bool? HasSeekPenalty(uint diskNumber)
         {
             Queries[diskNumber] = Queries.GetValueOrDefault(diskNumber) + 1;

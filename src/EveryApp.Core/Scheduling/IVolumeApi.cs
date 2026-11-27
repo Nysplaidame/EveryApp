@@ -21,6 +21,9 @@ internal interface IVolumeApi
     /// <summary>Windows disk numbers under a volume. Empty when it has no disk extents or the query fails.</summary>
     IReadOnlyList<uint> GetDiskNumbers(string guidPath);
 
+    /// <summary>Whether the disk is a Storage Spaces virtual disk (bus type Spaces). Null when the query fails: callers then assume it might be.</summary>
+    bool? IsStorageSpace(uint diskNumber);
+
     /// <summary>Whether the physical disk has a seek penalty (true = spinning, false = solid state). Null when the query fails.</summary>
     bool? HasSeekPenalty(uint diskNumber);
 }
