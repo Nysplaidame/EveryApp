@@ -4,6 +4,11 @@ Newest at the top. Each entry: `## <what> — <date> (<agent>)`, ≤10 lines, en
 Keep under ~300 lines; move older entries to `docs/archive/HANDOFF-history-<from>-<to>.md` in the same commit.
 Live state belongs in `STATE.md`; plan-execution detail in the superpowers progress log; decisions in `docs/adr/`.
 
+## Large files: several chunks in flight — 27 November 2026 (Claude)
+
+Found with probes on the drives (user-approved writes): a plain copy runs 1.02 GB/s with one 4 MiB chunk in flight and 2.5 GB/s with 4; Ferry ran ~1.0 because a write to a fresh part file runs inside the Windows call, so its read and write loops never overlapped. Task 8 keeps 4 reads and 4 writes in flight per large file (hashed in order; rescue still one at a time) and the check reads 4 ahead; retry handles made safe for concurrent calls. Reviews clean; security review L1–L3 fixed (identity checked on the reopened handle, stop after a failed check), threat model updated. Large set vs FastCopy, 1 round: 0.78 off / 1.00 on (pass; were 1.28 / 1.39). Full `./build.ps1`: 871 tests, 870 passed, 1 skipped.
+Touches: `src/Ferry.Engine/{FileCopier,RetryHandles,ThreadPoolHop,Verifier}.cs`, `src/EveryApp.Core/FileSystem/*` (file id on handles), tests, `docs/security/threat-model.md`, `docs/perf/results.md`, `STATE.md`.
+
 ## Parallel copies built and measured — 27 November 2026 (Claude)
 
 User chose several workers per job on solid-state drives (hard drives stay one at a time). Built by plan `2026-11-26-ferry-parallel-copy` (7 tasks, subagent-driven, each reviewed): drive-kind probe (seek penalty), thread-safe job state, per-file progress slots, large-file turns (one copy and one check at a time, check behind the next copy), the parallel job loop with reserved names, a `jobs` bench mode. Reviews caught: a file starting after "stop", a stale wait message, 8.3 look-alike names, a cold-cache bench bias; all fixed. Security-auditor: no critical/high/medium; L1 fixed, three low risks accepted. Default set to 8 workers from a 1/2/4/8 probe. Gate run (source now a Storage Space): mixed 0.74 / 1.62, large 1.28 / 1.39; the large-file drop is the setup (old/new A/B equal). Final review: ready to merge, 7 minors fixed. Full `./build.ps1`: 849 tests, 848 passed, 1 skipped.

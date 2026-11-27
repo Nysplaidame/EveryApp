@@ -96,9 +96,22 @@ Above 8 there is no gain: whichever count runs later in a pass looks faster, and
 - **Large files got slower on this setup, not because of this change.** Verify off went from 9.4 s to 23.2 s. A before/after run of the Ferry CLI on 4 of the large files (verify off, alternating) took 4.5 s and 4.0 s with the code from before parallel copies, and 4.0 s and 4.1 s with the new code: the same. A read-only test shows the Storage Space reads at 1.6 GB/s with one or four reads waiting, and 2.3 GB/s with sixteen; Ferry keeps four waiting and reached about 0.9 GB/s over the whole set. The likely causes are the new source and the destination (no DRAM cache) after many gigabytes of writes in a row; not proven. FastCopy's large-file times did not change between the two days.
 - **Large files with verify** now cost Ferry about 2 s more than without (25.3 against 23.2 s), down from 13 s: checking behind the next copy works.
 
+### Large files: several chunks in flight (2026-11-27)
+
+The large-file gap was Ferry moving one 4 MiB chunk at a time. A plain test copy of 2 × 1 GiB on these drives (unbuffered, files deleted after) ran at 1.02 GB/s with one chunk in flight and 2.30 / 2.49 / 2.50 GB/s with 2 / 4 / 8 (16 MiB chunks × 4: 2.45). The destination alone writes 2.6 GB/s at any depth, so it was not the limit. Ferry's read and write loops were meant to overlap, but a write into a fresh part file runs inside the Windows call itself, so only one ran at a time.
+
+Ferry now keeps up to 4 reads and 4 writes in flight per large file (hashed in file order; rescue mode still reads one chunk at a time), and the check reads 4 chunks ahead. Measured with temporary timing: the copy of one 1 GiB file takes 0.59–0.70 s (was about 1.0 s). Each Ferry run also has a fixed start-up cost of about 0.7 s (a one-small-file copy takes 0.71 s), worth a look later.
+
+Large set against FastCopy, **one round** (the large set's runs varied under 3% before, so one round was judged enough):
+
+| Set | Verify | FastCopy | Ferry | Ratio | Gate | Before this change |
+|---|---|---:|---:|---:|---|---:|
+| Large (20 × 1 GiB) | off | 18.20 s | 14.28 s | **0.78** | pass | 1.28 |
+| Large | on | 18.15 s | 18.20 s | **1.00** | pass | 1.39 |
+
 ### Still open
 
-- Large files on this setup (1.28 / 1.39): try more reads waiting on large files, and rerun once a single-NVMe source is back so the result can be compared with 2026-11-22.
+- Large files: done on this setup (above). The single-NVMe source of 2026-11-22 is gone (now part of an array), so this Storage Space → NVMe setup is the baseline from here on.
 - Mixed with verify on (1.62): the per-small-file read-back.
 - HDD sets: not run (no HDD available).
 
