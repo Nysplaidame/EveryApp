@@ -2,17 +2,17 @@
 
 Only mandatory start-of-session read. Keep under ~200 lines. `/handoff` replaces the ▶ START HERE block; history goes in `HANDOFF.md`.
 
-## ▶ START HERE (updated 2026-11-22, by Claude Opus 5.5 — task 16 measured; speed gate NOT met)
+## ▶ START HERE (updated 2026-11-27, by Claude Opus 5.5 — parallel copies built and measured)
 
-- **Branch:** `feat/m1-foundation-ferry-engine` (draft PR #1). M1 tasks 1–16 done; task 16 ended with the gate not met (below).
-- **Just finished:** task 16 in-session (card 007 superseded; Codex's sandbox could not reach NuGet or the disks). Harness: `bench/Ferry.Bench` + `bench.ps1` (config in git-ignored `bench.local.json`). Results and causes: `docs/perf/results.md`. Engine changes: small copies skip the per-file flush (journaled `unflushed`, resume rechecks this job's own files); verify reads small files back through their open unbuffered handle (avoids the antivirus wait on reopen); part files lost write-through. Security-auditor review: M1/M2/L1–L3 fixed (threat-model review log 2026-11-22). Full `./build.ps1`: 729 tests, 728 passed, 1 skipped (ReFS).
-- **Speed gate (≤1.10 × FastCopy):** NVMe large verify off 0.52 (pass); large verify on 1.17; mixed 2.02 / 7.61 (off / on). HDD sets not run (HDD offline). **Needs the user's decision before M2** (spec: tell the user): options in `results.md` — copy several small files at once, overlap large-file verify, trim per-file work.
+- **Branch:** `claude/copy-app-next-features-798066` (session worktree, based on `feat/m1-foundation-ferry-engine`, not pushed). Plan `docs/superpowers/plans/2026-11-26-ferry-parallel-copy.md`, tasks 1–7 done; final whole-branch review pending.
+- **Just finished:** parallel copies. On solid-state drives a job copies up to 8 files at once (measured: 1/2/4/8 → 14.3/9.4/7.3/5.8 s on the small set); large files take turns and each is checked while the next copies. Hard drives, unknown drives, network, removable, rescue and same-volume moves stay one at a time. Names, conflicts and resume are still decided one file at a time in order. New `Ferry.Bench jobs` mode. Security-auditor review: L1 fixed, three low risks accepted (threat model 2026-11-26). Full `./build.ps1`: 779 tests, 778 passed, 1 skipped (ReFS).
+- **Speed gate (≤1.10 × FastCopy), 2026-11-27, source now a Storage Space:** mixed off 0.74 (pass, was 2.02), mixed on 1.62 (was 7.61), large off 1.28, large on 1.39. The large-file drop is the setup, not the code (before/after A/B identical). Details and next ideas in `docs/perf/results.md`. **Gate still not met; user decides** whether to chase large files / mixed-verify before M2.
 - **New accepted risk:** a finished copy job is never resumed, so a power cut seconds after it ends can leave small files blank (threat model; possible fix: one drive flush at job end).
 - **Cards to close:** 002, 003, 004, 006 (merged), 005 (prep), 007 (superseded by this work; its branches `agent/007-run-task-16-…` and `agent/007-task16-bench-v2` hold only "blocked" notes, safe to delete).
 - **M2 risk to carry:** Ferry's Ctrl+V hook will compete with copy tools like Ultracopier. Test with one running; decide detection/handling. Not yet in the spec.
 - **Waiting on the user:** speed-gate decision; HDD back online for the HDD sets; optional Explorer spike Part A `--swallow` (step 17+) and Part C; left-drag decision before M2; run `scripts/New-SigningCert.ps1` before the first release. Bench data is still on the test drives (`ferry-bench`, `ferry-bench-out` folders, ~25 GB) for reruns.
-- **Next step:** user's speed-gate decision, then task 17 (soak + milestone security review against the threat model).
-- **Touches (this update):** `STATE.md`, `HANDOFF.md`, `.agents/tasks/007-…`, `docs/perf/results.md`.
+- **Next step:** final whole-branch review of the parallel-copy branch and merge into `feat/m1-foundation-ferry-engine` (user's call), then the user's speed-gate decision, then task 17 (soak + milestone security review).
+- **Touches (this update):** `STATE.md`, `HANDOFF.md`, `docs/perf/results.md`.
 
 ## Current state
 

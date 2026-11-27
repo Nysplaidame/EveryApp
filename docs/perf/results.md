@@ -54,6 +54,42 @@ The buffer size (1/4/8/16 MiB), pipeline depth (2/4/8), unbuffered threshold (1/
 - **Do less per small file:** fewer separate opens and checks per file, where safety allows.
 - Measure the HDD sets once the HDD is back.
 
+## Parallel copies (2026-11-27)
+
+Ferry now copies several files at once when every drive is a solid-state drive (see `docs/superpowers/specs/2026-11-26-ferry-parallel-copy-design.md`), and checks a large file while the next one copies. Measured on the same PC with one change: the source is now a Windows Storage Space (the earlier single NVMe source was no longer available). The destination is the same Samsung SSD 980 1 TB. Ferry reports the Storage Space as a solid-state drive. Standby cache not cleared (not run as administrator).
+
+### How many files at once
+
+`Ferry.Bench jobs` on the small set (10,000 files of 1–64 KiB, 318 MiB), whole jobs through the engine:
+
+| Files at once | Verify off | Verify on |
+|---:|---:|---:|
+| 1 | 14.25 s | 20.08 s |
+| 2 | 9.41 s | 11.91 s |
+| 4 | 7.25 s | 8.10 s |
+| **8** | **5.76 s** | **6.21 s** |
+
+**Default changed to 8** (the fastest in both rows; counts above 8 were not tried).
+
+### Against FastCopy (median of 3 rounds)
+
+| Set | Verify | FastCopy | Ferry | Ratio | Gate | Ratio on 2026-11-22 |
+|---|---|---:|---:|---:|---|---:|
+| Large (20 × 1 GiB) | off | 18.17 s | 23.23 s | 1.28 | **fail** | 0.52 |
+| Large | on | 18.15 s | 25.30 s | 1.39 | **fail** | 1.17 |
+| Mixed (64,602 files, 4 GiB) | off | 70.46 s | 52.08 s | 0.74 | pass | 2.02 |
+| Mixed | on | 52.69 s | 85.54 s | 1.62 | **fail** | 7.61 |
+
+- **Many small files:** the gap is mostly closed. Mixed with verify off is now faster than FastCopy; with verify on, Ferry's time fell from 434 s to 86 s. Mixed runs varied a lot (Ferry 40–95 s, FastCopy 51–72 s), so read those ratios as rough.
+- **Large files got slower on this setup, not because of this change.** Verify off went from 9.4 s to 23.2 s. A before/after run of the Ferry CLI on 4 of the large files (verify off, alternating) took 4.5 s and 4.0 s with the code from before parallel copies, and 4.0 s and 4.1 s with the new code: the same. A read-only test shows the Storage Space reads at 1.6 GB/s with one or four reads waiting, and 2.3 GB/s with sixteen; Ferry keeps four waiting and reached about 0.9 GB/s over the whole set. The likely causes are the new source and the destination (no DRAM cache) after many gigabytes of writes in a row; not proven. FastCopy's large-file times did not change between the two days.
+- **Large files with verify** now cost Ferry about 2 s more than without (25.3 against 23.2 s), down from 13 s: checking behind the next copy works.
+
+### Still open
+
+- Large files on this setup (1.28 / 1.39): try more reads waiting on large files, and rerun once a single-NVMe source is back so the result can be compared with 2026-11-22.
+- Mixed with verify on (1.62): the per-small-file read-back.
+- HDD sets: not run (no HDD available).
+
 ## How to run
 
 1. Copy `bench.example.json` to `bench.local.json` (git-ignored) and fill in FastCopy's path and the folders. Destinations must be empty or made by the bench tools.
