@@ -18,10 +18,21 @@ public enum JournalRecordKind
     /// After a crash, resume deletes exactly these part files (never by pattern) for files not yet done.
     /// </summary>
     FilePartStarted,
+
+    /// <summary>
+    /// Written right AFTER a part file is created: <see cref="JournalRecord.RelativePath"/> is the file the job is working on,
+    /// <see cref="JournalRecord.Detail"/> the part file's path relative to the destination root, and <see cref="JournalRecord.Hash"/> which
+    /// object on disk the part is (<see cref="JobJournal.FormatIdentity"/>). A rename keeps that identity, so a resume can tell this job's own
+    /// file from another file with the same name and size.
+    /// </summary>
+    FilePartCreated,
 }
 
 /// <summary>A part file named by a <see cref="JournalRecordKind.FilePartStarted"/> record. Both paths are safe relative paths.</summary>
 public sealed record JournalPart(string RelativePath, string PartRelativePath, string TargetRelativePath);
+
+/// <summary>Which object on disk a part file was, from a <see cref="JournalRecordKind.FilePartCreated"/> record.</summary>
+public sealed record JournalPartIdentity(string RelativePath, string PartRelativePath, ulong VolumeSerial, UInt128 FileId);
 
 /// <summary>Read-only history of a journal's valid records. The options still need the engine's validation.</summary>
 public sealed record JournalSummary(string OptionsJson, DateTime StartedUtc, bool IsFinished, string? Result);

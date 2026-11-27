@@ -678,6 +678,12 @@ internal sealed partial class TreeJob
                 PartChosen = part => _journal.TryAppend(new JournalRecord(
                     JournalRecordKind.FilePartStarted, item.JournalKey, entry.Length, entry.LastWriteTimeUtc, null,
                     TreePaths.Combine(targetFolderKey, Path.GetFileName(part)), targetKey)),
+
+                // Which object on disk the part is: a resume only treats a file under another name (e.g. "name (2).ext") as this job's own
+                // when it is that very object (a rename keeps it).
+                PartCreated = (part, identity) => _journal.Append(new JournalRecord(
+                    JournalRecordKind.FilePartCreated, item.JournalKey, entry.Length, entry.LastWriteTimeUtc,
+                    JobJournal.FormatIdentity(identity.VolumeSerial, identity.FileId), TreePaths.Combine(targetFolderKey, Path.GetFileName(part)))),
                 SharedLimiter = _limiter,
                 LargeGates = _gates,
                 SectorSizes = _sectorSizes,

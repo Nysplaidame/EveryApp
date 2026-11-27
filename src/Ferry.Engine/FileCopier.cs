@@ -199,6 +199,7 @@ public sealed class FileCopier
             }
             var originalFinalPath = writer.GetFinalPath();
             var partIdentity = writer.GetIdentity();
+            hooks?.PartCreated?.Invoke(part, partIdentity);
             var retryWriter = new RetryWriteHandle(writer, async () =>
             {
                 var reopened = _fs.OpenWriteExisting(part, writeUnbuffered);
@@ -548,6 +549,12 @@ public sealed class FileCopier
         if (hooks.MustBeUnder is { } root && !PathSafety.IsSameOrUnderFinal(root, _fs.GetFinalPath(part)))
         {
             return Failed(source, IoErrorKind.InvalidName, CopyMessages.PartOutsideDestination, part);
+        }
+
+        if (hooks.PartCreated is { } created)
+        {
+            var clone = _fs.GetEntry(part);
+            created(part, new FileIdentity(clone.FileId, clone.VolumeSerial));
         }
 
         byte[]? hash = null;

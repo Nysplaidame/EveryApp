@@ -98,6 +98,47 @@ public sealed class JobJournalPartTests : IDisposable
         Assert.Throws<ArgumentException>(() => j.Append(new JournalRecord(JournalRecordKind.FileDone, "a.txt", 1, DateTime.UnixEpoch, null, null, @"..\x")));
     }
 
+    private static JournalRecord Created(string rel, string part, string? identity) =>
+        new(JournalRecordKind.FilePartCreated, rel, 0, DateTime.UnixEpoch, identity, part);
+
+    [Fact]
+    public void PartIdentity_RoundTrips()
+    {
+        var id = Guid.NewGuid();
+        var fileId = new UInt128(0x0102030405060708, 0x090a0b0c0d0e0f10);
+        using (var j = JobJournal.Create(_dir, id, "{}"))
+        {
+            j.Append(Created(@"0\b.txt", "b (2).txt.ffee0011.ferrypart", JobJournal.FormatIdentity(0xabcdef, fileId)));
+            Assert.Single(j.PartIdentities);
+        }
+
+        using var again = JobJournal.Open(_dir, id);
+        Assert.Equal([new JournalPartIdentity(@"0\b.txt", "b (2).txt.ffee0011.ferrypart", 0xabcdef, fileId)], again.PartIdentities);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("0000000000abcdef-0102030405060708090a0b0c0d0e0f1")] // one digit short
+    [InlineData("0000000000ABCDEF-0102030405060708090a0b0c0d0e0f10")] // not lower case
+    [InlineData("0000000000abcdef+0102030405060708090a0b0c0d0e0f10")]
+    [InlineData("0000000000abcdeg-0102030405060708090a0b0c0d0e0f10")]
+    public void PartIdentity_Malformed_RejectedOnAppend_AndStopsLoad(string? identity)
+    {
+        var id = Guid.NewGuid();
+        using (var j = JobJournal.Create(_dir, id, "{}"))
+        {
+            Assert.Throws<ArgumentException>(() => j.Append(Created("a.txt", "a.txt.0011aabb.ferrypart", identity)));
+        }
+
+        File.AppendAllBytes(Path.Combine(_dir, id.ToString("N") + ".journal"),
+            JournalTestHelper.ForgeRecord(Created("a.txt", "a.txt.0011aabb.ferrypart", identity)));
+        File.AppendAllBytes(Path.Combine(_dir, id.ToString("N") + ".journal"), JournalTestHelper.ForgeLine(JournalRecordKind.FileDone, "after.txt"));
+        using var again = JobJournal.Open(_dir, id);
+        Assert.Empty(again.PartIdentities);
+        Assert.Empty(again.CompletedPaths);
+    }
+
     [Fact]
     public void PartRecord_IsHandedToTheOsAtOnce()
     {

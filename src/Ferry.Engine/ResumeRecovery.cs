@@ -21,6 +21,7 @@ internal sealed partial class ResumeRecovery
     private readonly DateTime? _jobStartedUtc;
     private readonly DateTime? _lastActivityUtc;
     private readonly Dictionary<string, List<JournalPart>> _partsByKey = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, HashSet<(ulong VolumeSerial, UInt128 FileId)>> _identitiesByKey = new(StringComparer.OrdinalIgnoreCase);
 
     /// <param name="skipped">Told about each leftover that was left alone because it is not really inside the destination.</param>
     public ResumeRecovery(IFileSystem fs, string destination, JobJournal? journal, Action<Problem> skipped)
@@ -45,6 +46,16 @@ internal sealed partial class ResumeRecovery
             }
 
             list.Add(part);
+        }
+
+        foreach (var identity in journal?.PartIdentities ?? [])
+        {
+            if (!_identitiesByKey.TryGetValue(identity.RelativePath, out var set))
+            {
+                _identitiesByKey[identity.RelativePath] = set = [];
+            }
+
+            set.Add((identity.VolumeSerial, identity.FileId));
         }
     }
 
@@ -113,9 +124,9 @@ internal sealed partial class ResumeRecovery
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var part in parts)
         {
-            if (!IsTrustworthy(part, out _, out var target) || !seen.Add(target))
+            if (!IsTrustworthy(part, out _, out var target) || !seen.Add(target) || !InItemsFolder(part, item))
             {
-                continue;
+                continue; // only a target next to the item's own name is ever looked at (never an identical file elsewhere)
             }
 
             if (!IsInsideDestination(target))
@@ -153,21 +164,22 @@ internal sealed partial class ResumeRecovery
     /// Resume of a copy that may have skipped forcing small files to disk: checks the file this job would have written for <paramref name="item"/>
     /// (the target of its latest part record, else its normal name). A power cut can keep the rename yet lose the data and even the journal's
     /// last records, so this does not rely on a done record. The file counts as this job's own only if it is a plain file in the same folder as
-    /// the normal name, inside the destination, the source's size, and dated like the source (its dates were kept) or within the job's run. A
-    /// file changed after the job stopped is not this job's own and is left to the conflict rule.
+    /// the normal name, inside the destination, the source's size, and either the very object a journaled part file of this item was (a
+    /// rename keeps it) or, under the item's normal name only, dated like the source (its dates were kept) or within the job's run. A file
+    /// under another name (e.g. "name (2).ext") is never trusted by its dates, which come from the journal itself. A file changed after the job
+    /// stopped is not this job's own and is left to the conflict rule.
     /// </summary>
     public async Task<Recheck> RecheckAsync(TreeItem item, HashAlgorithmKind algorithm, CancellationToken ct)
     {
         var key = item.Key;
-        if (_partsByKey.TryGetValue(item.JournalKey, out var parts) && IsTrustworthy(parts[^1], out _, out _)
-            && string.Equals(Path.GetDirectoryName(parts[^1].TargetRelativePath), Path.GetDirectoryName(item.Key), StringComparison.OrdinalIgnoreCase))
+        if (_partsByKey.TryGetValue(item.JournalKey, out var parts) && IsTrustworthy(parts[^1], out _, out _) && InItemsFolder(parts[^1], item))
         {
             key = parts[^1].TargetRelativePath; // e.g. "name (2).ext" under the rename rule
         }
 
         if (!TreePaths.TryContain(_destination, key, out var target) || TreePaths.TryGet(_fs, target, follow: false) is not { } existing
             || existing.Attributes.HasFlag(FileAttributes.Directory) || existing.IsReparsePoint || existing.Length != item.Entry.Length
-            || !(existing.LastWriteTimeUtc == item.Entry.LastWriteTimeUtc || WithinJob(existing.LastWriteTimeUtc)) || !IsInsideDestination(target))
+            || !(WasOurPart(item, existing) || (IsNormalName(key, item) && DatedLikeOurs(existing, item))) || !IsInsideDestination(target))
         {
             return new Recheck(RecheckResult.NotOurs, key);
         }
@@ -182,6 +194,19 @@ internal sealed partial class ResumeRecovery
             return new Recheck(RecheckResult.NotOurs, key); // could not check it: copy normally (the conflict rule then decides)
         }
     }
+
+    /// <summary>The part's target sits in the same folder as the item's own name.</summary>
+    private static bool InItemsFolder(JournalPart part, TreeItem item) =>
+        string.Equals(Path.GetDirectoryName(part.TargetRelativePath), Path.GetDirectoryName(item.Key), StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsNormalName(string key, TreeItem item) => string.Equals(key, item.Key, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>The file is the very object one of this item's part files was, as journaled right after the part was created.</summary>
+    private bool WasOurPart(TreeItem item, FileEntry existing) =>
+        existing.FileId != UInt128.Zero && _identitiesByKey.TryGetValue(item.JournalKey, out var ids) && ids.Contains((existing.VolumeSerial, existing.FileId));
+
+    private bool DatedLikeOurs(FileEntry existing, TreeItem item) =>
+        existing.LastWriteTimeUtc == item.Entry.LastWriteTimeUtc || WithinJob(existing.LastWriteTimeUtc);
 
     /// <summary>Written while the job ran: from its start to a minute after the journal was last written (that time can be a little early).</summary>
     private bool WithinJob(DateTime when) =>

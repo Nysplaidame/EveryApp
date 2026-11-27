@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Globalization;
 using System.IO.Hashing;
 using System.Text;
@@ -71,6 +72,7 @@ public sealed class JobJournal : IDisposable
     private readonly HashSet<string> _completed;
     private readonly HashSet<string> _notOnDisk = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<JournalPart> _parts;
+    private readonly List<JournalPartIdentity> _identities;
     private readonly TimeProvider _time;
     private readonly JournalIo _io;
     private long _goodOffset;
@@ -82,9 +84,10 @@ public sealed class JobJournal : IDisposable
 
     private JobJournal(
         FileStream stream, string optionsJson, HashSet<string> completed, List<JournalPart> parts, bool isFinished, TimeProvider time, JournalIo io,
-        HashSet<string>? notOnDisk = null)
+        HashSet<string>? notOnDisk = null, List<JournalPartIdentity>? identities = null)
     {
         _stream = stream;
+        _identities = identities ?? [];
         OptionsJson = optionsJson;
         _completed = completed;
         if (notOnDisk is not null)
@@ -172,6 +175,43 @@ public sealed class JobJournal : IDisposable
         }
     }
 
+    /// <summary>A snapshot of every part-file identity named by a <see cref="JournalRecordKind.FilePartCreated"/> record, in order.</summary>
+    public IReadOnlyList<JournalPartIdentity> PartIdentities
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return [.. _identities];
+            }
+        }
+    }
+
+    /// <summary>The <see cref="JournalRecord.Hash"/> text of a <see cref="JournalRecordKind.FilePartCreated"/> record: volume serial and file id in hex.</summary>
+    public static string FormatIdentity(ulong volumeSerial, UInt128 fileId) =>
+        volumeSerial.ToString("x16", CultureInfo.InvariantCulture) + "-" + fileId.ToString("x32", CultureInfo.InvariantCulture);
+
+    /// <summary>Reads text made by <see cref="FormatIdentity"/>; anything else is refused.</summary>
+    internal static bool TryParseIdentity(string? text, out ulong volumeSerial, out UInt128 fileId)
+    {
+        volumeSerial = 0;
+        fileId = UInt128.Zero;
+        return text is { Length: 49 } && text[16] == '-'
+            && IsLowerHex(text.AsSpan(0, 16)) && IsLowerHex(text.AsSpan(17))
+            && ulong.TryParse(text.AsSpan(0, 16), NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture, out volumeSerial)
+            && UInt128.TryParse(text.AsSpan(17), NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture, out fileId);
+
+        static bool IsLowerHex(ReadOnlySpan<char> s) => !s.ContainsAnyExcept(LowerHex);
+    }
+
+    private static readonly SearchValues<char> LowerHex = SearchValues.Create("0123456789abcdef");
+
+    /// <summary>Only called for a record that passed <see cref="Validate"/>, so its identity text is well formed.</summary>
+    private static JournalPartIdentity IdentityOf(JournalRecord record) =>
+        TryParseIdentity(record.Hash, out var volume, out var id)
+            ? new JournalPartIdentity(Normalize(record.RelativePath!), Normalize(record.Detail!), volume, id)
+            : throw new InvalidOperationException("A part identity that passed validation could not be read.");
+
     /// <summary>Starts a new journal. Throws <see cref="IOException"/> if one already exists for this job.</summary>
     public static JobJournal Create(string jobsDir, Guid jobId, string optionsJson, TimeProvider? timeProvider = null) =>
         CreateWithIo(jobsDir, jobId, optionsJson, timeProvider, null);
@@ -241,7 +281,8 @@ public sealed class JobJournal : IDisposable
             // Cut off anything after the last good line, so new records are not stranded behind garbage.
             stream.SetLength(load.GoodLength);
             stream.Seek(0, SeekOrigin.End);
-            return new JobJournal(stream, load.Options, load.Completed, load.Parts, load.Finished, timeProvider ?? TimeProvider.System, io ?? new JournalIo(), load.NotOnDisk)
+            return new JobJournal(stream, load.Options, load.Completed, load.Parts, load.Finished, timeProvider ?? TimeProvider.System, io ?? new JournalIo(), load.NotOnDisk,
+                load.Identities)
             {
                 StartedUtc = load.StartedUtc,
                 LastActivityUtc = lastActivity,
@@ -327,6 +368,11 @@ public sealed class JobJournal : IDisposable
                     && record.Detail.EndsWith(PartSuffix, StringComparison.OrdinalIgnoreCase)
                     && record.TargetPath is not null && IsSafeRelativePath(record.TargetPath)
                     && string.Equals(FolderOf(record.Detail), FolderOf(record.TargetPath), StringComparison.OrdinalIgnoreCase);
+            case JournalRecordKind.FilePartCreated:
+                return record.RelativePath is not null && IsSafeRelativePath(record.RelativePath)
+                    && record.Detail is not null && IsSafeRelativePath(record.Detail)
+                    && record.Detail.EndsWith(PartSuffix, StringComparison.OrdinalIgnoreCase)
+                    && TryParseIdentity(record.Hash, out _, out _);
             default: // JobFinished
                 return record.RelativePath is null || IsSafeRelativePath(record.RelativePath);
         }
@@ -395,6 +441,10 @@ public sealed class JobJournal : IDisposable
             {
                 _parts.Add(new JournalPart(Normalize(record.RelativePath!), Normalize(record.Detail!), Normalize(record.TargetPath!)));
             }
+            else if (record.Kind == JournalRecordKind.FilePartCreated)
+            {
+                _identities.Add(IdentityOf(record));
+            }
             else if (record.Kind == JournalRecordKind.JobFinished)
             {
                 _finished = true;
@@ -452,7 +502,7 @@ public sealed class JobJournal : IDisposable
     }
 
     private readonly record struct LoadResult(string? Options, HashSet<string> Completed, List<JournalPart> Parts, bool Finished, long GoodLength,
-        DateTime StartedUtc, string? Result, HashSet<string> NotOnDisk);
+        DateTime StartedUtc, string? Result, HashSet<string> NotOnDisk, List<JournalPartIdentity> Identities);
 
     /// <summary>Reads lines from the start and stops at the first one that cannot be trusted.</summary>
     private static LoadResult Load(FileStream stream, bool collectFileState = true, CancellationToken ct = default)
@@ -460,6 +510,7 @@ public sealed class JobJournal : IDisposable
         var completed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var notOnDisk = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var parts = new List<JournalPart>();
+        var identities = new List<JournalPartIdentity>();
         string? options = null;
         var finished = false;
         var startedUtc = default(DateTime);
@@ -529,6 +580,12 @@ public sealed class JobJournal : IDisposable
                             parts.Add(new JournalPart(Normalize(record.RelativePath!), Normalize(record.Detail!), Normalize(record.TargetPath!)));
                         }
                         break;
+                    case JournalRecordKind.FilePartCreated:
+                        if (collectFileState)
+                        {
+                            identities.Add(IdentityOf(record));
+                        }
+                        break;
                     default:
                         break;
                 }
@@ -538,7 +595,7 @@ public sealed class JobJournal : IDisposable
             }
         }
 
-        return new LoadResult(options, completed, parts, finished, goodLength, startedUtc, result, notOnDisk);
+        return new LoadResult(options, completed, parts, finished, goodLength, startedUtc, result, notOnDisk, identities);
     }
 
     private static bool TryParseLine(ReadOnlySpan<byte> line, bool isHeader, out JournalRecord record)

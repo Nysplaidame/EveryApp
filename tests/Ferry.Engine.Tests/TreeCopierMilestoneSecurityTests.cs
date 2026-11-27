@@ -1,4 +1,5 @@
 using EveryApp.Core.FileSystem;
+using EveryApp.Core.Jobs;
 
 namespace Ferry.Engine.Tests;
 
@@ -135,6 +136,79 @@ public sealed class TreeCopierMilestoneSecurityTests : TreeCopierTestBase
         Assert.True(TreePaths.TryContain(@"\\?\UNC\server\share\dst", @"a\b", out var onShare));
         Assert.Equal(@"\\?\UNC\server\share\dst\a\b", onShare);
         Assert.False(TreePaths.IsInside(@"\\?\UNC\server\share\dst", @"..\other"));
+    }
+
+    // ---- L3 and I6: which destination file a resume may treat as "this job's own"
+
+    /// <summary>Runs a copy of a.bin and b.bin where b fails and the job stops, so it can be resumed.</summary>
+    private async Task<Guid> StoppedJobAsync(ConflictRule rule)
+    {
+        Add(@"C:\src\a.bin", 100, seed: 1);
+        Add(@"C:\src\b.bin", 100, seed: 2);
+        _rig.Faults.FailRead(@"C:\src\b.bin", 0, IoErrorKind.AccessDenied, times: 1);
+        var id = Guid.NewGuid();
+        await _rig.RunAsync([@"C:\src"], @"D:\dst", new CopyOptions { IfUnreadable = FailureRule.Stop, IfExists = rule }, jobId: id);
+        return id;
+    }
+
+    private void AppendToJournal(Guid id, JournalRecord record)
+    {
+        using var journal = JobJournal.Open(_rig.JobsDir, id);
+        journal.Append(record);
+    }
+
+    [Fact]
+    public async Task Resume_ForgedPartRecordNamingAnotherFile_ThatFileIsNotReplaced()
+    {
+        var id = await StoppedJobAsync(ConflictRule.Skip);
+        var victim = Bytes(100, seed: 9);
+        _rig.Mem.AddFile(@"D:\dst\src\victim.bin", victim); // b's size, dated within the job's run
+        AppendToJournal(id, new JournalRecord(
+            JournalRecordKind.FilePartStarted, @"0\src\b.bin", 100, DateTime.UtcNow, null, @"src\victim.bin.0123abcd.ferrypart", @"src\victim.bin"));
+
+        await _rig.ResumeAsync(id);
+
+        Assert.Equal(victim, _rig.Mem.ReadAllBytes(@"D:\dst\src\victim.bin"));
+        Assert.Equal(_rig.Mem.ReadAllBytes(@"C:\src\b.bin"), _rig.Mem.ReadAllBytes(@"D:\dst\src\b.bin"));
+    }
+
+    [Fact]
+    public async Task Resume_RenamedCopyBlankedByPowerCut_RecognisedByItsIdentity()
+    {
+        var existing = Bytes(50, seed: 5);
+        _rig.Mem.AddFile(@"D:\dst\src\a.bin", existing); // so a is copied as "a (2).bin"
+        var id = await StoppedJobAsync(ConflictRule.Rename);
+        Assert.True(_rig.Mem.Exists(@"D:\dst\src\a (2).bin"));
+
+        // The power cut kept the rename but lost the data: the same file, now blank, and its dates tell nothing.
+        await using (var blank = _rig.Mem.OpenWriteExisting(@"D:\dst\src\a (2).bin", unbuffered: false))
+        {
+            await blank.WriteAsync(new byte[100], 0, Ct);
+        }
+
+        var later = DateTime.UtcNow.AddHours(3);
+        _rig.Mem.SetMetadata(@"D:\dst\src\a (2).bin", FileAttributes.Normal, later, later);
+
+        await _rig.ResumeAsync(id);
+
+        Assert.Equal(_rig.Mem.ReadAllBytes(@"C:\src\a.bin"), _rig.Mem.ReadAllBytes(@"D:\dst\src\a (2).bin"));
+        Assert.False(_rig.Mem.Exists(@"D:\dst\src\a (3).bin"));
+        Assert.Equal(existing, _rig.Mem.ReadAllBytes(@"D:\dst\src\a.bin"));
+    }
+
+    [Fact]
+    public async Task Resume_PartRecordNamingAnIdenticalFileInAnotherFolder_ThatFileIsLeftAlone()
+    {
+        var id = await StoppedJobAsync(ConflictRule.Skip);
+        _rig.Mem.AddFile(@"D:\dst\other\same.bin", _rig.Mem.ReadAllBytes(@"C:\src\b.bin"));
+        var before = _rig.Mem.GetEntry(@"D:\dst\other\same.bin");
+        AppendToJournal(id, new JournalRecord(
+            JournalRecordKind.FilePartStarted, @"0\src\b.bin", 100, DateTime.UtcNow, null, @"other\same.bin.0123abcd.ferrypart", @"other\same.bin"));
+
+        await _rig.ResumeAsync(id);
+
+        Assert.Equal(_rig.Mem.ReadAllBytes(@"C:\src\b.bin"), _rig.Mem.ReadAllBytes(@"D:\dst\src\b.bin"));
+        Assert.Equal(before, _rig.Mem.GetEntry(@"D:\dst\other\same.bin"));
     }
 
     [Fact]

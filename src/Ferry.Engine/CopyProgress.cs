@@ -46,6 +46,12 @@ public sealed class FileCopyHooks
     public Func<string, bool>? PartChosen { get; init; }
 
     /// <summary>
+    /// Called right after a part file is created (and found inside <see cref="MustBeUnder"/>), with which object on disk it is, so a job can
+    /// journal it: the finished file keeps that identity under its real name. Best effort: the copy goes on whatever it does.
+    /// </summary>
+    public Action<string, FileIdentity>? PartCreated { get; init; }
+
+    /// <summary>
     /// One speed limiter shared by every copy of a job running at once, so together they stay within the limit. When null the copier makes its
     /// own from <see cref="CopyOptions.SpeedLimitBytesPerSecond"/>.
     /// </summary>
