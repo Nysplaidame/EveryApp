@@ -54,7 +54,7 @@ internal sealed partial class TreeJob
         _isMove = spec.Mode == CopyMode.Move;
         _destination = spec.Destination;
         _outcome = new JobOutcome(VerifyOn);
-        _journal = new JobJournalWriter(journal);
+        _journal = new JobJournalWriter(journal, _outcome); // a journal that cannot be written stops the job with a plain problem
         _progress = new ProgressTracker(sink, owner.Time);
         _recovery = new ResumeRecovery(_fs, _destination, journal, p => _outcome.Problems.Add(p));
         _mover = new TreeMover(_fs, _destination, _outcome, _journal, _progress, Fail);
@@ -81,7 +81,14 @@ internal sealed partial class TreeJob
         }
         finally
         {
-            _journal.Journal?.Dispose();
+            try
+            {
+                _journal.Journal?.Dispose();
+            }
+            catch (IOException)
+            {
+                // The last records could not be flushed: a resume redoes those files (the journal only ever keeps whole records).
+            }
         }
     }
 

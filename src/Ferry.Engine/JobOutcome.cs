@@ -194,9 +194,15 @@ internal sealed class ProblemList(int max)
     }
 }
 
-/// <summary>Writes journal records for a job (nothing at all before the journal exists, e.g. during checks).</summary>
-internal sealed class JobJournalWriter(JobJournal? journal)
+/// <summary>
+/// Writes journal records for a job (nothing at all before the journal exists, e.g. during checks). When the journal itself cannot be
+/// written (disk full, I/O error) the job is told once, through <paramref name="outcome"/>, and stopped: no new file starts, copies already
+/// running finish, and nothing is thrown at them. The journal keeps only whole records, so the job can be resumed later.
+/// </summary>
+internal sealed class JobJournalWriter(JobJournal? journal, JobOutcome? outcome = null)
 {
+    private int _failed;
+
     public JobJournal? Journal { get; set; } = journal;
 
     public void Append(JournalRecord record)
@@ -209,6 +215,22 @@ internal sealed class JobJournalWriter(JobJournal? journal)
         {
             // A name the journal cannot hold safely: the file is simply redone on resume (copies never land half-written).
         }
+        catch (Exception ex) when (ex is IOException or InvalidOperationException)
+        {
+            JournalFailed();
+        }
+    }
+
+    /// <summary>The journal cannot take more records (InvalidOperationException covers a faulted or closed journal): stop the job, say so once.</summary>
+    private void JournalFailed()
+    {
+        if (outcome is null || Interlocked.Exchange(ref _failed, 1) != 0)
+        {
+            return;
+        }
+
+        outcome.MarkStopped();
+        outcome.Problems.Add(new Problem(string.Empty, IoErrorKind.DiskFull, CopyMessages.JournalWriteFailed));
     }
 
     /// <summary>
@@ -227,8 +249,13 @@ internal sealed class JobJournalWriter(JobJournal? journal)
             Journal.Append(record);
             return true;
         }
-        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException)
+        catch (ArgumentException)
         {
+            return false;
+        }
+        catch (Exception ex) when (ex is IOException or InvalidOperationException)
+        {
+            JournalFailed();
             return false;
         }
     }
