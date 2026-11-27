@@ -117,6 +117,8 @@ public sealed class RetryHandlesTests
 
         public FileEntry GetEntry() => new(@"\\?\C:\work\src", length, FileAttributes.Normal, DateTime.UnixEpoch, DateTime.UnixEpoch, false, 1, 1);
 
+        public string GetFinalPath() => @"\\?\C:\work\src";
+
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 

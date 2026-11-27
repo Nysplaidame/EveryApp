@@ -20,11 +20,23 @@ internal enum MoveOutcome
 internal sealed class TreeMover(
     IFileSystem fs, string destination, JobOutcome outcome, JobJournalWriter journal, ProgressTracker progress, Action<TreeItem, Problem> fail)
 {
-    /// <summary>One rename for a whole folder. Its files then count as moved. NotSameDevice leaves everything as it was.</summary>
-    public MoveOutcome MoveWhole(string source, string key, string journalKey, int files, long bytes)
+    /// <summary>
+    /// One rename for a whole folder. Its files then count as moved. NotSameDevice leaves everything as it was. Refused when the folder now
+    /// under the name is not the one listed as <paramref name="listed"/>.
+    /// </summary>
+    public MoveOutcome MoveWhole(FileEntry listed, string key, string journalKey, int files, long bytes)
     {
+        var source = listed.FullPath;
         try
         {
+            if (TreePaths.IsSwapped(listed, fs.GetEntry(source)))
+            {
+                outcome.AddFailed(files);
+                outcome.Problems.Add(new Problem(TreePaths.Display(source), IoErrorKind.Other, CopyMessages.SourceChanged));
+                progress.CompleteFiles(files, bytes);
+                return MoveOutcome.Failed;
+            }
+
             fs.Move(source, Path.Combine(destination, key), overwrite: false);
             journal.Done(journalKey, 0, DateTime.UtcNow, null);
             outcome.AddCopied(files);
@@ -64,6 +76,12 @@ internal sealed class TreeMover(
                 throw new FileSystemException(target, IoErrorKind.AlreadyExists, null);
             }
 
+            if (TreePaths.IsSwapped(item.Entry, fs.GetEntry(item.Entry.FullPath)))
+            {
+                outcome.Problems.Add(new Problem(TreePaths.Display(item.Entry.FullPath), IoErrorKind.Other, CopyMessages.SourceChanged));
+                return;
+            }
+
             fs.Move(item.Entry.FullPath, target, overwrite: false);
         }
         catch (FileSystemException ex) when (ex.Kind == IoErrorKind.NotSameDevice)
@@ -85,6 +103,13 @@ internal sealed class TreeMover(
         var source = item.Entry.FullPath;
         try
         {
+            // Only the file that was listed is renamed: another file put under its name since is refused, never moved in its place.
+            if (TreePaths.IsSwapped(item.Entry, fs.GetEntry(source)))
+            {
+                fail(item, new Problem(TreePaths.Display(source), IoErrorKind.Other, CopyMessages.SourceChanged));
+                return MoveOutcome.Failed;
+            }
+
             if (replace)
             {
                 var old = fs.GetEntry(target);

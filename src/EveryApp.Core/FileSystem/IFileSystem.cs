@@ -12,6 +12,9 @@ public interface IReadHandle : IAsyncDisposable
     /// its place under the same name cannot answer for it.
     /// </summary>
     FileEntry GetEntry();
+
+    /// <summary>Where this open file really is, as Windows resolved it (every link followed), in the canonical <c>\\?\</c> form.</summary>
+    string GetFinalPath();
 }
 
 /// <summary>

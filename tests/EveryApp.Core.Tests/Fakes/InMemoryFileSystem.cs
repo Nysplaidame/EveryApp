@@ -796,6 +796,14 @@ public sealed class InMemoryFileSystem : IFileSystem
             }
         }
 
+        public string GetFinalPath()
+        {
+            lock (fs._lock)
+            {
+                return LongForm(node.Key);
+            }
+        }
+
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 

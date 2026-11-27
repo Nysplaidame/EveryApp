@@ -345,7 +345,22 @@ internal sealed class RecordingFileSystem(IFileSystem inner) : IFileSystem
             throw ex;
         }
 
-        return inner.OpenRead(path, unbuffered);
+        var handle = inner.OpenRead(path, unbuffered);
+        return MapEntry is { } map ? new MappedReadHandle(handle, map) : handle;
+    }
+
+    /// <summary>A read handle whose own description goes through <see cref="MapEntry"/> too, like every other entry handed out.</summary>
+    private sealed class MappedReadHandle(IReadHandle inner, Func<FileEntry, FileEntry> map) : IReadHandle
+    {
+        public long Length => inner.Length;
+
+        public ValueTask<int> ReadAsync(Memory<byte> buffer, long offset, CancellationToken ct) => inner.ReadAsync(buffer, offset, ct);
+
+        public FileEntry GetEntry() => map(inner.GetEntry());
+
+        public string GetFinalPath() => inner.GetFinalPath();
+
+        public ValueTask DisposeAsync() => inner.DisposeAsync();
     }
 
     public IWriteHandle CreateWrite(string path, long preallocate, bool unbuffered)

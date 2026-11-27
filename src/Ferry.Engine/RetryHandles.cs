@@ -162,6 +162,8 @@ internal sealed class RetryReadHandle(IReadHandle initial, Func<ValueTask<IReadH
 
     public FileEntry GetEntry() => Volatile.Read(ref _handle)!.GetEntry();
 
+    public string GetFinalPath() => Volatile.Read(ref _handle)!.GetFinalPath();
+
     public ValueTask DisposeAsync() => Volatile.Read(ref _handle)?.DisposeAsync() ?? ValueTask.CompletedTask;
 }
 

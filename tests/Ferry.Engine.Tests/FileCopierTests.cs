@@ -1134,6 +1134,8 @@ internal sealed class HookFileSystem(IFileSystem inner) : IFileSystem
 
         public FileEntry GetEntry() => inner.GetEntry();
 
+        public string GetFinalPath() => inner.GetFinalPath();
+
         public ValueTask DisposeAsync() => inner.DisposeAsync();
 
         private async ValueTask<int> HeldReadAsync(Memory<byte> buffer, long offset, CancellationToken ct)

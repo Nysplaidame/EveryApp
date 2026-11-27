@@ -1,3 +1,5 @@
+using EveryApp.Core.FileSystem;
+
 namespace Ferry.Engine;
 
 /// <summary>Progress of one file: <paramref name="Done"/> of <paramref name="Total"/> bytes are written.</summary>
@@ -89,6 +91,19 @@ public sealed class FileCopyHooks
     /// <see cref="CopyMessages.PartOutsideDestination"/>. Stops a folder swapped for a link between the check and the write.
     /// </summary>
     public string? MustBeUnder { get; init; }
+
+    /// <summary>
+    /// The file the job listed (its id and volume). When set, the file the copier actually opens must be that same file, asked through the
+    /// open handle; otherwise the copy fails with <see cref="CopyMessages.SourceChanged"/> and nothing is written. An id of zero (a file system
+    /// that gives no ids) is not compared. Stops a file or folder swapped after the listing from being copied in its place.
+    /// </summary>
+    public FileIdentity? ExpectedSource { get; init; }
+
+    /// <summary>
+    /// The source root's final path (links resolved). When set, the opened source's final path, read from its own handle, must be inside it;
+    /// otherwise the copy fails with <see cref="CopyMessages.SourceChanged"/>. Left null when the job follows links on purpose.
+    /// </summary>
+    public string? SourceMustBeUnder { get; init; }
 
     /// <summary>Plain status lines while the copy waits, e.g. "Waiting for the network drive…". Called from copy threads.</summary>
     public IProgress<string>? Status { get; init; }

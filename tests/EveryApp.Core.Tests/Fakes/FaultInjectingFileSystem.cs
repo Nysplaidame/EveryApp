@@ -283,6 +283,8 @@ public sealed class FaultInjectingFileSystem(IFileSystem inner) : IFileSystem
 
         public FileEntry GetEntry() => _dead ? throw new FileSystemException(path, IoErrorKind.NetworkLost, null) : inner.GetEntry();
 
+        public string GetFinalPath() => _dead ? throw new FileSystemException(path, IoErrorKind.NetworkLost, null) : inner.GetFinalPath();
+
         public ValueTask DisposeAsync() => inner.DisposeAsync();
     }
 

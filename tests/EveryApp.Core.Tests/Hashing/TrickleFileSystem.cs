@@ -67,6 +67,8 @@ internal sealed class TrickleFileSystem(IFileSystem inner, int maxPerRead) : IFi
 
         public FileEntry GetEntry() => h.GetEntry();
 
+        public string GetFinalPath() => h.GetFinalPath();
+
         public ValueTask DisposeAsync() => h.DisposeAsync();
     }
 }

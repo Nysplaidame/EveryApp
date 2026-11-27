@@ -113,8 +113,19 @@ public sealed class FileCopier
             await pause.WaitIfPausedAsync(ct).ConfigureAwait(false);
             var before = await retry.RunAsync(() => Task.FromResult(_fs.GetEntryFollowingLinks(source)), RetryPolicy.IsTransient, hooks?.Status, ct).ConfigureAwait(false);
             var length = before.Length;
+            if (IsNotTheListedFile(hooks, before))
+            {
+                return Failed(source, IoErrorKind.Other, CopyMessages.SourceChanged, part) with { NoRetry = true };
+            }
+
             if (hooks is { TryBlockClone: true } && length > 0)
             {
+                // Accepted risk (as for the clone itself): the clone is made by name, so its source is checked by name here.
+                if (hooks.SourceMustBeUnder is { } sourceRoot && !PathSafety.IsSameOrUnderFinal(sourceRoot, _fs.GetFinalPath(source)))
+                {
+                    return Failed(source, IoErrorKind.Other, CopyMessages.SourceChanged, part) with { NoRetry = true };
+                }
+
                 part = TryClone(source, destination, hooks);
                 if (part is not null)
                 {
@@ -147,6 +158,14 @@ public sealed class FileCopier
             if (reader.Length != length)
             {
                 return Failed(source, IoErrorKind.Other, CopyMessages.SourceChanged, part);
+            }
+
+            // The file opened must be the one listed, and inside its source folder: asked through this handle, never by name, so a file or
+            // folder swapped after the listing (or between the look-up above and the open) is refused before anything is written.
+            if (IsNotTheListedFile(hooks, reader.GetEntry())
+                || (hooks?.SourceMustBeUnder is { } mustBeUnder && !PathSafety.IsSameOrUnderFinal(mustBeUnder, reader.GetFinalPath())))
+            {
+                return Failed(source, IoErrorKind.Other, CopyMessages.SourceChanged, part) with { NoRetry = true };
             }
 
             reader = new RetryReadHandle(reader, async () =>
@@ -584,6 +603,11 @@ public sealed class FileCopier
             return Failed(source, ex.Kind, CopyMessages.VerifyCouldNotRead, part) with { VerifyFailed = true };
         }
     }
+
+    /// <summary>True when the job said which file it listed and <paramref name="entry"/> is another one (ids of zero are not compared).</summary>
+    private static bool IsNotTheListedFile(FileCopyHooks? hooks, FileEntry entry) =>
+        hooks?.ExpectedSource is { } expected && expected.FileId != UInt128.Zero
+        && (entry.FileId != expected.FileId || entry.VolumeSerial != expected.VolumeSerial);
 
     private static FileCopyOutcome Failed(string source, IoErrorKind kind, string message, string? part) =>
         new(false, null, new Problem(source, kind, message), part);

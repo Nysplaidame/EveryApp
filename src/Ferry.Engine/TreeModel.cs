@@ -62,6 +62,12 @@ internal static class TreePaths
 
     public static bool SameObject(FileEntry a, FileEntry b) => a.VolumeSerial == b.VolumeSerial && a.FileId == b.FileId;
 
+    /// <summary>
+    /// True when <paramref name="now"/> is not the item that was listed as <paramref name="listed"/> (another file or folder was put under its
+    /// name). A listed id of zero (a file system that gives no ids) cannot be compared and counts as the same.
+    /// </summary>
+    public static bool IsSwapped(FileEntry listed, FileEntry now) => listed.FileId != UInt128.Zero && !SameObject(listed, now);
+
     public static bool IsNameSurrogate(FileEntry entry) => entry.IsReparsePoint && (entry.ReparseTag & NameSurrogateBit) != 0;
 
     /// <summary>The last path segment, or "" for a drive or share root (whose contents go straight into the destination).</summary>

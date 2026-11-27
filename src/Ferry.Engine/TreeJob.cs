@@ -202,7 +202,7 @@ internal sealed partial class TreeJob
         if (root.MoveByRename)
         {
             var files = root.Items.Where(i => i.Kind == TreeItemKind.File).ToList();
-            if (_mover.MoveWhole(root.Entry.FullPath, root.Key, root.JournalKey, files.Count, files.Sum(i => i.Entry.Length)) != MoveOutcome.NotSameDevice)
+            if (_mover.MoveWhole(root.Entry, root.Key, root.JournalKey, files.Count, files.Sum(i => i.Entry.Length)) != MoveOutcome.NotSameDevice)
             {
                 return;
             }
@@ -232,6 +232,7 @@ internal sealed partial class TreeJob
         var skipped = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var clone = _clone;
         var localDrives = _localDrives;
+        var sourceFinal = SourceRootFinal(root);
         foreach (var item in root.Items)
         {
             if (_outcome.Stopped || StopForFailure(inFlight))
@@ -271,7 +272,7 @@ internal sealed partial class TreeJob
                     _mover.MoveLink(_sameVolume, item);
                     break;
                 default:
-                    await ProcessFileAsync(root, item, inFlight, clone, localDrives).ConfigureAwait(false);
+                    await ProcessFileAsync(root, item, inFlight, clone, localDrives, sourceFinal).ConfigureAwait(false);
                     break;
             }
         }
@@ -285,6 +286,27 @@ internal sealed partial class TreeJob
     {
         var name = Path.GetFileName(key);
         return name.Length > 0 && (name[^1] is '.' or ' ' || ShortNameLike().IsMatch(name));
+    }
+
+    /// <summary>
+    /// The root's final path (links resolved), which every opened source file must lie under; null when the job follows links on purpose,
+    /// or when the file system cannot say (then only the file id is compared).
+    /// </summary>
+    private string? SourceRootFinal(TreeRoot root)
+    {
+        if (FollowsLinks)
+        {
+            return null;
+        }
+
+        try
+        {
+            return _fs.GetFinalPath(root.Path);
+        }
+        catch (FileSystemException)
+        {
+            return null;
+        }
     }
 
     [System.Text.RegularExpressions.GeneratedRegex(@"~[0-9]+(\.[^.]*)?$")]
@@ -366,7 +388,7 @@ internal sealed partial class TreeJob
 
         if (existing is null && _sameVolume && _options.Exclude.Count == 0 && item.Key != root.Key)
         {
-            if (_mover.MoveWhole(item.Entry.FullPath, item.Key, item.JournalKey, files, bytes) != MoveOutcome.NotSameDevice)
+            if (_mover.MoveWhole(item.Entry, item.Key, item.JournalKey, files, bytes) != MoveOutcome.NotSameDevice)
             {
                 return false;
             }
@@ -403,7 +425,7 @@ internal sealed partial class TreeJob
     /// Decides one file (resume checks, existing target, conflict rule or question, free name) right here, in planned order, then hands its
     /// copy to <paramref name="inFlight"/>. Waits for a free place first, so no question is asked and no name chosen ahead of a free copy.
     /// </summary>
-    private async Task ProcessFileAsync(TreeRoot root, TreeItem item, InFlightCopies inFlight, bool clone, bool localDrives)
+    private async Task ProcessFileAsync(TreeRoot root, TreeItem item, InFlightCopies inFlight, bool clone, bool localDrives, string? sourceFinal)
     {
         var entry = item.Entry;
         if (_recovery.Completed.Contains(item.JournalKey))
@@ -449,7 +471,7 @@ internal sealed partial class TreeJob
                 }
 
                 handedOver = true; // from here the copy ends the file's progress and gives its place back, whatever happens
-                return inFlight.StartAsync(target, () => CopyAndEndAsync(root, item, target, targetKey, replace, started, clone, localDrives));
+                return inFlight.StartAsync(target, () => CopyAndEndAsync(root, item, target, targetKey, replace, started, clone, localDrives, sourceFinal));
             }
 
             if (MayResolveToAnotherName(item.Key))
@@ -580,11 +602,12 @@ internal sealed partial class TreeJob
 
     /// <summary>The part of a file that may run alongside others: its copy, then the end of its progress whatever happened.</summary>
     private async Task CopyAndEndAsync(
-        TreeRoot root, TreeItem item, string target, string targetKey, bool replace, ProgressTracker.FileSlot slot, bool clone, bool localDrives)
+        TreeRoot root, TreeItem item, string target, string targetKey, bool replace, ProgressTracker.FileSlot slot, bool clone, bool localDrives,
+        string? sourceFinal)
     {
         try
         {
-            await CopyFileAsync(root, item, target, targetKey, replace, slot, clone, localDrives).ConfigureAwait(false);
+            await CopyFileAsync(root, item, target, targetKey, replace, slot, clone, localDrives, sourceFinal).ConfigureAwait(false);
         }
         finally
         {
@@ -597,7 +620,8 @@ internal sealed partial class TreeJob
     /// that differs per root comes in as arguments, never from fields the dispatcher changes while copies run.
     /// </summary>
     private async Task CopyFileAsync(
-        TreeRoot root, TreeItem item, string target, string targetKey, bool replace, ProgressTracker.FileSlot slot, bool clone, bool localDrives)
+        TreeRoot root, TreeItem item, string target, string targetKey, bool replace, ProgressTracker.FileSlot slot, bool clone, bool localDrives,
+        string? sourceFinal)
     {
         var entry = item.Entry;
         var source = entry.FullPath;
@@ -615,6 +639,12 @@ internal sealed partial class TreeJob
             catch (FileSystemException ex)
             {
                 Fail(item, new Problem(TreePaths.Display(source), ex.Kind, CopyMessages.For(ex.Kind, whileWriting: false, CopyMessages.DriveOf(_destination))));
+                return;
+            }
+
+            if (TreePaths.IsSwapped(entry, expected))
+            {
+                Fail(item, new Problem(TreePaths.Display(source), IoErrorKind.Other, CopyMessages.SourceChanged)); // never move another file in its place
                 return;
             }
         }
@@ -646,6 +676,10 @@ internal sealed partial class TreeJob
                 // a move never skips it, because the source is deleted right after.
                 SkipSmallFileFlush = !_isMove,
                 MustBeUnder = _destinationFinal,
+
+                // The file opened must be the very file listed, inside its source folder (a followed file link may lead anywhere, on purpose).
+                ExpectedSource = FollowsLinks && TreePaths.IsNameSurrogate(entry) ? null : new FileIdentity(entry.FileId, entry.VolumeSerial),
+                SourceMustBeUnder = sourceFinal,
                 Status = _progress.StatusSink(),
 
                 // The copier reads the copy back before the real name appears (small files before their handle closes, see VerifyInCopier).
@@ -766,6 +800,11 @@ internal sealed partial class TreeJob
         catch (FileSystemException)
         {
             return false;
+        }
+
+        if (TreePaths.IsSwapped(item.Entry, before))
+        {
+            return false; // not the file listed: the copy then refuses it
         }
 
         if (await _recovery.FindCommittedAsync(item, _options.HashAlgorithm, _ct).ConfigureAwait(false) is not { } found)

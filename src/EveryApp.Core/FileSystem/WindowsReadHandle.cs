@@ -65,6 +65,18 @@ internal sealed class WindowsReadHandle : IReadHandle
         }
     }
 
+    public string GetFinalPath()
+    {
+        try
+        {
+            return NativeFileApi.GetFinalPath(_handle);
+        }
+        catch (Exception ex) when (WindowsFileSystem.IsTranslatable(ex) || ex is ObjectDisposedException)
+        {
+            throw ErrorKinds.Translate(_path, ex);
+        }
+    }
+
     public async ValueTask DisposeAsync()
     {
         // Cancels and waits (bounded) for in-flight reads before closing the handle or releasing the buffer.
