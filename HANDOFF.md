@@ -4,6 +4,11 @@ Newest at the top. Each entry: `## <what> — <date> (<agent>)`, ≤10 lines, en
 Keep under ~300 lines; move older entries to `docs/archive/HANDOFF-history-<from>-<to>.md` in the same commit.
 Live state belongs in `STATE.md`; plan-execution detail in the superpowers progress log; decisions in `docs/adr/`.
 
+## Start-up, sector size, fair bench: NVMe gate met — 27 November 2026 (Claude)
+
+Start-up: `DevicesOf` spent 560 ms per run on a WMI Storage Spaces lookup; now only when a disk's bus type is Storage Spaces (Task 9; one-file copy 0.73 → 0.19 s). Mixed verify-on gap: the small-file check itself costs ~nothing; Ferry alone 45 s vs FastCopy 50 s, but a FastCopy run slows whatever copy runs next (cause unknown; not CPU, not drive busy). Per-step timing found two extra handle opens per checked file for the sector size: now once per job root (Task 10; after-FastCopy run 80 → 61 s). `bench.ps1` runs each tool off then on back to back. Mixed, 3 rounds: 0.90 / 0.64; large 0.78 / 1.00. Reviews clean. Full `./build.ps1`: 881 tests, 880 passed, 1 skipped.
+Touches: `src/EveryApp.Core/Scheduling/{WindowsDeviceResolver,IVolumeApi,NativeVolumeApi}.cs`, `src/EveryApp.Core/NativeMethods.txt`, `src/Ferry.Engine/{FileCopier,CopyProgress,TreeJob,SectorSizeCache}.cs`, tests, `bench.ps1`, `docs/perf/results.md`, `STATE.md`.
+
 ## Large files: several chunks in flight — 27 November 2026 (Claude)
 
 Found with probes on the drives (user-approved writes): a plain copy runs 1.02 GB/s with one 4 MiB chunk in flight and 2.5 GB/s with 4; Ferry ran ~1.0 because a write to a fresh part file runs inside the Windows call, so its read and write loops never overlapped. Task 8 keeps 4 reads and 4 writes in flight per large file (hashed in order; rescue still one at a time) and the check reads 4 ahead; retry handles made safe for concurrent calls. Reviews clean; security review L1–L3 fixed (identity checked on the reopened handle, stop after a failed check), threat model updated. Large set vs FastCopy, 1 round: 0.78 off / 1.00 on (pass; were 1.28 / 1.39). Full `./build.ps1`: 871 tests, 870 passed, 1 skipped.

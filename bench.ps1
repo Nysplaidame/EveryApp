@@ -3,7 +3,8 @@
   Ferry speed benchmarks (M1 plan, Task 16). Not part of build.ps1 or CI: it needs real drives and FastCopy.
 .DESCRIPTION
   Reads bench.local.json (git-ignored; copy bench.example.json). For each set it runs FastCopy and `ferry copy`, verify off and on,
-  alternating which tool goes first, clearing the destination before every run and the standby cache when run as administrator.
+  each tool verify off then on back to back, alternating which tool goes first each round, clearing the destination before every
+  run and the standby cache when run as administrator.
   Writes the medians and ratios to artifacts/bench/comparison.md and .json. Drive models only: no drive letters or paths in the output.
 .PARAMETER Generate
   Create each set's source data first (only into a missing or empty folder).
@@ -159,10 +160,13 @@ foreach ($set in @($cfg.sets | Where-Object { $_.name -like $Only })) {
     foreach ($key in 'FastCopy|False', 'Ferry|False', 'FastCopy|True', 'Ferry|True') { $runs[$key] = [Collections.Generic.List[double]]::new() }
 
     Write-Host "==> $($set.name): $($want.Count) files, $([math]::Round($want.Bytes / 1MB)) MiB, $Rounds rounds" -ForegroundColor Cyan
+    # Fair order: each tool runs verify off then verify on back to back, and the tool that goes first swaps every round. A run straight
+    # after the other tool's run can be slowed by what that run left behind (measured 2026-11-27: Ferry's verify-on run took 45 s alone and
+    # 60-80 s straight after FastCopy), so neither tool's verify-on run may always follow the other tool.
     for ($round = 1; $round -le $Rounds; $round++) {
         $tools = if ($round % 2) { 'FastCopy', 'Ferry' } else { 'Ferry', 'FastCopy' }
-        foreach ($verify in $false, $true) {
-            foreach ($tool in $tools) {
+        foreach ($tool in $tools) {
+            foreach ($verify in $false, $true) {
                 $seconds = Invoke-Timed $tool $verify $source $set.dest
                 $got = Get-TreeSize (Join-Path $set.dest $leaf)
                 if ($got.Count -ne $want.Count -or $got.Bytes -ne $want.Bytes) {

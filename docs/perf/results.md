@@ -128,10 +128,31 @@ Ferry is now steady from run to run; FastCopy is not (its verify-on runs were fa
 - Per-step timing showed only "open the source and create the part file" slowing down (107 → 412 thread-seconds). With verify on, Ferry opened two extra handles per file just to ask the sector size. Ferry now asks once per job root (Task 10).
 - After that change, FastCopy (verify on) then Ferry (verify on) back to back: FastCopy 38.4 s, Ferry **61.1 s** (was 79.7 s). Better, but opening files is still slower right after a FastCopy run; the cause (antivirus or the search indexer catching up after tens of thousands of new files is likely) is not proven.
 
+### Mixed set, new run order (2026-11-27, 3 rounds)
+
+`bench.ps1` now runs each tool verify off then on back to back, swapping which tool goes first each round.
+
+| Verify | FastCopy (3 runs) | Ferry (3 runs) | Ratio (medians) |
+|---|---|---|---:|
+| off | 47.5 / 47.3 / 51.3 s | 42.7 / 41.5 / 62.1 s | 0.90 |
+| on | 62.9 / 63.0 / 56.1 s | 40.0 / 40.2 / 39.6 s | 0.64 |
+
+**This order is not neutral either.** A FastCopy run slows whatever runs straight after it, FastCopy included, and the next run absorbs it: FastCopy's verify-on runs took 48–50 s when they followed a Ferry run (previous order) and 56–63 s when they followed its own verify-off run (this order); Ferry's one slow run here (62.1 s, verify off) is the one that followed FastCopy's verify-on run, and Ferry's next run was back to 39.6 s. Waiting until the CPU was idle did not clear it (Ferry 59.6 s after an 8 s quiet period). The cause is not known (Windows' memory standby list after FastCopy's cached I/O is a candidate; clearing it needs an administrator, and Ferry refuses to run elevated).
+
+Like-for-like comparisons, verify on, both from today:
+
+| Both runs straight after… | FastCopy | Ferry | Ratio |
+|---|---:|---:|---:|
+| a Ferry run | 47.7–49.9 s | 39.6–40.2 s | about 0.81 |
+| a FastCopy run | 56.1–63.0 s | 61.1 s (one run) | about 1.0 |
+
+Either way the gate (≤ 1.10) is met for mixed with verify on.
+
 ### Still open
 
 - Large files: done on this setup (above). The single-NVMe source of 2026-11-22 is gone (now part of an array), so this Storage Space → NVMe setup is the baseline from here on.
-- Mixed with verify on (1.45 in the gate run): mostly an order effect (Ferry is slower right after a FastCopy run, see above). The bench should alternate which tool's verify-on run comes first so both meet the same conditions, then rerun.
+- Mixed with verify on: met (0.64 in the new order; about 0.81 or 1.0 like for like, above).
+- A FastCopy run slows the next copy on this PC (any tool); cause unknown. A truly neutral bench would put the same untimed run (or a cache clear) before every timed run.
 - Storage Space users still pay about 0.56 s per run for the WMI lookup.
 - HDD sets: not run (no HDD available).
 
