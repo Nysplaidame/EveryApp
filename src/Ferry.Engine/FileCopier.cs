@@ -1,7 +1,6 @@
 using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
 using System.Security.Cryptography;
-using System.Threading.Channels;
 using EveryApp.Core.FileSystem;
 using EveryApp.Core.Hashing;
 using EveryApp.Core.Jobs;
@@ -14,7 +13,7 @@ namespace Ferry.Engine;
 /// the right size, verified when asked, and the source did not change meanwhile; the real name never holds partial content. The one exception is
 /// <see cref="FileCopyHooks.SkipSmallFileFlush"/>: a small file may then reach its real name before its data is on disk, so a power cut can leave
 /// it blank, and the caller journals it (<see cref="FileCopyOutcome.Flushed"/>) to check it again on resume. Every failure or cancellation
-/// deletes the part file. Large files stream through a reader loop and a writer loop joined by a small bounded queue of pooled, aligned buffers.
+/// deletes the part file. Large files keep several reads and several writes of pooled, aligned chunks in flight at once.
 /// Thread safe: one instance can run many copies at once.
 /// </summary>
 public sealed class FileCopier
@@ -29,7 +28,7 @@ public sealed class FileCopier
 
     public const int MaxBufferSizeBytes = 256 * 1024 * 1024;
 
-    /// <summary>Chunks that may wait between the reader and the writer.</summary>
+    /// <summary>Chunks one large file keeps in flight on each side: this many reads and this many writes at once.</summary>
     internal const int PipelineDepth = 4;
 
     private const int BufferedAlignment = 4096;
@@ -771,6 +770,9 @@ public sealed class FileCopier
 
     private readonly record struct Chunk(AlignedBuffer Buffer, long Offset, int Length);
 
+    /// <summary>A read in flight: its buffer, where it reads, and the read itself (awaited exactly once).</summary>
+    private record struct PendingRead(AlignedBuffer Buffer, long Offset, int Count, ValueTask Task);
+
     /// <summary>The caller refused a part-file name (it could not journal it), so no part file may be created.</summary>
     private sealed class PartNotRecordedException : Exception
     {
@@ -780,7 +782,7 @@ public sealed class FileCopier
         }
     }
 
-    /// <summary>State of one copy's data transfer. The read side and the write side each touch only their own fields.</summary>
+    /// <summary>State of one copy's data transfer. Reads and writes run several at once; shared state is interlocked or under a lock.</summary>
     private sealed class Transfer(
         IReadHandle reader,
         IWriteHandle writer,
@@ -799,10 +801,11 @@ public sealed class FileCopier
         RescueReader? rescue,
         int pipelineDepth)
     {
-        public List<LostRange> Lost { get; } = [];
-        private Exception? _firstFailure; // whichever loop faulted first
-        private long _done; // write side
-        private long _lastReport = time.GetTimestamp(); // write side
+        public List<LostRange> Lost { get; } = []; // read side only (rescue mode reads one chunk at a time)
+        private readonly Lock _progressLock = new();
+        private Exception? _firstFailure; // whichever read or write faulted first
+        private long _done; // bytes written; several writes add to it as they finish
+        private long _lastReport = time.GetTimestamp(); // under _progressLock
 
         public async Task RunAsync(CancellationToken ct)
         {
@@ -821,16 +824,20 @@ public sealed class FileCopier
         }
 
         /// <summary>Reports progress at most every <see cref="ProgressInterval"/> unless forced (keeps the per-chunk path allocation free).</summary>
+        /// <remarks>Reports are made one at a time and read the running total inside the lock, so the value reported never goes down.</remarks>
         public void ReportProgress(bool force)
         {
-            var now = time.GetTimestamp();
-            if (!force && time.GetElapsedTime(_lastReport, now) < ProgressInterval)
+            lock (_progressLock)
             {
-                return;
-            }
+                var now = time.GetTimestamp();
+                if (!force && time.GetElapsedTime(_lastReport, now) < ProgressInterval)
+                {
+                    return;
+                }
 
-            _lastReport = now;
-            progress.Report(new FileProgress(name, _done, length));
+                _lastReport = now;
+                progress.Report(new FileProgress(name, Interlocked.Read(ref _done), length));
+            }
         }
 
         /// <summary>Small files: one read, one write, no queue or extra tasks.</summary>
@@ -842,6 +849,7 @@ public sealed class FileCopier
             {
                 await pause.WaitIfPausedAsync(ct).ConfigureAwait(false);
                 await ReadChunkAsync(buffer, 0, count, ct).ConfigureAwait(false);
+                hasher?.Append(buffer.Memory.Span[..count]);
                 if (limiter is not null)
                 {
                     await limiter.WaitAsync(count, ct).ConfigureAwait(false);
@@ -855,37 +863,119 @@ public sealed class FileCopier
             }
         }
 
+        /// <summary>
+        /// Keeps up to <c>pipelineDepth</c> reads and as many writes in flight (rescue mode: one read at a time, its bisection assumes it).
+        /// Reads are issued at increasing offsets and taken back in issue order, so the hash sees the file in order; the speed limit waits
+        /// per chunk before its write starts. Writes may finish in any order (each chunk has its own offset) and give their buffer back
+        /// themselves. At most 2 × depth buffers are rented at once. Every read and write has ended before this returns, whatever happens.
+        /// </summary>
+        /// <remarks>
+        /// Each read and write starts on a thread-pool thread: Windows runs a write that extends the part file's valid data (every write of a
+        /// fresh part does) inside the call itself, so issuing them one after another from one thread would run them one at a time.
+        /// Rules from ruling R27: (1) the final short (unaligned) tail write is issued only after every earlier write has completed, because
+        /// the handle zero-pads it to a whole sector and trims the file to the data end on flush; (2) progress adds bytes as each write completes
+        /// and never goes down. Part handles are opened without write-through (it slowed copies, task 16): FlushFileBuffers runs before the
+        /// rename, so the real name only appears on durable data (small files may skip it; the journal then marks them for a recheck on resume).
+        /// </remarks>
         private async Task RunPipelineAsync(CancellationToken ct)
         {
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            var channel = Channel.CreateBounded<Chunk>(new BoundedChannelOptions(pipelineDepth)
+            var token = cts.Token;
+            var readDepth = rescue is null ? pipelineDepth : 1;
+            var reads = new PendingRead[readDepth];
+            var writes = new ValueTask[pipelineDepth];
+            int readHead = 0, readCount = 0, writeHead = 0, writeCount = 0;
+            AlignedBuffer? inHand = null;
+            Exception? failure = null;
+            try
             {
-                SingleReader = true,
-                SingleWriter = true,
-                FullMode = BoundedChannelFullMode.Wait,
-            });
+                long nextRead = 0;
+                for (long nextWrite = 0; nextWrite < length;)
+                {
+                    while (readCount < readDepth && nextRead < length)
+                    {
+                        await pause.WaitIfPausedAsync(token).ConfigureAwait(false); // no new chunk starts while paused
+                        var count = (int)Math.Min(chunkSize, length - nextRead);
+                        var buffer = pool.Rent(chunkSize);
+                        var slot = (readHead + readCount) % readDepth;
+                        reads[slot] = new PendingRead(buffer, nextRead, count, default);
+                        readCount++; // counted before it starts, so a failure still gives the buffer back
+#pragma warning disable CA2012 // Kept in a ring and awaited exactly once, in issue order (or drained once on failure).
+                        reads[slot].Task = ReadInFlightAsync(buffer, nextRead, count, cts);
+#pragma warning restore CA2012
+                        nextRead += count;
+                    }
 
-            // Channel calls take no token so they reuse their internal wait objects (no allocation per chunk). Cancelling closes the channel instead.
-            using var registration = cts.Token.Register(
-                static s => ((ChannelWriter<Chunk>)s!).TryComplete(new OperationCanceledException()), channel.Writer);
-            var readTask = ReadLoopAsync(channel.Writer, cts);
-            var writeTask = WriteLoopAsync(channel.Reader, cts);
-            await Task.WhenAll(readTask, writeTask).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+                    var read = reads[readHead];
+                    reads[readHead] = default;
+                    readHead = (readHead + 1) % readDepth;
+                    readCount--;
+                    inHand = read.Buffer;
+                    await read.Task.ConfigureAwait(false);
+                    hasher?.Append(read.Buffer.Memory.Span[..read.Count]);
+                    if (limiter is not null)
+                    {
+                        await limiter.WaitAsync(read.Count, token).ConfigureAwait(false);
+                    }
 
-            // Both loops have stopped: give back any chunk still queued.
-            while (channel.Reader.TryRead(out var left))
-            {
-                pool.Return(left.Buffer);
-            }
+                    // A short unaligned tail is padded by the handle, so it goes last, alone.
+                    var tail = writeUnbuffered && read.Count % alignment != 0;
+                    while (writeCount > 0 && (writeCount == writes.Length || tail))
+                    {
+                        var oldest = writes[writeHead];
+                        writes[writeHead] = default;
+                        writeHead = (writeHead + 1) % writes.Length;
+                        writeCount--;
+                        await oldest.ConfigureAwait(false);
+                    }
 
-            if (readTask.IsCompletedSuccessfully && writeTask.IsCompletedSuccessfully)
-            {
+#pragma warning disable CA2012 // Kept in a ring and awaited exactly once, in issue order (or drained once on failure).
+                    writes[(writeHead + writeCount) % writes.Length] = WriteInFlightAsync(new Chunk(read.Buffer, read.Offset, read.Count), cts);
+#pragma warning restore CA2012
+                    writeCount++;
+                    inHand = null; // the write gives it back
+                    nextWrite += read.Count;
+                }
+
+                while (writeCount > 0)
+                {
+                    var oldest = writes[writeHead];
+                    writes[writeHead] = default;
+                    writeHead = (writeHead + 1) % writes.Length;
+                    writeCount--;
+                    await oldest.ConfigureAwait(false);
+                }
+
                 return;
             }
+            catch (Exception ex)
+            {
+                failure = ex;
+                RecordFailure(ex);
+                await cts.CancelAsync().ConfigureAwait(false);
+            }
 
-            // Report the failure that started it, not the cancellation (or aborted I/O) it then caused on the other side.
+            // Stopped early: wait for every read and write still running before any buffer goes back or a handle closes.
+            Exception? drained = null;
+            for (; readCount > 0; readCount--, readHead = (readHead + 1) % readDepth)
+            {
+                drained = await DrainAsync(reads[readHead].Task).ConfigureAwait(false) ?? drained;
+                pool.Return(reads[readHead].Buffer);
+            }
+
+            for (; writeCount > 0; writeCount--, writeHead = (writeHead + 1) % writes.Length)
+            {
+                drained = await DrainAsync(writes[writeHead]).ConfigureAwait(false) ?? drained;
+            }
+
+            if (inHand is not null)
+            {
+                pool.Return(inHand);
+            }
+
+            // Report the failure that started it, not the cancellation (or aborted I/O) it then caused elsewhere.
             var first = Volatile.Read(ref _firstFailure);
-            var primary = IsReal(first) ? first : RealFailure(readTask) ?? RealFailure(writeTask);
+            var primary = IsReal(first) ? first : IsReal(failure) ? failure : drained;
             if (primary is not null)
             {
                 ExceptionDispatchInfo.Throw(primary);
@@ -895,76 +985,40 @@ public sealed class FileCopier
             throw new OperationCanceledException(ct);
         }
 
-        private static Exception? RealFailure(Task task) => IsReal(task.Exception?.InnerException) ? task.Exception!.InnerException : null;
+        /// <summary>Waits for an I/O that is being abandoned; returns its failure when it is a real one.</summary>
+        private static async ValueTask<Exception?> DrainAsync(ValueTask pending)
+        {
+            try
+            {
+                await pending.ConfigureAwait(false);
+                return null;
+            }
+            catch (Exception ex)
+            {
+                return IsReal(ex) ? ex : null;
+            }
+        }
 
-        private static bool IsReal(Exception? e) => e is not null and not OperationCanceledException and not ChannelClosedException;
+        private static bool IsReal(Exception? e) => e is not null and not OperationCanceledException;
 
         private void RecordFailure(Exception ex) => Interlocked.CompareExchange(ref _firstFailure, ex, null);
 
-        private async Task ReadLoopAsync(ChannelWriter<Chunk> output, CancellationTokenSource cts)
+        /// <summary>One chunk's read, started on the thread pool; a failure stops the whole transfer.</summary>
+        [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
+        private async ValueTask ReadInFlightAsync(AlignedBuffer buffer, long offset, int count, CancellationTokenSource cts)
         {
-            var ct = cts.Token;
-            AlignedBuffer? buffer = null;
             try
             {
-                for (long offset = 0; offset < length;)
+                if (ThreadPoolHop.YieldReachesPool)
                 {
-                    await pause.WaitIfPausedAsync(ct).ConfigureAwait(false);
-                    var count = (int)Math.Min(chunkSize, length - offset);
-                    buffer = pool.Rent(chunkSize);
-                    await ReadChunkAsync(buffer, offset, count, ct).ConfigureAwait(false);
-                    if (limiter is not null)
-                    {
-                        await limiter.WaitAsync(count, ct).ConfigureAwait(false);
-                    }
-
-                    await output.WriteAsync(new Chunk(buffer, offset, count)).ConfigureAwait(false);
-                    buffer = null; // the write side owns it now
-                    offset += count;
+                    await Task.Yield();
+                }
+                else
+                {
+                    await default(ThreadPoolHop);
                 }
 
-                output.TryComplete();
-            }
-            catch (Exception ex)
-            {
-                if (buffer is not null)
-                {
-                    pool.Return(buffer);
-                }
-
-                RecordFailure(ex);
-                output.TryComplete(ex);
-                await cts.CancelAsync().ConfigureAwait(false);
-                throw;
-            }
-        }
-
-        // Design note for Task 16 (ruling R27): this loop keeps ONE write in flight per file. To raise it, keep up to N WriteChunkAsync
-        // calls outstanding (e.g. a SemaphoreSlim(N) or a small ring of pending tasks) and return each chunk's buffer when its own write
-        // completes. The change is local: every chunk carries its own offset, so writes may complete in any order. Two rules must hold:
-        // (1) the final short (unaligned) tail write is issued only after every earlier write has completed, because the handle zero-pads
-        // it to a whole sector and trims the file to the data end on flush; (2) progress adds bytes as each write completes (Interlocked)
-        // and never assumes in-order completion. Part handles are opened without write-through (it slowed copies, task 16): FlushFileBuffers runs before
-        // the rename, so the real name only appears on durable data (small files may skip it; the journal then marks them for a recheck on resume).
-        private async Task WriteLoopAsync(ChannelReader<Chunk> input, CancellationTokenSource cts)
-        {
-            var ct = cts.Token;
-            try
-            {
-                while (await input.WaitToReadAsync().ConfigureAwait(false))
-                {
-                    while (input.TryRead(out var chunk))
-                    {
-                        try
-                        {
-                            await WriteChunkAsync(chunk, ct).ConfigureAwait(false);
-                        }
-                        finally
-                        {
-                            pool.Return(chunk.Buffer);
-                        }
-                    }
-                }
+                await ReadChunkAsync(buffer, offset, count, cts.Token).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
@@ -974,7 +1028,36 @@ public sealed class FileCopier
             }
         }
 
-        /// <summary>Fills <paramref name="count"/> bytes (reads may come back short, so it loops) and hashes exactly those bytes, in order.</summary>
+        /// <summary>One chunk's write, started on the thread pool; gives the chunk's buffer back when it ends, however it ends.</summary>
+        [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
+        private async ValueTask WriteInFlightAsync(Chunk chunk, CancellationTokenSource cts)
+        {
+            try
+            {
+                if (ThreadPoolHop.YieldReachesPool)
+                {
+                    await Task.Yield();
+                }
+                else
+                {
+                    await default(ThreadPoolHop);
+                }
+
+                await WriteChunkAsync(chunk, cts.Token).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                RecordFailure(ex);
+                await cts.CancelAsync().ConfigureAwait(false);
+                throw;
+            }
+            finally
+            {
+                pool.Return(chunk.Buffer);
+            }
+        }
+
+        /// <summary>Fills <paramref name="count"/> bytes (reads may come back short, so it loops). The caller hashes them, in file order.</summary>
         [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
         private async ValueTask ReadChunkAsync(AlignedBuffer buffer, long offset, int count, CancellationToken ct)
         {
@@ -1009,7 +1092,6 @@ public sealed class FileCopier
                 }
             }
 
-            hasher?.Append(memory.Span[..count]);
         }
 
         [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
@@ -1035,8 +1117,8 @@ public sealed class FileCopier
                 await writer.WriteAsync(data[whole..], chunk.Offset + whole, ct).ConfigureAwait(false);
             }
 
-            _done += chunk.Length;
-            ReportProgress(force: false);
+            Interlocked.Add(ref _done, chunk.Length);
+            ReportProgress(force: pause.IsPaused); // while paused, show every write that still finishes
         }
     }
 }

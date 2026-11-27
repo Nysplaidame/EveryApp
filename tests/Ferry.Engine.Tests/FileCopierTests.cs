@@ -1031,7 +1031,21 @@ internal sealed class HookFileSystem(IFileSystem inner) : IFileSystem
     /// <summary>Awaited before each read at (path, offset), so a test can hold a read (e.g. the check of a closed part).</summary>
     public Func<string, long, CancellationToken, ValueTask>? BeforeRead { get; set; }
 
+    /// <summary>Called after each read at (path, offset) has returned its data.</summary>
+    public Action<string, long>? AfterRead { get; set; }
+
+    /// <summary>Called after each write to (path, offset) has finished.</summary>
+    public Action<string, long>? AfterWrite { get; set; }
+
     private int _flushes;
+    private int _readsRunning;
+    private int _writesRunning;
+
+    /// <summary>Reads that have started (hooks included) and not yet ended.</summary>
+    public int ReadsRunning => Volatile.Read(ref _readsRunning);
+
+    /// <summary>Writes that have started (hooks included) and not yet ended.</summary>
+    public int WritesRunning => Volatile.Read(ref _writesRunning);
 
     /// <summary>How many times a write handle was forced to disk.</summary>
     public int Flushes => Volatile.Read(ref _flushes);
@@ -1096,15 +1110,29 @@ internal sealed class HookFileSystem(IFileSystem inner) : IFileSystem
 
         public ValueTask<int> ReadAsync(Memory<byte> buffer, long offset, CancellationToken ct) =>
             fs.BlockRead?.Invoke(path, offset) == true ? BlockAsync(ct)
-            : fs.BeforeRead is { } before ? HeldReadAsync(before, buffer, offset, ct)
+            : fs.BeforeRead is not null || fs.AfterRead is not null ? HeldReadAsync(buffer, offset, ct)
             : inner.ReadAsync(buffer, offset, ct);
 
         public ValueTask DisposeAsync() => inner.DisposeAsync();
 
-        private async ValueTask<int> HeldReadAsync(Func<string, long, CancellationToken, ValueTask> before, Memory<byte> buffer, long offset, CancellationToken ct)
+        private async ValueTask<int> HeldReadAsync(Memory<byte> buffer, long offset, CancellationToken ct)
         {
-            await before(path, offset, ct);
-            return await inner.ReadAsync(buffer, offset, ct);
+            Interlocked.Increment(ref fs._readsRunning);
+            try
+            {
+                if (fs.BeforeRead is { } before)
+                {
+                    await before(path, offset, ct);
+                }
+
+                var n = await inner.ReadAsync(buffer, offset, ct);
+                fs.AfterRead?.Invoke(path, offset);
+                return n;
+            }
+            finally
+            {
+                Interlocked.Decrement(ref fs._readsRunning);
+            }
         }
 
         private async ValueTask<int> BlockAsync(CancellationToken ct)
@@ -1126,13 +1154,26 @@ internal sealed class HookFileSystem(IFileSystem inner) : IFileSystem
     {
         public ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, long offset, CancellationToken ct) =>
             fs.OnWrite?.Invoke(path, offset) is { } ex ? ValueTask.FromException(ex)
-            : fs.BeforeWrite is { } before ? HeldWriteAsync(before, buffer, offset, ct)
+            : fs.BeforeWrite is not null || fs.AfterWrite is not null ? HeldWriteAsync(buffer, offset, ct)
             : inner.WriteAsync(buffer, offset, ct);
 
-        private async ValueTask HeldWriteAsync(Func<string, long, CancellationToken, ValueTask> before, ReadOnlyMemory<byte> buffer, long offset, CancellationToken ct)
+        private async ValueTask HeldWriteAsync(ReadOnlyMemory<byte> buffer, long offset, CancellationToken ct)
         {
-            await before(path, offset, ct);
-            await inner.WriteAsync(buffer, offset, ct);
+            Interlocked.Increment(ref fs._writesRunning);
+            try
+            {
+                if (fs.BeforeWrite is { } before)
+                {
+                    await before(path, offset, ct);
+                }
+
+                await inner.WriteAsync(buffer, offset, ct);
+                fs.AfterWrite?.Invoke(path, offset);
+            }
+            finally
+            {
+                Interlocked.Decrement(ref fs._writesRunning);
+            }
         }
 
         public ValueTask<int> ReadBackAsync(Memory<byte> buffer, long offset, CancellationToken ct) => inner.ReadBackAsync(buffer, offset, ct);
