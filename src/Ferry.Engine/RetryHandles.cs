@@ -29,6 +29,10 @@ internal static class RetryHandles
         swap.Release();
     }
 
+    /// <summary>The failure to start a retry from: the operation's own when it is a file-system one, else a lost connection.</summary>
+    public static FileSystemException AsTransient(Exception? failure) =>
+        failure is FileSystemException fs && RetryPolicy.IsTransient(fs.Kind) ? fs : new FileSystemException(string.Empty, IoErrorKind.NetworkLost, failure);
+
     /// <summary>True when an operation failed only because another call replaced (and so closed) the handle it was using.</summary>
     public static bool IsSwapCasualty(Exception ex, object used, object? current, CancellationToken ct) =>
         ex is FileSystemException or ObjectDisposedException or OperationCanceledException
@@ -68,29 +72,37 @@ internal sealed class RetryReadHandle(IReadHandle initial, Func<IReadHandle> reo
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
     public async ValueTask<int> ReadAsync(Memory<byte> buffer, long offset, CancellationToken ct)
     {
-        var used = Volatile.Read(ref _handle);
-        if (used is not null)
+        while (true)
         {
-            try
+            Exception? casualty = null;
+            var used = Volatile.Read(ref _handle);
+            if (used is not null)
             {
-                return await used.ReadAsync(buffer, offset, ct).ConfigureAwait(false);
+                try
+                {
+                    return await used.ReadAsync(buffer, offset, ct).ConfigureAwait(false);
+                }
+                catch (FileSystemException ex) when (RetryPolicy.IsTransient(ex.Kind) && ReferenceEquals(used, Volatile.Read(ref _handle)))
+                {
+                    return await RetryAsync(ex, used, buffer, offset, ct).ConfigureAwait(false);
+                }
+                catch (Exception ex) when (RetryHandles.IsSwapCasualty(ex, used, Volatile.Read(ref _handle), ct))
+                {
+                    // Another read is replacing this handle: run again on the new one, with the same retries as any read.
+                    casualty = ex;
+                }
             }
-            catch (FileSystemException ex) when (RetryPolicy.IsTransient(ex.Kind) && ReferenceEquals(used, Volatile.Read(ref _handle)))
+
+            await RetryHandles.WaitForSwapAsync(_swap, ct).ConfigureAwait(false);
+            if (Volatile.Read(ref _handle) is null)
             {
-                return await RetryAsync(ex, used, buffer, offset, ct).ConfigureAwait(false);
-            }
-            catch (Exception ex) when (RetryHandles.IsSwapCasualty(ex, used, Volatile.Read(ref _handle), ct))
-            {
-                // Another read is replacing this handle: run again on the new one.
+                // The last reopen failed and the policy is waiting to try again: join in with this read's own retries.
+                return await RetryAsync(RetryHandles.AsTransient(casualty), used, buffer, offset, ct).ConfigureAwait(false);
             }
         }
-
-        await RetryHandles.WaitForSwapAsync(_swap, ct).ConfigureAwait(false);
-        var current = Volatile.Read(ref _handle) ?? throw new OperationCanceledException("The source could not be opened again.");
-        return await current.ReadAsync(buffer, offset, ct).ConfigureAwait(false);
     }
 
-    private Task<int> RetryAsync(FileSystemException failure, IReadHandle failed, Memory<byte> buffer, long offset, CancellationToken ct) =>
+    private Task<int> RetryAsync(FileSystemException failure, IReadHandle? failed, Memory<byte> buffer, long offset, CancellationToken ct) =>
         RetryHandles.AfterFailureAsync(policy, failure, async () =>
         {
             await _swap.WaitAsync(ct).ConfigureAwait(false);
@@ -140,29 +152,42 @@ internal sealed class RetryWriteHandle(IWriteHandle initial, Func<ValueTask<IWri
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     public async ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, long offset, CancellationToken ct)
     {
-        var used = Volatile.Read(ref _handle);
-        if (used is not null)
+        while (true)
         {
-            try
+            Exception? casualty = null;
+            var used = Volatile.Read(ref _handle);
+            if (used is not null)
             {
-                await used.WriteAsync(buffer, offset, ct).ConfigureAwait(false);
-                return;
+                try
+                {
+                    await used.WriteAsync(buffer, offset, ct).ConfigureAwait(false);
+                    return;
+                }
+                catch (FileSystemException ex) when (RetryPolicy.IsTransient(ex.Kind) && ReferenceEquals(used, Volatile.Read(ref _handle)))
+                {
+                    await RetryWriteAsync(ex, used, buffer, offset, ct).ConfigureAwait(false);
+                    return;
+                }
+                catch (Exception ex) when (RetryHandles.IsSwapCasualty(ex, used, Volatile.Read(ref _handle), ct))
+                {
+                    // Another write is replacing this handle: run again on the new one, with the same retries as any write.
+                    casualty = ex;
+                }
             }
-            catch (FileSystemException ex) when (RetryPolicy.IsTransient(ex.Kind) && ReferenceEquals(used, Volatile.Read(ref _handle)))
+
+            await RetryHandles.WaitForSwapAsync(_swap, ct).ConfigureAwait(false);
+            if (Volatile.Read(ref _handle) is null)
             {
-                await RetryAsync(ex, used, h => h.WriteAsync(buffer, offset, ct), ct).ConfigureAwait(false);
+                // The last reopen failed and the policy is waiting to try again: join in with this write's own retries.
+                await RetryWriteAsync(RetryHandles.AsTransient(casualty), used, buffer, offset, ct).ConfigureAwait(false);
                 return;
-            }
-            catch (Exception ex) when (RetryHandles.IsSwapCasualty(ex, used, Volatile.Read(ref _handle), ct))
-            {
-                // Another write is replacing this handle: run again on the new one.
             }
         }
-
-        await RetryHandles.WaitForSwapAsync(_swap, ct).ConfigureAwait(false);
-        var current = Volatile.Read(ref _handle) ?? throw new OperationCanceledException("The part file could not be opened again.");
-        await current.WriteAsync(buffer, offset, ct).ConfigureAwait(false);
     }
+
+    // Kept out of WriteAsync so the lambda's captured state is only allocated when a retry is needed.
+    private Task<bool> RetryWriteAsync(FileSystemException failure, IWriteHandle? failed, ReadOnlyMemory<byte> buffer, long offset, CancellationToken ct) =>
+        RetryAsync(failure, failed, h => h.WriteAsync(buffer, offset, ct), ct);
 
     /// <summary>Runs alone, after every write has ended.</summary>
     public async ValueTask FlushAsync()
@@ -178,7 +203,7 @@ internal sealed class RetryWriteHandle(IWriteHandle initial, Func<ValueTask<IWri
         }
     }
 
-    private Task<bool> RetryAsync(FileSystemException failure, IWriteHandle failed, Func<IWriteHandle, ValueTask> operation, CancellationToken ct) =>
+    private Task<bool> RetryAsync(FileSystemException failure, IWriteHandle? failed, Func<IWriteHandle, ValueTask> operation, CancellationToken ct) =>
         RetryHandles.AfterFailureAsync(policy, failure, async () =>
         {
             await _swap.WaitAsync(ct).ConfigureAwait(false);

@@ -10,6 +10,7 @@ public static class Verifier
 {
     private const int ChunkSize = FileCopier.DefaultBufferSizeBytes;
     private const int Depth = FileCopier.PipelineDepth;
+    private const int Alignment = 4096; // a whole number of sectors on every drive, so unbuffered reads stay legal
 
     /// <summary>
     /// True when <paramref name="destination"/> hashes to <paramref name="expectedHash"/>. The file is read UNBUFFERED, so the data comes from
@@ -45,6 +46,10 @@ public static class Verifier
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             var length = reader.Length;
             var reads = new (AlignedBuffer Buffer, int Want, ValueTask<int> Task)[Depth];
+
+            // A file that fits in one chunk takes one buffer of its own size (rounded up) and is read right here, with no hop.
+            var chunk = (int)Math.Min(ChunkSize, (Math.Max(length, 1) + Alignment - 1) / Alignment * Alignment);
+            var oneChunk = length <= chunk;
             int head = 0, count = 0;
             try
             {
@@ -55,12 +60,12 @@ public static class Verifier
                     while (count < Depth && next < length)
                     {
                         var want = (int)Math.Min(ChunkSize, length - next);
-                        var buffer = pool.Rent(ChunkSize);
+                        var buffer = pool.Rent(chunk);
                         var slot = (head + count) % Depth;
                         reads[slot] = (buffer, want, default);
                         count++; // counted before it starts, so the buffer always goes back
 #pragma warning disable CA2012 // Kept in a ring and awaited exactly once, in issue order (or drained once on failure).
-                        reads[slot].Task = FillAsync(reader, buffer, next, want, cts.Token);
+                        reads[slot].Task = FillAsync(reader, buffer.Memory[..chunk], next, want, hop: !oneChunk, cts.Token);
 #pragma warning restore CA2012
                         next += want;
                     }
@@ -108,21 +113,23 @@ public static class Verifier
         }
     }
 
-    /// <summary>Reads up to <paramref name="want"/> bytes at <paramref name="offset"/> on the thread pool; fewer only when the file ends.</summary>
+    /// <summary>
+    /// Reads up to <paramref name="want"/> bytes at <paramref name="offset"/> into <paramref name="memory"/> (on the thread pool when
+    /// <paramref name="hop"/>); fewer only when the file ends.
+    /// </summary>
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
-    private static async ValueTask<int> FillAsync(IReadHandle reader, AlignedBuffer buffer, long offset, int want, CancellationToken ct)
+    private static async ValueTask<int> FillAsync(IReadHandle reader, Memory<byte> memory, long offset, int want, bool hop, CancellationToken ct)
     {
-        if (ThreadPoolHop.YieldReachesPool)
+        if (hop && ThreadPoolHop.YieldReachesPool)
         {
             await Task.Yield();
         }
-        else
+        else if (hop)
         {
             await default(ThreadPoolHop);
         }
 
         // The whole chunk is asked for, so unbuffered reads stay whole sectors (the end of the file just returns fewer bytes).
-        var memory = buffer.Memory[..ChunkSize];
         var filled = 0;
         while (filled < want)
         {

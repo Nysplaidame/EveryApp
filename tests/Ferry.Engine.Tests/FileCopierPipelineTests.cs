@@ -295,6 +295,15 @@ public sealed class FileCopierPipelineTests
             rig.B.Hooks.BeforeRead = hold;
         }
 
+        var sourceOpens = 0;
+        rig.B.Hooks.Opened = path =>
+        {
+            if (path == rig.Src)
+            {
+                Interlocked.Increment(ref sourceOpens);
+            }
+        };
+
         var outcome = await rig.Copy(new CopyOptions(), Ct, time: new AutoAdvancingTime()).WaitAsync(Patience, Ct);
 
         Assert.True(outcome.Success, outcome.Problem?.Message);
@@ -302,7 +311,67 @@ public sealed class FileCopierPipelineTests
         {
             Assert.Equal(1, rig.B.Faults.ReopenedWrites); // one reopen, however many writes were on the dead handle
         }
+        else
+        {
+            Assert.Equal(2, Volatile.Read(ref sourceOpens)); // the first open and one reopen, however many reads were on the dead handle
+        }
 
+        rig.AssertCopied();
+    }
+
+    [Fact]
+    public async Task Transfer_WriteThatWaitedOnAnothersReopen_StillGetsRetries()
+    {
+        using var rig = new Rig((6 * Chunk) + 513);
+        rig.B.Faults.FailWriteWhere(FileCopierTests.IsPart, 2L * Chunk, IoErrorKind.NetworkLost, times: 1, handleDies: true);
+        const long Waiter = 3L * Chunk;
+        var entered = 0;
+        var waiterCalls = 0;
+        var allIn = NewSignal();
+        var reopened = NewSignal();
+        rig.B.Hooks.Opened = path =>
+        {
+            if (FileCopierTests.IsPart(path))
+            {
+                reopened.TrySetResult();
+            }
+        };
+        rig.B.Hooks.BeforeWrite = async (path, offset, ct) =>
+        {
+            if (!FileCopierTests.IsPart(path) || offset >= Depth * Chunk)
+            {
+                return;
+            }
+
+            var call = offset == Waiter ? Interlocked.Increment(ref waiterCalls) : 0;
+            var n = call <= 1 ? Interlocked.Increment(ref entered) : int.MaxValue;
+            if (n <= Depth)
+            {
+                if (n == Depth)
+                {
+                    allIn.TrySetResult();
+                }
+
+                await allIn.Task.WaitAsync(ct); // the first chunks are all in flight when the part's handle dies
+            }
+
+            if (call == 1)
+            {
+                await reopened.Task.WaitAsync(ct); // fails on the old handle only after another write has reopened the part
+                throw new FileSystemException(path, IoErrorKind.NetworkLost, null);
+            }
+
+            if (call == 2)
+            {
+                throw new FileSystemException(path, IoErrorKind.NetworkLost, null); // and the connection drops again on the new handle
+            }
+        };
+
+        var outcome = await rig.Copy(new CopyOptions(), Ct, time: new AutoAdvancingTime()).WaitAsync(Patience, Ct);
+
+        Assert.True(outcome.Success, outcome.Problem?.Message);
+        Assert.Equal(3, Volatile.Read(ref waiterCalls));
+        Assert.Equal(2, rig.B.Faults.ReopenedWrites);
         rig.AssertCopied();
     }
 
@@ -422,6 +491,84 @@ public sealed class FileCopierPipelineTests
         hasher.Append(data);
         Assert.Equal(hasher.Finish(), hash);
         Assert.Equal(Depth, Volatile.Read(ref startedWhileFirstHeld)); // all in flight together, and never more
+        Assert.Equal(0, pool.Outstanding);
+        Assert.Equal(0, b.Hooks.ReadsRunning);
+    }
+
+    [Fact]
+    public async Task Verifier_HashAsync_SmallFile_OneReadOfItsOwnSize()
+    {
+        using var b = Backend.Create(Backend.InMemory);
+        using var pool = new BufferPool();
+        var data = FileCopierTests.Bytes(100, seed: 82);
+        var path = b.PathOf("small.bin");
+        b.AddFile(path, data);
+        var asked = new System.Collections.Concurrent.ConcurrentQueue<int>();
+        b.Hooks.ReadAsked = (_, _, size) => asked.Enqueue(size);
+
+        var hash = await Verifier.HashAsync(b.Fs, path, unbuffered: true, HashAlgorithmKind.XxHash3, pool, Ct);
+
+        using var hasher = new StreamingHasher(HashAlgorithmKind.XxHash3);
+        hasher.Append(data);
+        Assert.Equal(hasher.Finish(), hash);
+        Assert.Equal(4096, Assert.Single(asked));
+        Assert.Equal(1, pool.RentCount);
+        Assert.Equal(0, pool.Outstanding);
+    }
+
+    [Fact]
+    public async Task Verifier_HashAsync_ReadFails_ReturnsEveryBuffer_AndNoReadStillRunning()
+    {
+        using var b = Backend.Create(Backend.InMemory);
+        using var pool = new BufferPool();
+        var path = b.PathOf("check.bin");
+        b.AddFile(path, FileCopierTests.Bytes((5 * Chunk) + 513, seed: 83));
+        b.Hooks.BeforeRead = async (p, offset, ct) =>
+        {
+            if (offset == 2L * Chunk)
+            {
+                throw new FileSystemException(p, IoErrorKind.BadBlock, null);
+            }
+
+            if (offset == 3L * Chunk)
+            {
+                await Task.Delay(Timeout.Infinite, ct); // still running when the other read fails
+            }
+        };
+
+        var ex = await Assert.ThrowsAsync<FileSystemException>(
+            () => Verifier.HashAsync(b.Fs, path, unbuffered: true, HashAlgorithmKind.XxHash3, pool, Ct).WaitAsync(Patience, Ct));
+
+        Assert.Equal(IoErrorKind.BadBlock, ex.Kind);
+        Assert.Equal(0, pool.Outstanding);
+        Assert.Equal(0, b.Hooks.ReadsRunning);
+    }
+
+    [Fact]
+    public async Task Verifier_HashAsync_Cancelled_ReturnsEveryBuffer_AndNoReadStillRunning()
+    {
+        using var b = Backend.Create(Backend.InMemory);
+        using var pool = new BufferPool();
+        var path = b.PathOf("check.bin");
+        b.AddFile(path, FileCopierTests.Bytes((5 * Chunk) + 513, seed: 84));
+        var entered = 0;
+        var allIn = NewSignal();
+        b.Hooks.BeforeRead = async (_, _, ct) =>
+        {
+            if (Interlocked.Increment(ref entered) == Depth)
+            {
+                allIn.TrySetResult();
+            }
+
+            await Task.Delay(Timeout.Infinite, ct);
+        };
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(Ct);
+
+        var hash = Verifier.HashAsync(b.Fs, path, unbuffered: true, HashAlgorithmKind.XxHash3, pool, cts.Token);
+        await allIn.Task.WaitAsync(Patience, Ct);
+        await cts.CancelAsync();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => hash.WaitAsync(Patience, Ct));
         Assert.Equal(0, pool.Outstanding);
         Assert.Equal(0, b.Hooks.ReadsRunning);
     }

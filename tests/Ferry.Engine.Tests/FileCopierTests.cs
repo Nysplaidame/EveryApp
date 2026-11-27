@@ -1031,6 +1031,12 @@ internal sealed class HookFileSystem(IFileSystem inner) : IFileSystem
     /// <summary>Awaited before each read at (path, offset), so a test can hold a read (e.g. the check of a closed part).</summary>
     public Func<string, long, CancellationToken, ValueTask>? BeforeRead { get; set; }
 
+    /// <summary>Called when a file is opened for reading, or an existing file is opened again for writing (path).</summary>
+    public Action<string>? Opened { get; set; }
+
+    /// <summary>Called as each read at (path, offset) is asked for, with the number of bytes asked for.</summary>
+    public Action<string, long, int>? ReadAsked { get; set; }
+
     /// <summary>Called after each read at (path, offset) has returned its data.</summary>
     public Action<string, long>? AfterRead { get; set; }
 
@@ -1052,13 +1058,20 @@ internal sealed class HookFileSystem(IFileSystem inner) : IFileSystem
 
     internal void CountFlush() => Interlocked.Increment(ref _flushes);
 
-    public IReadHandle OpenRead(string path, bool unbuffered) => new ReadHandle(this, path, inner.OpenRead(path, unbuffered));
+    public IReadHandle OpenRead(string path, bool unbuffered)
+    {
+        Opened?.Invoke(path);
+        return new ReadHandle(this, path, inner.OpenRead(path, unbuffered));
+    }
 
     public IWriteHandle CreateWrite(string path, long preallocate, bool unbuffered) =>
         new WriteHandle(this, path, inner.CreateWrite(path, preallocate, unbuffered));
 
-    public IWriteHandle OpenWriteExisting(string path, bool unbuffered) =>
-        new WriteHandle(this, path, inner.OpenWriteExisting(path, unbuffered));
+    public IWriteHandle OpenWriteExisting(string path, bool unbuffered)
+    {
+        Opened?.Invoke(path);
+        return new WriteHandle(this, path, inner.OpenWriteExisting(path, unbuffered));
+    }
 
     public FileEntry GetEntry(string path) => inner.GetEntry(path);
 
@@ -1108,7 +1121,13 @@ internal sealed class HookFileSystem(IFileSystem inner) : IFileSystem
     {
         public long Length => inner.Length;
 
-        public ValueTask<int> ReadAsync(Memory<byte> buffer, long offset, CancellationToken ct) =>
+        public ValueTask<int> ReadAsync(Memory<byte> buffer, long offset, CancellationToken ct)
+        {
+            fs.ReadAsked?.Invoke(path, offset, buffer.Length);
+            return ReadCoreAsync(buffer, offset, ct);
+        }
+
+        private ValueTask<int> ReadCoreAsync(Memory<byte> buffer, long offset, CancellationToken ct) =>
             fs.BlockRead?.Invoke(path, offset) == true ? BlockAsync(ct)
             : fs.BeforeRead is not null || fs.AfterRead is not null ? HeldReadAsync(buffer, offset, ct)
             : inner.ReadAsync(buffer, offset, ct);
