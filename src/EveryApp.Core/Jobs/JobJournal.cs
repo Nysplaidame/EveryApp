@@ -19,6 +19,9 @@ internal sealed class JournalIo
 
     /// <summary>Hands buffered bytes to the operating system without waiting for the disk (survives a process crash, not a power cut).</summary>
     public Action<FileStream> HandOver { get; set; } = DefaultHandOver;
+
+    /// <summary>A journal file larger than this is never read (tests lower it).</summary>
+    public long MaxJournalBytes { get; set; } = JobJournal.DefaultMaxJournalBytes;
 }
 
 /// <summary>
@@ -45,7 +48,9 @@ internal sealed class JournalIo
 /// A journal file is untrusted input when reopened. Reading stops at the first line that is too long (over 64 KB), uses CRLF,
 /// is not valid, fails its checksum, or breaks the record rules (see <see cref="Validate"/>); only the lines before it are
 /// trusted. A last line without its newline is dropped even if it looks complete, because a crash can cut a line anywhere.
-/// On reopen the file is cut back to the end of the last good line so that new records never follow garbage.
+/// On reopen the file is cut back to the end of the last good line so that new records never follow garbage. A file larger than
+/// <see cref="DefaultMaxJournalBytes"/> is refused outright, and a file may have at most <see cref="MaxPartsPerFile"/> part records, so a
+/// planted journal cannot exhaust memory.
 /// </para>
 /// <para>
 /// If writing or flushing fails (for example the disk is full) the journal tries to cut the file back to the last whole record
@@ -55,6 +60,18 @@ internal sealed class JournalIo
 public sealed class JobJournal : IDisposable
 {
     internal const int MaxLineBytes = 64 * 1024;
+
+    /// <summary>
+    /// A journal file larger than this (4 GiB, several million files' worth) is refused rather than loaded into memory: a planted or runaway
+    /// journal cannot exhaust memory on resume.
+    /// </summary>
+    internal const long DefaultMaxJournalBytes = 4L * 1024 * 1024 * 1024;
+
+    /// <summary>
+    /// Most part-file records (and as many identity records) one file may have: each try of each run adds one. A record past this is refused
+    /// when appended and ends the trusted part of the journal when read, like any other record that breaks the rules.
+    /// </summary>
+    internal const int MaxPartsPerFile = 64;
     internal const string PartSuffix = ".ferrypart";
     private const int FlushEveryRecords = 64;
     private const long FlushEveryMilliseconds = 2000;
@@ -73,6 +90,7 @@ public sealed class JobJournal : IDisposable
     private readonly HashSet<string> _notOnDisk = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<JournalPart> _parts;
     private readonly List<JournalPartIdentity> _identities;
+    private readonly PartCounts _perFile;
     private readonly TimeProvider _time;
     private readonly JournalIo _io;
     private long _goodOffset;
@@ -84,10 +102,11 @@ public sealed class JobJournal : IDisposable
 
     private JobJournal(
         FileStream stream, string optionsJson, HashSet<string> completed, List<JournalPart> parts, bool isFinished, TimeProvider time, JournalIo io,
-        HashSet<string>? notOnDisk = null, List<JournalPartIdentity>? identities = null)
+        HashSet<string>? notOnDisk = null, List<JournalPartIdentity>? identities = null, PartCounts? perFile = null)
     {
         _stream = stream;
         _identities = identities ?? [];
+        _perFile = perFile ?? new PartCounts();
         OptionsJson = optionsJson;
         _completed = completed;
         if (notOnDisk is not null)
@@ -246,10 +265,12 @@ public sealed class JobJournal : IDisposable
         OpenWithIo(jobsDir, jobId, timeProvider, null);
 
     /// <summary>Reads valid journal records for history without changing a damaged tail or locking out a running job.</summary>
-    public static JournalSummary ReadSummary(string jobsDir, Guid jobId, CancellationToken ct = default)
+    public static JournalSummary ReadSummary(string jobsDir, Guid jobId, CancellationToken ct = default) => ReadSummaryWithIo(jobsDir, jobId, null, ct);
+
+    internal static JournalSummary ReadSummaryWithIo(string jobsDir, Guid jobId, JournalIo? io, CancellationToken ct = default)
     {
         using var stream = new FileStream(JournalPath(jobsDir, jobId), FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-        var load = Load(stream, collectFileState: false, ct);
+        var load = Load(stream, (io ?? new JournalIo()).MaxJournalBytes, collectFileState: false, ct);
         if (load.Options is null)
         {
             throw new InvalidDataException("The saved job could not be read.");
@@ -272,7 +293,7 @@ public sealed class JobJournal : IDisposable
         var stream = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.Read, 16 * 1024);
         try
         {
-            var load = Load(stream);
+            var load = Load(stream, (io ?? new JournalIo()).MaxJournalBytes);
             if (load.Options is null)
             {
                 throw new InvalidDataException("The job journal is damaged: its first line cannot be read.");
@@ -282,7 +303,7 @@ public sealed class JobJournal : IDisposable
             stream.SetLength(load.GoodLength);
             stream.Seek(0, SeekOrigin.End);
             return new JobJournal(stream, load.Options, load.Completed, load.Parts, load.Finished, timeProvider ?? TimeProvider.System, io ?? new JournalIo(), load.NotOnDisk,
-                load.Identities)
+                load.Identities, load.PerFile)
             {
                 StartedUtc = load.StartedUtc,
                 LastActivityUtc = lastActivity,
@@ -401,6 +422,11 @@ public sealed class JobJournal : IDisposable
                 throw new InvalidOperationException("The journal is faulted after an earlier write failure and cannot take more records.", _fault);
             }
 
+            if (!_perFile.CanAdd(record))
+            {
+                throw new ArgumentException("This file already has as many part records as the journal allows.", nameof(record));
+            }
+
             try
             {
                 _io.Write(_stream, line);
@@ -433,6 +459,7 @@ public sealed class JobJournal : IDisposable
             }
 
             _goodOffset += line.Length;
+            _perFile.TryAdd(record); // fits: checked above, under the same lock
             if (record.Kind == JournalRecordKind.FileDone)
             {
                 TrackDone(_completed, _notOnDisk, record);
@@ -501,16 +528,57 @@ public sealed class JobJournal : IDisposable
         return line;
     }
 
+    /// <summary>Counts part and identity records per file, so no file can have more than <see cref="MaxPartsPerFile"/> of either.</summary>
+    private sealed class PartCounts
+    {
+        private readonly Dictionary<string, int> _parts = new(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, int> _identities = new(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>False when <paramref name="record"/> would go over the limit.</summary>
+        public bool CanAdd(JournalRecord record) =>
+            MapFor(record) is not { } map || map.GetValueOrDefault(Normalize(record.RelativePath!)) < MaxPartsPerFile;
+
+        /// <summary>Counts <paramref name="record"/> if it fits; false (nothing counted) when it would go over the limit.</summary>
+        public bool TryAdd(JournalRecord record)
+        {
+            if (!CanAdd(record))
+            {
+                return false;
+            }
+
+            if (MapFor(record) is { } map)
+            {
+                var key = Normalize(record.RelativePath!);
+                map[key] = map.GetValueOrDefault(key) + 1;
+            }
+
+            return true;
+        }
+
+        private Dictionary<string, int>? MapFor(JournalRecord record) => record.Kind switch
+        {
+            JournalRecordKind.FilePartStarted => _parts,
+            JournalRecordKind.FilePartCreated => _identities,
+            _ => null,
+        };
+    }
+
     private readonly record struct LoadResult(string? Options, HashSet<string> Completed, List<JournalPart> Parts, bool Finished, long GoodLength,
-        DateTime StartedUtc, string? Result, HashSet<string> NotOnDisk, List<JournalPartIdentity> Identities);
+        DateTime StartedUtc, string? Result, HashSet<string> NotOnDisk, List<JournalPartIdentity> Identities, PartCounts PerFile);
 
     /// <summary>Reads lines from the start and stops at the first one that cannot be trusted.</summary>
-    private static LoadResult Load(FileStream stream, bool collectFileState = true, CancellationToken ct = default)
+    private static LoadResult Load(FileStream stream, long maxBytes, bool collectFileState = true, CancellationToken ct = default)
     {
         var completed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var notOnDisk = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (stream.Length > maxBytes)
+        {
+            throw new InvalidDataException("The saved job is too large to open.");
+        }
+
         var parts = new List<JournalPart>();
         var identities = new List<JournalPartIdentity>();
+        var perFile = new PartCounts();
         string? options = null;
         var finished = false;
         var startedUtc = default(DateTime);
@@ -552,7 +620,7 @@ public sealed class JobJournal : IDisposable
                 }
 
                 var isHeader = options is null;
-                if (!TryParseLine(line.AsSpan(0, lineLength), isHeader, out var record))
+                if (!TryParseLine(line.AsSpan(0, lineLength), isHeader, out var record) || !perFile.TryAdd(record))
                 {
                     stop = true;
                     continue;
@@ -595,7 +663,7 @@ public sealed class JobJournal : IDisposable
             }
         }
 
-        return new LoadResult(options, completed, parts, finished, goodLength, startedUtc, result, notOnDisk, identities);
+        return new LoadResult(options, completed, parts, finished, goodLength, startedUtc, result, notOnDisk, identities, perFile);
     }
 
     private static bool TryParseLine(ReadOnlySpan<byte> line, bool isHeader, out JournalRecord record)

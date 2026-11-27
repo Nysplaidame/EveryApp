@@ -11,6 +11,9 @@ namespace EveryApp.Core.Settings;
 /// <typeparam name="T">The settings type. Use a source-generated <see cref="JsonTypeInfo{T}"/> so no reflection is needed.</typeparam>
 public sealed class SettingsStore<T> where T : class, new()
 {
+    /// <summary>A settings file larger than this (1 MiB) is never read into memory: it is treated as unreadable.</summary>
+    public const int MaxFileBytes = 1024 * 1024;
+
     private const int SchemaVersion = 1;
     private const string VersionProperty = "schemaVersion";
     private const string DataProperty = "data";
@@ -31,10 +34,10 @@ public sealed class SettingsStore<T> where T : class, new()
     /// <summary>Reads the settings. Missing file: defaults. Unreadable file: it is renamed to a backup and defaults are returned.</summary>
     public T Load()
     {
-        byte[] bytes;
+        byte[]? bytes;
         try
         {
-            bytes = File.ReadAllBytes(_fileName);
+            bytes = ReadCapped(_fileName);
         }
         catch (FileNotFoundException)
         {
@@ -45,13 +48,27 @@ public sealed class SettingsStore<T> where T : class, new()
             return new T();
         }
 
-        if (TryParse(bytes, out var value))
+        if (bytes is not null && TryParse(bytes, out var value))
         {
             return value;
         }
 
         KeepAsBackup();
         return new T();
+    }
+
+    /// <summary>The whole file, or null when it is larger than <see cref="MaxFileBytes"/> (then nothing is read).</summary>
+    private static byte[]? ReadCapped(string path)
+    {
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        if (stream.Length > MaxFileBytes)
+        {
+            return null;
+        }
+
+        var bytes = new byte[stream.Length];
+        stream.ReadExactly(bytes);
+        return bytes;
     }
 
     /// <summary>Writes the settings to a temporary file, flushes it to disk, then swaps it in.</summary>

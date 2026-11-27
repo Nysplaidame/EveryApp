@@ -140,6 +140,47 @@ public sealed class JobJournalPartTests : IDisposable
     }
 
     [Fact]
+    public void PartRecords_OverThePerFileLimit_RefusedOnAppend_AndStopLoad()
+    {
+        var id = Guid.NewGuid();
+        string PartName(int i) => $"a.txt.{i:x8}.ferrypart";
+        using (var j = JobJournal.Create(_dir, id, "{}"))
+        {
+            for (var i = 0; i < JobJournal.MaxPartsPerFile; i++)
+            {
+                j.Append(Part("a.txt", PartName(i), "a.txt"));
+                j.Append(Created("a.txt", PartName(i), JobJournal.FormatIdentity(1, (UInt128)i)));
+            }
+
+            Assert.Throws<ArgumentException>(() => j.Append(Part("a.txt", PartName(999), "a.txt")));
+            Assert.Throws<ArgumentException>(() => j.Append(Created("a.txt", PartName(999), JobJournal.FormatIdentity(1, 999))));
+            j.Append(Part("b.txt", "b.txt.00000001.ferrypart", "b.txt")); // other files are not affected
+        }
+
+        var path = Path.Combine(_dir, id.ToString("N") + ".journal");
+        File.AppendAllBytes(path, JournalTestHelper.ForgeLine(JournalRecordKind.FilePartStarted, "a.txt", PartName(999), "a.txt"));
+        File.AppendAllBytes(path, JournalTestHelper.ForgeLine(JournalRecordKind.FileDone, "after.txt"));
+        using var again = JobJournal.Open(_dir, id);
+        Assert.Equal(JobJournal.MaxPartsPerFile + 1, again.PartFiles.Count); // a's 64 and b's one; the forged 65th stops the load
+        Assert.Equal(JobJournal.MaxPartsPerFile, again.PartIdentities.Count);
+        Assert.Empty(again.CompletedPaths);
+    }
+
+    [Fact]
+    public void Journal_OverTheSizeLimit_IsNotOpened()
+    {
+        var id = Guid.NewGuid();
+        using (var j = JobJournal.Create(_dir, id, "{}"))
+        {
+            j.Append(Done(@"0\a.txt", null));
+        }
+
+        var io = new JournalIo { MaxJournalBytes = 64 };
+        Assert.Throws<InvalidDataException>(() => JobJournal.OpenWithIo(_dir, id, null, io).Dispose());
+        Assert.Throws<InvalidDataException>(() => JobJournal.ReadSummaryWithIo(_dir, id, io, TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
     public void PartRecord_IsHandedToTheOsAtOnce()
     {
         var handedOver = 0;

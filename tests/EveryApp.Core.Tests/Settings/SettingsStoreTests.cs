@@ -62,6 +62,20 @@ public sealed class SettingsStoreTests : IDisposable
     }
 
     [Fact]
+    public void Settings_FileOverTheSizeLimit_NotRead_KeptAsBackup()
+    {
+        var store = NewStore(out var file);
+        var valid = "{\"schemaVersion\": 1, \"data\": {\"Name\": \"big\"}}";
+        File.WriteAllText(file, valid + new string(' ', SettingsStore<SampleSettings>.MaxFileBytes)); // valid JSON, but far too big
+
+        var loaded = store.Load();
+
+        Assert.Equal("default", loaded.Name);
+        Assert.False(File.Exists(file));
+        Assert.Single(Directory.GetFiles(_dir, "settings.corrupt-*.json"));
+    }
+
+    [Fact]
     public void Settings_NewerSchemaVersion_IsKeptAsBackupAndDefaultsReturned()
     {
         var store = NewStore(out var file);
