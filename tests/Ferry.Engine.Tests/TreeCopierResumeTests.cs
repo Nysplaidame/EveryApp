@@ -8,7 +8,7 @@ using EveryApp.Core.Preflight;
 namespace Ferry.Engine.Tests;
 
 /// <summary>Tree copier: Resume and journaled part files.</summary>
-public sealed class TreeCopierResumeTests : TreeCopierTestBase
+public class TreeCopierResumeTests : TreeCopierTestBase
 {
     [Fact]
     public async Task Resume_SkipsCompletedFiles()

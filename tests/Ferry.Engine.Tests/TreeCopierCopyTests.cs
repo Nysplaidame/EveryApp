@@ -8,7 +8,7 @@ using EveryApp.Core.Preflight;
 namespace Ferry.Engine.Tests;
 
 /// <summary>Tree copier: Basic tree copies: contents, order, links.</summary>
-public sealed class TreeCopierCopyTests : TreeCopierTestBase
+public class TreeCopierCopyTests : TreeCopierTestBase
 {
     [Fact]
     public async Task Run_CopiesTree_AllVerified()

@@ -8,7 +8,7 @@ using EveryApp.Core.Preflight;
 namespace Ferry.Engine.Tests;
 
 /// <summary>Tree copier: Failure rules and verification.</summary>
-public sealed class TreeCopierFailureTests : TreeCopierTestBase
+public class TreeCopierFailureTests : TreeCopierTestBase
 {
     [Fact]
     public async Task Failure_RetryThenSkip_ListsProblemAndContinues()

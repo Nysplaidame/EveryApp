@@ -8,7 +8,7 @@ using EveryApp.Core.Preflight;
 namespace Ferry.Engine.Tests;
 
 /// <summary>Tree copier: Conflict rules.</summary>
-public sealed class TreeCopierConflictTests : TreeCopierTestBase
+public class TreeCopierConflictTests : TreeCopierTestBase
 {
     [Fact]
     public async Task Conflict_Overwrite_ReplacesExisting()

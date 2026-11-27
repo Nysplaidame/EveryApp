@@ -8,7 +8,7 @@ using EveryApp.Core.Preflight;
 namespace Ferry.Engine.Tests;
 
 /// <summary>Tree copier: Moves on one drive and across drives.</summary>
-public sealed class TreeCopierMoveTests : TreeCopierTestBase
+public class TreeCopierMoveTests : TreeCopierTestBase
 {
     [Fact]
     public async Task Move_SameVolume_UsesRenameNotCopy()
