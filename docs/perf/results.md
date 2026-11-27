@@ -120,10 +120,18 @@ Ferry is now steady from run to run; FastCopy is not (its verify-on runs were fa
 
 **Start-up:** each run used to spend 0.56 s asking Windows (WMI) for Storage Spaces members, even with no Storage Space involved. It now asks only when a disk really is a Storage Space: a one-file copy within the system drive takes 0.19 s (was 0.73 s). A run involving a Storage Space (like this bench's source) still pays it.
 
+### Mixed with verify on: what the 1.45 really is (2026-11-27)
+
+- Ferry's small-file check itself costs almost nothing: the 64,600 small files alone take 46.6 s with verify off and 43.9 s with it on (30,000 files: 20.2 / 23.2 s; 10,000: 7.0 / 7.2 s).
+- The whole mixed set with verify on, Ferry alone: **45.2 s** (FastCopy's median with verify on: 49.9 s).
+- The same run straight after a FastCopy run: 79.7 s; still 79.3 s after waiting until the destination drive showed 100% idle. Ferry with verify off is not slowed. In the gate run, a FastCopy run always came just before each of Ferry's verify-on runs.
+- Per-step timing showed only "open the source and create the part file" slowing down (107 → 412 thread-seconds). With verify on, Ferry opened two extra handles per file just to ask the sector size. Ferry now asks once per job root (Task 10).
+- After that change, FastCopy (verify on) then Ferry (verify on) back to back: FastCopy 38.4 s, Ferry **61.1 s** (was 79.7 s). Better, but opening files is still slower right after a FastCopy run; the cause (antivirus or the search indexer catching up after tens of thousands of new files is likely) is not proven.
+
 ### Still open
 
 - Large files: done on this setup (above). The single-NVMe source of 2026-11-22 is gone (now part of an array), so this Storage Space → NVMe setup is the baseline from here on.
-- Mixed with verify on (1.45): the per-small-file read-back costs about 6x more per file on the mixed set than on the small set; cause not measured yet.
+- Mixed with verify on (1.45 in the gate run): mostly an order effect (Ferry is slower right after a FastCopy run, see above). The bench should alternate which tool's verify-on run comes first so both meet the same conditions, then rerun.
 - Storage Space users still pay about 0.56 s per run for the WMI lookup.
 - HDD sets: not run (no HDD available).
 
