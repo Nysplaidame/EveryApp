@@ -69,7 +69,19 @@ Ferry now copies several files at once when every drive is a solid-state drive (
 | 4 | 7.25 s | 8.10 s |
 | **8** | **5.76 s** | **6.21 s** |
 
-**Default changed to 8** (the fastest in both rows; counts above 8 were not tried).
+**Default changed to 8** (the fastest in both rows).
+
+Counts above 8, two passes in opposite order (verify off / on, seconds):
+
+| Files at once | Pass 1 (rising order) | Pass 2 (falling order) |
+|---:|---:|---:|
+| 8 | 4.49 / 5.22 | 4.05 / 4.84 |
+| 12 | 3.90 / 4.81 | 4.43 / 4.89 |
+| 16 | 4.03 / 4.53 | 4.41 / 5.01 |
+| 24 | 3.89 / 4.63 | – |
+| 32 | 4.28 / 5.31 | – |
+
+Above 8 there is no gain: whichever count runs later in a pass looks faster, and the order flips the result. 8 stays (the smaller count wins a tie). Runs vary by about 25% from one day to the next (8 workers: 5.8 s in the first probe, 4.0–4.5 s here).
 
 ### Against FastCopy (median of 3 rounds)
 
