@@ -211,6 +211,35 @@ public sealed class TreeCopierMilestoneSecurityTests : TreeCopierTestBase
         Assert.Equal(before, _rig.Mem.GetEntry(@"D:\dst\other\same.bin"));
     }
 
+    // ---- L2: a resume shows the saved options that can replace, delete or reach further
+
+    [Fact]
+    public async Task Resume_ConfirmationIsShownTheSavedOptions()
+    {
+        var id = await StoppedJobAsync(ConflictRule.Overwrite);
+
+        await _rig.ResumeAsync(id);
+
+        var asked = Assert.Single(_rig.Confirmation.Asked);
+        Assert.Equal(ConflictRule.Overwrite, asked.Options.IfExists);
+        Assert.Equal([CopyMessages.RiskyOverwrite], asked.RiskyOptions);
+    }
+
+    [Fact]
+    public void RiskyOptions_ListsEachRiskInPlainWords()
+    {
+        var all = new CopyOptions { IfExists = ConflictRule.OverwriteIfNewer, FollowReparsePoints = true, Verify = false, CopyPermissions = true };
+
+        Assert.Equal(
+            [CopyMessages.RiskyOverwriteIfNewer, CopyMessages.RiskyFollowLinks, CopyMessages.RiskyNoVerify, CopyMessages.RiskyPermissions],
+            CopyMessages.RiskyOptions(CopyMode.Copy, all));
+        Assert.Equal([CopyMessages.RiskyMove, CopyMessages.RiskyOverwriteIfNewer, CopyMessages.RiskyPermissions], CopyMessages.RiskyOptions(CopyMode.Move, all));
+        Assert.Empty(CopyMessages.RiskyOptions(CopyMode.Copy, new CopyOptions()));
+        Assert.True(ResumeRequest.NeedsPreview(CopyMode.Move, new CopyOptions()));
+        Assert.True(ResumeRequest.NeedsPreview(CopyMode.Copy, all));
+        Assert.False(ResumeRequest.NeedsPreview(CopyMode.Copy, new CopyOptions { IfExists = ConflictRule.KeepBoth }));
+    }
+
     [Fact]
     public async Task Copy_UnchangedSource_StillCopied()
     {

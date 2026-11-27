@@ -65,6 +65,51 @@ public static class CopyMessages
     public const string NameOutsideDestination = "This name would have led outside the destination folder, so it was skipped";
     public const string JournalWriteFailed = "The job's record couldn't be saved (is the drive full?), so the job stopped. What was already copied is complete; you can resume the job later";
 
+    public const string RiskyMove = "Moves the files: each original is deleted once its copy has been checked";
+    public const string RiskyOverwrite = "Replaces files that are already in the destination";
+    public const string RiskyOverwriteIfNewer = "Replaces files that are already in the destination when the incoming file is newer";
+    public const string RiskyFollowLinks = "Follows links: copies what they point to, even outside the chosen folders";
+    public const string RiskyNoVerify = "Doesn't check the copies after writing them";
+    public const string RiskyPermissions = "Copies the files' permissions";
+
+    /// <summary>The saved options a person should see before resuming a job, in plain words (empty when none apply).</summary>
+    public static IReadOnlyList<string> RiskyOptions(CopyMode mode, CopyOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        var isMove = mode == CopyMode.Move;
+        var lines = new List<string>();
+        if (isMove)
+        {
+            lines.Add(RiskyMove);
+        }
+
+        if (options.IfExists == ConflictRule.Overwrite)
+        {
+            lines.Add(RiskyOverwrite);
+        }
+        else if (options.IfExists == ConflictRule.OverwriteIfNewer)
+        {
+            lines.Add(RiskyOverwriteIfNewer);
+        }
+
+        if (options.FollowReparsePoints && !isMove)
+        {
+            lines.Add(RiskyFollowLinks); // a move never follows links
+        }
+
+        if (!options.Verify && !isMove)
+        {
+            lines.Add(RiskyNoVerify); // a move always checks
+        }
+
+        if (options.CopyPermissions)
+        {
+            lines.Add(RiskyPermissions);
+        }
+
+        return lines;
+    }
+
     /// <summary>Free space the job's record needs before a job starts.</summary>
     public static string JournalNoSpace(string drive) =>
         $"There isn't enough free space on {drive} to keep track of this job (Ferry needs at least 50 MB there), so nothing was copied";

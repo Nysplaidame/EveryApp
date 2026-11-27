@@ -72,10 +72,27 @@ public enum PlannedAction
 /// <summary>One line of a dry-run plan. Paths are for display.</summary>
 public sealed record PlannedItem(string Source, string Destination, PlannedAction Action);
 
-/// <summary>What a resume will do, shown to the person before it runs. The saved job is untrusted input, so it is never resumed unasked.</summary>
-public sealed record ResumeRequest(IReadOnlyList<string> Sources, string Destination, CopyMode Mode);
+/// <summary>
+/// What a resume will do, shown to the person before it runs. The saved job is untrusted input, so it is never resumed unasked, and its
+/// options are shown too: <see cref="RiskyOptions"/> lists, in plain words, the ones that can replace, delete or reach further than asked.
+/// </summary>
+public sealed record ResumeRequest(IReadOnlyList<string> Sources, string Destination, CopyMode Mode, CopyOptions Options)
+{
+    /// <summary>The saved options a person must see before saying yes (empty when there are none).</summary>
+    public IReadOnlyList<string> RiskyOptions => CopyMessages.RiskyOptions(Mode, Options);
 
-/// <summary>Asks the person to confirm a resume (the CLI shows sources, destination and mode, or takes --yes).</summary>
+    /// <summary>
+    /// True when the saved job can replace or delete files (a move, or an existing-file rule that replaces), so a host should show a dry-run
+    /// preview of what would change first, as it does for a new job.
+    /// </summary>
+    public static bool NeedsPreview(CopyMode mode, CopyOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        return mode == CopyMode.Move || options.IfExists is ConflictRule.Overwrite or ConflictRule.OverwriteIfNewer;
+    }
+}
+
+/// <summary>Asks the person to confirm a resume (the CLI shows sources, destination, mode and risky options, or takes --yes).</summary>
 public interface IResumeConfirmation
 {
     ValueTask<bool> ConfirmAsync(ResumeRequest request, CancellationToken ct);

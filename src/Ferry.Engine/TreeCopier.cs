@@ -165,8 +165,8 @@ public sealed class TreeCopier
 
     /// <summary>
     /// Continues a job from its journal: done files are skipped and part files the journal names are removed first. The saved job is
-    /// untrusted (anyone who can write the jobs folder can edit it), so <paramref name="confirmation"/> is shown its sources, destination and
-    /// mode first, and nothing runs unless it says yes.
+    /// untrusted (anyone who can write the jobs folder can edit it), so <paramref name="confirmation"/> is shown its sources, destination,
+    /// mode and options (<see cref="ResumeRequest.RiskyOptions"/>) first, and nothing runs unless it says yes.
     /// </summary>
     public async Task<CopyResult> ResumeAsync(Guid jobId, IResumeConfirmation confirmation, PauseGate pause, IProgress<JobProgress> progress, CancellationToken ct)
     {
@@ -188,7 +188,7 @@ public sealed class TreeCopier
             }
 
             var spec = JobSpec.Parse(journal.OptionsJson);
-            if (!await confirmation.ConfirmAsync(new ResumeRequest(spec.Sources, spec.Destination, spec.Mode), ct).ConfigureAwait(false))
+            if (!await confirmation.ConfirmAsync(new ResumeRequest(spec.Sources, spec.Destination, spec.Mode, spec.Options), ct).ConfigureAwait(false))
             {
                 return JobOutcome.Refused(spec.Destination, CopyMessages.ResumeNotConfirmed);
             }
