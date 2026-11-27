@@ -109,10 +109,22 @@ Large set against FastCopy, **one round** (the large set's runs varied under 3% 
 | Large (20 × 1 GiB) | off | 18.20 s | 14.28 s | **0.78** | pass | 1.28 |
 | Large | on | 18.15 s | 18.20 s | **1.00** | pass | 1.39 |
 
+### Mixed set after the large-file change and the start-up fix (2026-11-27, 3 rounds)
+
+| Set | Verify | FastCopy (3 runs) | Ferry (3 runs) | Ratio (medians) | Gate |
+|---|---|---|---|---:|---|
+| Mixed | off | 72.4 / 49.5 / 64.0 s | 44.5 / 42.6 / 43.2 s | **0.68** | pass |
+| Mixed | on | 49.9 / 49.9 / 47.7 s | 72.9 / 72.5 / 72.4 s | **1.45** | **fail** (was 1.62) |
+
+Ferry is now steady from run to run; FastCopy is not (its verify-on runs were faster than its verify-off runs). Ferry's check costs about 29 s on this set, about 0.45 ms per small file, against about 0.08 ms per file on the 10,000-file small set. Ferry reads every small file back from the drive itself (unbuffered, through its still-open handle), never from Windows' memory cache.
+
+**Start-up:** each run used to spend 0.56 s asking Windows (WMI) for Storage Spaces members, even with no Storage Space involved. It now asks only when a disk really is a Storage Space: a one-file copy within the system drive takes 0.19 s (was 0.73 s). A run involving a Storage Space (like this bench's source) still pays it.
+
 ### Still open
 
 - Large files: done on this setup (above). The single-NVMe source of 2026-11-22 is gone (now part of an array), so this Storage Space → NVMe setup is the baseline from here on.
-- Mixed with verify on (1.62): the per-small-file read-back.
+- Mixed with verify on (1.45): the per-small-file read-back costs about 6x more per file on the mixed set than on the small set; cause not measured yet.
+- Storage Space users still pay about 0.56 s per run for the WMI lookup.
 - HDD sets: not run (no HDD available).
 
 ## How to run
