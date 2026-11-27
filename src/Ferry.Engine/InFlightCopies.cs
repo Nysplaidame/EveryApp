@@ -29,7 +29,7 @@ internal sealed class InFlightCopies : IDisposable
     /// <summary>True once a copy ended with an error nothing handled; the dispatcher then starts no new file.</summary>
     public bool Failed => Volatile.Read(ref _failure) is not null;
 
-    /// <summary>Waits for a free place (nothing to wait for with one place). Call <see cref="Start"/> or <see cref="GiveBack"/> after.</summary>
+    /// <summary>Waits for a free place (nothing to wait for with one place). Call <see cref="StartAsync"/> or <see cref="GiveBack"/> after.</summary>
     public Task WaitForPlaceAsync(CancellationToken ct) => Workers == 1 ? Task.CompletedTask : _free.WaitAsync(ct);
 
     /// <summary>Gives back a place taken by <see cref="WaitForPlaceAsync"/> when no copy was started with it.</summary>
@@ -115,8 +115,8 @@ internal sealed class InFlightCopies : IDisposable
                     }
                 }
 
+                end.TrySetResult(); // first: whoever waits for this name must wake up even if giving the place back ever failed
                 _free.Release();
-                end.TrySetResult();
             }
         });
 

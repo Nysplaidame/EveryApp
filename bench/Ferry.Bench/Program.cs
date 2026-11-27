@@ -8,7 +8,7 @@ namespace Ferry.Bench;
 ///   micro [BenchmarkDotNet args]                 micro-benchmarks (buffer pool, hashing, copy pipeline)
 ///   generate large|small|mixed &lt;folder&gt; [--scale N]   creates a test data set (N divides the default size, for quick trials)
 ///   sweep &lt;source&gt; &lt;dest&gt; [--rounds N] [--json &lt;file&gt;]  times FileCopier with each tuning choice
-///   jobs <source> <destRoot> [--workers 1,2,4,8] [--verify]  times whole copy jobs at each worker count
+///   jobs &lt;source&gt; &lt;destRoot&gt; [--workers 1,2,4,8] [--verify]  times whole copy jobs at each worker count
 ///   flush                                         empties the Windows standby cache (needs an administrator)
 /// </summary>
 internal static class Program

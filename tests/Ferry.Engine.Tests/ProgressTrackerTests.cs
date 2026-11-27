@@ -103,4 +103,48 @@ public sealed class ProgressTrackerTests
 
         Assert.Equal("Copying", sink.Reports[^1].Phase);
     }
+
+    [Fact]
+    public async Task SlowSink_SnapshotsStillArriveInTheOrderTheyWereBuilt()
+    {
+        var delivered = new List<JobProgress>();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var armed = 0;
+        var sink = new ListProgress
+        {
+            OnReport = p =>
+            {
+                if (Volatile.Read(ref armed) == 1 && Interlocked.Exchange(ref armed, 2) == 1)
+                {
+                    entered.SetResult(); // the first snapshot built after arming is held up inside the sink...
+                    gate.Task.Wait(TestContext.Current.CancellationToken);
+                }
+
+                lock (delivered)
+                {
+                    delivered.Add(p);
+                }
+            },
+        };
+        var tracker = new ProgressTracker(sink, TimeProvider.System);
+        var a = tracker.StartFile("a");
+        var b = tracker.StartFile("b");
+        Volatile.Write(ref armed, 1);
+
+        var slow = Task.Run(() => a.Bytes.Report(new FileProgress("a", 10, 1000)), TestContext.Current.CancellationToken);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+        b.Bytes.Report(new FileProgress("b", 20, 1000)); // ...while a later snapshot (more bytes) is built by another thread
+        gate.SetResult();
+        await slow.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+        long[] bytes;
+        lock (delivered)
+        {
+            bytes = [.. delivered.Select(p => p.BytesDone).Skip(2)]; // after the two start reports
+        }
+
+        Assert.Equal(bytes.Order(), bytes); // never goes down
+        Assert.Equal(30, bytes[^1]); // and the newest one is not lost
+    }
 }

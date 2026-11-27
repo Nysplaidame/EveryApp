@@ -245,6 +245,17 @@ internal sealed partial class TreeJob
                 case TreeItemKind.Folder:
                     // A copy still running may hold this very name (a renamed file): decide once it has landed, as one at a time would.
                     await inFlight.EndOf(Path.Combine(_destination, item.Key)).WaitAsync(_ct).ConfigureAwait(false);
+                    if (MayResolveToAnotherName(item.Key))
+                    {
+                        // Same for a folder name the file system may treat as a file another copy is committing next to it (8.3 name, trailing dot or space).
+                        await inFlight.EndOfAllIn(Path.GetDirectoryName(Path.Combine(_destination, item.Key)) ?? _destination).WaitAsync(_ct).ConfigureAwait(false);
+                    }
+
+                    if (_outcome.Stopped || StopForFailure(inFlight))
+                    {
+                        return; // a running copy stopped the job while this folder waited
+                    }
+
                     if (!ProcessFolder(root, item, counts))
                     {
                         skipped.Add(item.Key);
@@ -399,6 +410,21 @@ internal sealed partial class TreeJob
         await inFlight.WaitForPlaceAsync(_ct).ConfigureAwait(false);
         ProgressTracker.FileSlot? slot = null;
         var handedOver = false;
+        var abandoned = false;
+
+        // A running copy may stop the job (or fail) while this file waits for another copy or an answer: then nothing more is decided or recorded
+        // for it (no skip, no failure, no recovery, no count), just as a one-at-a-time job would never have reached it.
+        bool Halted()
+        {
+            if (!_outcome.Stopped && !inFlight.Failed)
+            {
+                return false;
+            }
+
+            abandoned = true;
+            return true;
+        }
+
         try
         {
             if (_outcome.Stopped || inFlight.Failed)
@@ -412,7 +438,7 @@ internal sealed partial class TreeJob
             {
                 // A running copy may have stopped the job while this file was being decided (a question, a wait for another copy, the
                 // resume checks): then it is not started at all, just as a one-at-a-time job would never have reached it.
-                if (_outcome.Stopped || inFlight.Failed)
+                if (Halted())
                 {
                     return Task.CompletedTask;
                 }
@@ -434,6 +460,11 @@ internal sealed partial class TreeJob
                 await inFlight.EndOfAllIn(Path.GetDirectoryName(Path.Combine(_destination, item.Key)) ?? _destination).WaitAsync(_ct).ConfigureAwait(false);
             }
 
+            if (Halted())
+            {
+                return;
+            }
+
             var notOnDisk = _recovery.IsNotOnDisk(item.JournalKey);
             if (!notOnDisk && !_sameVolume && await TryRecoverAsync(item, root).ConfigureAwait(false))
             {
@@ -446,6 +477,11 @@ internal sealed partial class TreeJob
             if (_recovery.IsResume && !_isMove && !_sameVolume)
             {
                 var recheck = await _recovery.RecheckAsync(item, _options.HashAlgorithm, _ct).ConfigureAwait(false);
+                if (Halted())
+                {
+                    return;
+                }
+
                 if (recheck.Result == RecheckResult.Intact && notOnDisk)
                 {
                     return;
@@ -463,6 +499,11 @@ internal sealed partial class TreeJob
 
             // Another file's copy may be heading for this name (it was renamed to it): once it lands, decide as one at a time would.
             await inFlight.EndOf(target).WaitAsync(_ct).ConfigureAwait(false);
+            if (Halted())
+            {
+                return;
+            }
+
             var existing = TreePaths.TryGet(_fs, target, follow: false);
             var replace = false;
             if (existing is not null)
@@ -473,7 +514,13 @@ internal sealed partial class TreeJob
                     return;
                 }
 
-                switch (await ConflictPolicy.DecideAsync(_options.IfExists, _owner.Resolver, entry, existing, _ct).ConfigureAwait(false))
+                var rule = await ConflictPolicy.DecideAsync(_options.IfExists, _owner.Resolver, entry, existing, _ct).ConfigureAwait(false);
+                if (Halted())
+                {
+                    return; // the answer came after the stop: never acted on
+                }
+
+                switch (rule)
                 {
                     case ConflictRule.Overwrite:
                         replace = true;
@@ -512,7 +559,15 @@ internal sealed partial class TreeJob
         {
             if (!handedOver)
             {
-                slot?.End(entry.Length); // skipped, failed, moved by rename or recovered: done here
+                if (abandoned)
+                {
+                    slot?.Abandon(); // never reached: not counted
+                }
+                else
+                {
+                    slot?.End(entry.Length); // skipped, failed, moved by rename or recovered: done here
+                }
+
                 inFlight.GiveBack();
             }
         }

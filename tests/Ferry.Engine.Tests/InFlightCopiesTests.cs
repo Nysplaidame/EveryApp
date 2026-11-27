@@ -30,4 +30,21 @@ public sealed class InFlightCopiesTests
         await inFlight.WaitForAllAsync();
         inFlight.ThrowIfFailed();
     }
+
+    [Fact]
+    public async Task EndOf_Completes_EvenWhenGivingTheCopyPlaceBackThrows()
+    {
+        using var inFlight = new InFlightCopies(2);
+        await inFlight.WaitForPlaceAsync(TestContext.Current.CancellationToken);
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await inFlight.StartAsync(@"D:\dst\a.txt", () => gate.Task);
+        var waiter = inFlight.EndOf(@"D:\dst\a.txt"); // a dispatcher waiting for the name
+        inFlight.GiveBack(); // a place given back twice (a bug elsewhere): the copy's own give-back is now one too many and throws
+
+        gate.SetResult();
+
+        // The waiter must never hang because of it.
+        await waiter.WaitAsync(Patience, TestContext.Current.CancellationToken);
+        await Record.ExceptionAsync(inFlight.WaitForAllAsync); // the over-release itself surfaces here; only the waiter matters in this test
+    }
 }

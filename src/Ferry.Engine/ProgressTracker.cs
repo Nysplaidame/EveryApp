@@ -11,6 +11,8 @@ internal sealed class ProgressTracker(IProgress<JobProgress> sink, TimeProvider 
     private int _filesDone;
     private string _phase = "Checking";
     private readonly List<FileSlot> _slots = []; // in start order; keyed by the slot object, never by file key
+    private JobProgress? _pending; // the newest snapshot nobody has delivered yet (guarded by _lock)
+    private bool _delivering; // true while one thread is handing snapshots to the sink (guarded by _lock)
 
     public void AddToTotal(int files, long bytes)
     {
@@ -62,9 +64,13 @@ internal sealed class ProgressTracker(IProgress<JobProgress> sink, TimeProvider 
         public void Report(string value) => tracker.SetPhase(value);
     }
 
+    /// <summary>
+    /// Builds a snapshot and hands it to the sink. Snapshots reach the sink in the order they were built, one at a time, so the totals never
+    /// step backwards. One thread at a time delivers; any other thread just leaves its newer snapshot for it and returns at once (an older
+    /// one nobody delivered yet is replaced), so a slow or re-entrant sink can never block or deadlock another thread.
+    /// </summary>
     public void Report()
     {
-        JobProgress snapshot;
         lock (_lock)
         {
             var inFlightBytes = 0L;
@@ -79,18 +85,40 @@ internal sealed class ProgressTracker(IProgress<JobProgress> sink, TimeProvider 
             _speed.Add(time.GetTimestamp(), done);
             var speed = _speed.BytesPerSecond;
             TimeSpan? remaining = speed > 0 ? TimeSpan.FromSeconds(Math.Max(0, _bytesTotal - done) / speed) : null;
-            snapshot = new JobProgress(done, _bytesTotal, _filesDone, _filesTotal, speed, remaining, _slots.Count > 0 ? _slots[^1].Key : null, allVerifying ? "Verifying" : _phase) { InFlight = _slots.Count };
+            _pending = new JobProgress(done, _bytesTotal, _filesDone, _filesTotal, speed, remaining, _slots.Count > 0 ? _slots[^1].Key : null, allVerifying ? "Verifying" : _phase) { InFlight = _slots.Count };
+            if (_delivering)
+            {
+                return; // the thread delivering now takes this snapshot next
+            }
+
+            _delivering = true;
         }
 
+        while (true)
+        {
+            JobProgress snapshot;
+            lock (_lock)
+            {
+                if (_pending is null)
+                {
+                    _delivering = false;
+                    return;
+                }
+
+                snapshot = _pending;
+                _pending = null;
+            }
+
 #pragma warning disable CA1031 // The progress callback belongs to the caller; it must never break the copy.
-        try
-        {
-            sink.Report(snapshot);
-        }
-        catch (Exception)
-        {
-        }
+            try
+            {
+                sink.Report(snapshot);
+            }
+            catch (Exception)
+            {
+            }
 #pragma warning restore CA1031
+        }
     }
 
     /// <summary>One file being copied. Each slot keeps its own bytes and verifying flag; every member is safe to call from any thread.</summary>
@@ -142,6 +170,24 @@ internal sealed class ProgressTracker(IProgress<JobProgress> sink, TimeProvider 
                 _tracker._slots.Remove(this);
                 _tracker._bytesDone += length;
                 _tracker._filesDone++;
+                _tracker._phase = CopyMessages.Copying; // a status line must not outlive the wait
+            }
+
+            _tracker.Report();
+        }
+
+        /// <summary>Frees the slot without counting the file as done (it was never copied). Safe to call twice, or after <see cref="End"/>.</summary>
+        public void Abandon()
+        {
+            lock (_tracker._lock)
+            {
+                if (Ended)
+                {
+                    return;
+                }
+
+                Ended = true;
+                _tracker._slots.Remove(this);
                 _tracker._phase = CopyMessages.Copying; // a status line must not outlive the wait
             }
 

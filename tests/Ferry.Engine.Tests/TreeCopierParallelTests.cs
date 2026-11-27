@@ -422,17 +422,127 @@ public sealed class TreeCopierParallelTests : TreeCopierTestBase
         Assert.Equal(_rig.Mem.ReadAllBytes(first), _rig.Mem.ReadAllBytes(@"D:\dst\src\verylongname.txt"));
     }
 
+    [Fact]
+    public async Task ShortNameLookalikeFolder_WaitsForSameFolderCopies()
+    {
+        Add(@"C:\src\verylongname.txt", 101, seed: 1);
+        Add(@"C:\src\VERYLO~1\inner.txt", 5, seed: 2);
+        var hold = new WriteHold(path => IsPartOf(path, "verylongname.txt"));
+        _rig.Fs.BeforeWrite = hold.WaitAsync;
+
+        var job = _rig.RunAsync([@"C:\src"], @"D:\dst");
+        await hold.Entered(1).WaitAsync(Patience, Ct);
+
+        // The folder name may be the same name as the file being committed next to it: it must NOT be decided yet (bounded wait, can only false-pass).
+        await Task.Delay(TimeSpan.FromMilliseconds(500), Ct);
+        Assert.DoesNotContain(_rig.Fs.Log, l => l.StartsWith("CreateDirectory ", StringComparison.Ordinal) && l.Contains("VERYLO~1", StringComparison.OrdinalIgnoreCase));
+
+        hold.Release();
+        var result = await job;
+
+        Assert.Equal(2, result.Copied);
+        Assert.Equal(_rig.Mem.ReadAllBytes(@"C:\src\VERYLO~1\inner.txt"), _rig.Mem.ReadAllBytes(@"D:\dst\src\VERYLO~1\inner.txt"));
+    }
+
+    [Fact]
+    public async Task StopWhileQuestionOpen_SkipAnswer_IsNotCountedAsSkipped()
+    {
+        AddFiles(3);
+        Add(@"D:\dst\src\f2.bin", 5, seed: 50);
+        var id = Guid.NewGuid();
+        _rig.Fs.OnOpenRead = (path, _) => RecordingFileSystem.Plain(path).Equals(@"C:\src\f1.bin", StringComparison.OrdinalIgnoreCase)
+            ? new FileSystemException(path, IoErrorKind.AccessDenied, null)
+            : null;
+        var f1Ended = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var progress = new ListProgress
+        {
+            OnReport = p =>
+            {
+                if (p.FilesDone >= 1)
+                {
+                    f1Ended.TrySetResult();
+                }
+            },
+        };
+        _rig.Resolver.Answer = ConflictRule.Skip; // the answer comes after the stop: nothing may be recorded for it
+        _rig.Resolver.Hold = (_, ct) => f1Ended.Task.WaitAsync(ct);
+
+        var result = await _rig.RunAsync(
+            [@"C:\src"], @"D:\dst", new CopyOptions { IfExists = ConflictRule.Ask, IfUnreadable = FailureRule.Stop }, progress: progress, jobId: id);
+
+        Assert.True(result.Stopped);
+        Assert.Equal((0, 0, 1), (result.Copied, result.Skipped, result.Failed)); // as one at a time: f2 is never reached
+        Assert.DoesNotContain("f2.bin", JournalText(id), StringComparison.Ordinal); // no skipped record for it
+        var last = progress.Reports[^1];
+        Assert.Equal(0, last.InFlight);
+        Assert.Equal(1, last.FilesDone); // f1 only: f2 was never copied, so it is not counted as done
+    }
+
+    [Fact]
+    public async Task StopWhileWaitingForLookalike_NothingElseIsDecided()
+    {
+        Add(@"C:\src\verylongname.txt", 101, seed: 1);
+        Add(@"C:\src\VERYLO~1.TXT", 102, seed: 2);
+        Add(@"D:\dst\src\VERYLO~1.TXT", 5, seed: 3);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _rig.Fs.BeforeWrite = async (path, _, ct) =>
+        {
+            if (IsPartOf(path, "verylongname.txt"))
+            {
+                entered.TrySetResult();
+                await release.Task.WaitAsync(ct).ConfigureAwait(false);
+                throw new FileSystemException(path, IoErrorKind.AccessDenied, null); // this copy fails once the other file is already waiting for it
+            }
+        };
+        _rig.Resolver.Answer = ConflictRule.Skip;
+
+        var job = _rig.RunAsync([@"C:\src"], @"D:\dst", new CopyOptions { IfExists = ConflictRule.Ask, IfUnreadable = FailureRule.Stop });
+        await entered.Task.WaitAsync(Patience, Ct);
+        await Task.Delay(TimeSpan.FromMilliseconds(300), Ct); // let the look-alike file reach its wait (bounded; if it is late the result is the same)
+        release.SetResult();
+        var result = await job;
+
+        Assert.True(result.Stopped);
+        Assert.Empty(_rig.Resolver.Questions); // the stopped job asks nothing more
+        Assert.Equal((0, 0, 1), (result.Copied, result.Skipped, result.Failed));
+    }
+
+    [Fact]
+    public async Task SeveralInFlight_ProgressNeverGoesDown()
+    {
+        AddFiles(12);
+        var progress = new ListProgress();
+
+        var result = await _rig.RunAsync([@"C:\src"], @"D:\dst", progress: progress);
+
+        Assert.Equal(12, result.Copied);
+        var reports = progress.Reports;
+        Assert.Contains(reports, p => p.InFlight > 1);
+        for (var i = 1; i < reports.Count; i++)
+        {
+            Assert.True(reports[i].BytesDone >= reports[i - 1].BytesDone, $"BytesDone went {reports[i - 1].BytesDone} -> {reports[i].BytesDone} at report {i}.");
+            Assert.True(reports[i].FilesDone >= reports[i - 1].FilesDone, $"FilesDone went {reports[i - 1].FilesDone} -> {reports[i].FilesDone} at report {i}.");
+        }
+    }
+
     // ---- helpers
 
     private async Task AssertOneAtATime(CopyOptions options)
     {
         AddFiles(4);
-        var hold = new WriteHold(path => IsPartOf(path, "f1.bin"));
+        var hold = new WriteHold(path => path.EndsWith(FileCopier.PartSuffix, StringComparison.OrdinalIgnoreCase)); // every copy, not just the first
         _rig.Fs.BeforeWrite = hold.WaitAsync;
 
         var job = _rig.RunAsync([@"C:\src"], @"D:\dst", options);
         await hold.Entered(1).WaitAsync(Patience, Ct);
 
+        // While the first copy is held, a second must never start. Nothing can be waited for here, so give it a short while to wrongly appear
+        // (a bounded wait: it can only false-pass, never flake).
+        var second = hold.Entered(2);
+        var wrongly = await Task.WhenAny(second, Task.Delay(TimeSpan.FromMilliseconds(500), Ct));
+        Assert.NotSame(second, wrongly);
+        Assert.Equal(1, hold.Count);
         Assert.Equal(1, PartsCreated());
         hold.Release();
         var result = await job;
