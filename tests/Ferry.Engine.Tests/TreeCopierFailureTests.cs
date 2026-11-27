@@ -170,7 +170,9 @@ public class TreeCopierFailureTests : TreeCopierTestBase
     public async Task PartRecordRefused_FileFails_AndNoPartFileIsWritten()
     {
         AddText(@"C:\src\ok.txt", "ok");
-        AddText(@"C:\src\bad:name.txt", "x"); // the journal refuses this name (':'), so its part file must never be created
+        // The journal refuses a record this long (over its line limit), so this file's part must never be created. (Names with ':' or other
+        // characters the journal refuses no longer get this far: the walk skips them.)
+        AddText(@"C:\src\" + new string('n', 40_000) + ".txt", "x");
 
         var result = await _rig.RunAsync([@"C:\src"], @"D:\dst");
 
@@ -178,7 +180,7 @@ public class TreeCopierFailureTests : TreeCopierTestBase
         Assert.Equal(1, result.Failed);
         var problem = Assert.Single(result.Problems);
         Assert.Equal(CopyMessages.NotRecorded, problem.Message);
-        Assert.DoesNotContain(_rig.Fs.Log, l => l.StartsWith("CreateWrite ", StringComparison.Ordinal) && l.Contains("bad:name", StringComparison.Ordinal));
+        Assert.DoesNotContain(_rig.Fs.Log, l => l.StartsWith("CreateWrite ", StringComparison.Ordinal) && l.Contains("nnnnnnnn", StringComparison.Ordinal));
         Assert.Empty(_rig.PartFiles(@"D:\dst"));
     }
 

@@ -367,8 +367,17 @@ internal sealed partial class TreeJob
     private bool ProcessFolder(TreeRoot root, TreeItem item, Dictionary<string, (int Files, long Bytes)> counts)
     {
         var target = Path.Combine(_destination, item.Key);
-        var existing = TreePaths.TryGet(_fs, target, follow: false);
         var (files, bytes) = counts.GetValueOrDefault(item.Key);
+        if (!TreePaths.IsInside(_destination, item.Key))
+        {
+            // The walk already refuses such names; never create (or later date) a folder outside the destination either way.
+            _outcome.AddFailed(files);
+            _outcome.Problems.Add(new Problem(TreePaths.Display(item.Entry.FullPath), IoErrorKind.InvalidName, CopyMessages.NameOutsideDestination));
+            _progress.CompleteFiles(files, bytes);
+            return false;
+        }
+
+        var existing = TreePaths.TryGet(_fs, target, follow: false);
         if (existing is not null && TreePaths.IsNameSurrogate(existing))
         {
             // Never write through a link that is already in the destination: it could lead anywhere.

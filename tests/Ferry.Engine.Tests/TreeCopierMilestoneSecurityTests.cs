@@ -99,6 +99,44 @@ public sealed class TreeCopierMilestoneSecurityTests : TreeCopierTestBase
         Assert.Equal("planted", Text(@"C:\src\a.txt"));
     }
 
+    // ---- L1: names from the source tree, and destination writes outside the destination
+
+    [Fact]
+    public async Task HostileChildName_NothingCreatedOutsideTheDestination()
+    {
+        AddText(@"C:\src\ok.txt", "ok");
+        var ok = _rig.Mem.GetEntry(@"C:\src\ok.txt");
+        _rig.Mem.InjectListingEntry(@"C:\src", ok with { FullPath = @"\\?\C:\src\..\..\escape", Attributes = FileAttributes.Directory });
+
+        var result = await _rig.RunAsync([@"C:\src"], @"D:\dst");
+
+        Assert.Equal(1, result.Copied);
+        Assert.DoesNotContain(_rig.Fs.Log, l => l.Contains("..", StringComparison.Ordinal));
+        Assert.Contains(result.Problems, p => p.Message.Contains("name", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Theory]
+    [InlineData(@"src\a.txt", true)]
+    [InlineData(@"src\a.", true)]
+    [InlineData(@"src\..\..\x", false)]
+    [InlineData(@"..\x", false)]
+    [InlineData(@"src\..", false)]
+    [InlineData("", false)]
+    [InlineData(@"C:\x", false)]
+    public void TreePaths_IsInside_OnlyStrictlyBelowTheRoot(string key, bool inside) =>
+        Assert.Equal(inside, TreePaths.IsInside(@"\\?\D:\dst", key));
+
+    [Fact]
+    public void TreePaths_DriveRootAndShare_Resolved()
+    {
+        Assert.True(TreePaths.IsInside(@"\\?\D:\", "x"));
+        Assert.True(TreePaths.TryContain(@"\\?\D:\", @"a\b", out var onDrive));
+        Assert.Equal(@"\\?\D:\a\b", onDrive);
+        Assert.True(TreePaths.TryContain(@"\\?\UNC\server\share\dst", @"a\b", out var onShare));
+        Assert.Equal(@"\\?\UNC\server\share\dst\a\b", onShare);
+        Assert.False(TreePaths.IsInside(@"\\?\UNC\server\share\dst", @"..\other"));
+    }
+
     [Fact]
     public async Task Copy_UnchangedSource_StillCopied()
     {

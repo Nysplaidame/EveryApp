@@ -98,7 +98,15 @@ internal static class TreePaths
     /// Joins a path read from the journal (untrusted) to <paramref name="root"/> and checks the result is still inside the root, after full
     /// resolution of <c>..</c> and rooted parts. False means the record is corrupt and must not be used.
     /// </summary>
-    public static bool TryContain(string root, string relative, out string full)
+    public static bool TryContain(string root, string relative, out string full) => TryContain(root, relative, allowRoot: true, out full);
+
+    /// <summary>
+    /// True when <paramref name="key"/> (from the walk) names something strictly below <paramref name="root"/> once <c>..</c> and rooted parts
+    /// are resolved. Every write into the destination checks this first, as well as the walk checking each name (defence in depth).
+    /// </summary>
+    public static bool IsInside(string root, string key) => TryContain(root, key, allowRoot: false, out _);
+
+    private static bool TryContain(string root, string relative, bool allowRoot, out string full)
     {
         full = string.Empty;
         if (string.IsNullOrEmpty(relative) || Path.IsPathRooted(relative) || relative.Contains(':', StringComparison.Ordinal))
@@ -108,15 +116,20 @@ internal static class TreePaths
 
         try
         {
-            var (prefix, plainRoot) = root.StartsWith(@"\\?\", StringComparison.Ordinal) ? (@"\\?\", root[4..]) : (string.Empty, root);
-            var r = Path.GetFullPath(plainRoot).TrimEnd('\\');
-            var candidate = Path.GetFullPath(Path.Combine(r, relative));
-            if (!candidate.Equals(r, StringComparison.OrdinalIgnoreCase) && !candidate.StartsWith(r + "\\", StringComparison.OrdinalIgnoreCase))
+            // The \\?\ form is never normalised by GetFullPath, so resolve the plain form ("\\?\UNC\server\share" is "\\server\share").
+            var unc = root.StartsWith(@"\\?\UNC\", StringComparison.OrdinalIgnoreCase);
+            var (prefix, plainRoot) = unc ? (@"\\?\UNC", @"\" + root[7..])
+                : root.StartsWith(@"\\?\", StringComparison.Ordinal) ? (@"\\?\", root[4..]) : (string.Empty, root);
+            var baseFull = Path.GetFullPath(plainRoot);
+            var r = baseFull.TrimEnd('\\');
+            var candidate = Path.GetFullPath(Path.Combine(baseFull, relative)); // never "D:" + name, which Windows reads as drive-relative
+            var isRoot = candidate.TrimEnd('\\').Equals(r, StringComparison.OrdinalIgnoreCase);
+            if ((isRoot && !allowRoot) || (!isRoot && !candidate.StartsWith(r + "\\", StringComparison.OrdinalIgnoreCase)))
             {
                 return false;
             }
 
-            full = prefix + candidate;
+            full = unc ? prefix + candidate[1..] : prefix + candidate;
             return true;
         }
         catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)

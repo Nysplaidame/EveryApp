@@ -331,6 +331,47 @@ public sealed class TreeWalkerTests
         Assert.Contains("outside", Assert.Single(skips).Reason, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Theory]
+    [InlineData(@"..\x")]
+    [InlineData(@"a\b")]
+    [InlineData("a/b")]
+    [InlineData("a:b")]
+    [InlineData("a\0b")]
+    [InlineData("..")]
+    [InlineData(". ")]
+    [InlineData("...")]
+    public void Walk_ChildNameNoSingleSafeName_SkippedNotListed(string name)
+    {
+        // A misbehaving file system (hostile network share, user-mode file system) can list any name.
+        var fs = new InMemoryFileSystem();
+        fs.AddFile(@"C:\r\ok.txt", One);
+        var ok = fs.GetEntry(@"C:\r\ok.txt");
+        fs.InjectListingEntry(@"C:\r", ok with { FullPath = @"\\?\C:\r\" + name });
+        fs.InjectListingEntry(@"C:\r", ok with { FullPath = @"\\?\C:\r\" + name, Attributes = FileAttributes.Directory });
+
+        var skips = new List<WalkSkip>();
+        var items = new TreeWalker(fs, false, []).Walk(@"\\?\C:\r", skips.Add).ToList();
+
+        Assert.Equal(["ok.txt"], RelPaths(items));
+        Assert.Equal(2, skips.Count);
+        Assert.All(skips, s => Assert.Contains("name", s.Reason, StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Theory]
+    [InlineData("a.")]
+    [InlineData("a ")]
+    [InlineData(".hidden")]
+    [InlineData("~$doc.docx")]
+    public void Walk_UnusualButSingleNames_StillListed(string name)
+    {
+        var fs = new InMemoryFileSystem();
+        fs.AddFile(@"C:\r\" + name, One);
+
+        var items = new TreeWalker(fs, false, []).Walk(@"\\?\C:\r", _ => { }).ToList();
+
+        Assert.Equal([name], RelPaths(items));
+    }
+
     [Fact]
     public void Walk_ListingFailsPartway_ReportsAndContinuesWithOtherFolders()
     {

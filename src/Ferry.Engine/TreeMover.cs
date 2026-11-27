@@ -29,6 +29,14 @@ internal sealed class TreeMover(
         var source = listed.FullPath;
         try
         {
+            if (!TreePaths.IsInside(destination, key))
+            {
+                outcome.AddFailed(files);
+                outcome.Problems.Add(new Problem(TreePaths.Display(source), IoErrorKind.InvalidName, CopyMessages.NameOutsideDestination));
+                progress.CompleteFiles(files, bytes);
+                return MoveOutcome.Failed;
+            }
+
             if (TreePaths.IsSwapped(listed, fs.GetEntry(source)))
             {
                 outcome.AddFailed(files);
@@ -68,6 +76,12 @@ internal sealed class TreeMover(
             return;
         }
 
+        if (!TreePaths.IsInside(destination, item.Key))
+        {
+            outcome.Problems.Add(new Problem(TreePaths.Display(item.Entry.FullPath), IoErrorKind.InvalidName, CopyMessages.NameOutsideDestination));
+            return;
+        }
+
         var target = Path.Combine(destination, item.Key);
         try
         {
@@ -101,6 +115,12 @@ internal sealed class TreeMover(
     public MoveOutcome MoveFile(TreeItem item, string target, bool replace)
     {
         var source = item.Entry.FullPath;
+        if (!TreePaths.IsInside(destination, item.Key))
+        {
+            fail(item, new Problem(TreePaths.Display(source), IoErrorKind.InvalidName, CopyMessages.NameOutsideDestination));
+            return MoveOutcome.Failed;
+        }
+
         try
         {
             // Only the file that was listed is renamed: another file put under its name since is refused, never moved in its place.

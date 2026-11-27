@@ -62,6 +62,8 @@ public static class CopyMessages
     public const string ChecksumsNotWritten = "The list of checksums couldn't be saved";
     public const string NoFreeName = "Couldn't find a free name for the copy";
     public const string NotRecorded = "This file couldn't be added to the job's record, so it wasn't copied (nothing was written)";
+    public const string NameOutsideDestination = "This name would have led outside the destination folder, so it was skipped";
+    public const string JournalWriteFailed = "The job's record couldn't be saved (is the drive full?), so the job stopped. What was already copied is complete; you can resume the job later";
 
     /// <summary>Free space the job's record needs before a job starts.</summary>
     public static string JournalNoSpace(string drive) =>

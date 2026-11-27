@@ -148,6 +148,7 @@ public sealed class TreeWalker
                 continue;
             }
 
+            var directoryPrefix = directory.EndsWith('\\') ? directory : directory + "\\";
             using (children)
             {
                 while (true)
@@ -175,6 +176,13 @@ public sealed class TreeWalker
                     {
                         // Cannot happen with a well-behaved file system; never hand out a path that is not under the root.
                         onSkip(new WalkSkip(PathDisplay.ToDisplayPath(full), "This item is outside the chosen folder."));
+                        continue;
+                    }
+
+                    if (!full.StartsWith(directoryPrefix, StringComparison.OrdinalIgnoreCase) || !IsSingleSafeName(full.AsSpan(directoryPrefix.Length)))
+                    {
+                        // Also cannot happen with a well-behaved file system: a hostile share or user-mode file system could list "..\x".
+                        onSkip(new WalkSkip(PathDisplay.ToDisplayPath(full), "Skipped: this item's name is not one Windows allows."));
                         continue;
                     }
 
@@ -230,6 +238,28 @@ public sealed class TreeWalker
                 }
             }
         }
+    }
+
+    /// <summary>
+    /// One plain name: not empty, no <c>\</c>, <c>/</c>, <c>:</c> or control character (NUL included), and not <c>.</c>, <c>..</c> or only dots
+    /// and spaces once Windows' trimming of trailing dots and spaces is applied. Names like <c>a.</c> are kept (they are real names).
+    /// </summary>
+    internal static bool IsSingleSafeName(ReadOnlySpan<char> name)
+    {
+        if (name.IsEmpty || name.TrimEnd(" .").IsEmpty)
+        {
+            return false;
+        }
+
+        foreach (var c in name)
+        {
+            if (c is '\\' or '/' or ':' || char.IsControl(c))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private bool IsExcluded(string relative, bool isDirectory)
