@@ -312,6 +312,92 @@ public sealed class CliTests : IDisposable
 
     private string Jobs => Path.Combine(_app, "data", "Jobs");
 
+    /// <summary>Writes a saved job that never ran, as anyone who can write the jobs folder could (every option is written, as Ferry does).</summary>
+    private string SaveJob(string mode, Dictionary<string, object> changes)
+    {
+        var options = new Dictionary<string, object>
+        {
+            ["Verify"] = true,
+            ["KeepDatesAndAttributes"] = true,
+            ["CopyPermissions"] = false,
+            ["IfExists"] = "Skip",
+            ["IfUnreadable"] = "RetryThenSkipAndList",
+            ["RescueMode"] = false,
+            ["MaxLostSectors"] = 4096,
+            ["FollowReparsePoints"] = false,
+            ["Exclude"] = Array.Empty<string>(),
+            ["DryRun"] = false,
+            ["HashAlgorithm"] = "XxHash3",
+            ["BufferSizeBytes"] = 0,
+            ["CopyAlternateStreams"] = false,
+            ["ExportChecksums"] = false,
+        };
+        foreach (var (key, value) in changes)
+        {
+            options[key] = value;
+        }
+
+        var id = Guid.NewGuid();
+        var spec = JsonSerializer.Serialize(new Dictionary<string, object>
+        {
+            ["Version"] = 1,
+            ["Sources"] = new[] { _source },
+            ["Destination"] = _destination,
+            ["Mode"] = mode,
+            ["Options"] = options,
+        });
+        JobJournal.Create(Jobs, id, spec).Dispose();
+        return id.ToString("D");
+    }
+
+    [Fact]
+    public async Task Cli_Resume_RiskySavedOptions_ArePreviewedAndNeedConfirmation()
+    {
+        SourceFile("a.txt", "new");
+        Directory.CreateDirectory(Path.Combine(_destination, "source"));
+        File.WriteAllText(Path.Combine(_destination, "source", "a.txt"), "old");
+        var id = SaveJob("Copy", new() { ["IfExists"] = "Overwrite", ["FollowReparsePoints"] = true, ["Verify"] = false, ["CopyPermissions"] = true });
+
+        var refused = await RunAsync("resume", id);
+
+        Assert.Equal(2, refused.Code);
+        Assert.Contains("a.txt", refused.Output, StringComparison.Ordinal); // the dry-run preview lists what would change
+        Assert.Contains("Replaces files that are already in the destination", refused.Output, StringComparison.Ordinal);
+        Assert.Contains("Follows links", refused.Output, StringComparison.Ordinal);
+        Assert.Contains("Doesn't check the copies", refused.Output, StringComparison.Ordinal);
+        Assert.Contains("Copies the files' permissions", refused.Output, StringComparison.Ordinal);
+        Assert.Contains("other people may be able to change", refused.Output, StringComparison.Ordinal); // portable install
+        Assert.Equal("old", File.ReadAllText(Path.Combine(_destination, "source", "a.txt")));
+
+        var accepted = await RunAsync("resume", id, "--yes");
+
+        Assert.Equal(0, accepted.Code);
+        Assert.Equal("new", File.ReadAllText(Path.Combine(_destination, "source", "a.txt")));
+    }
+
+    [Fact]
+    public async Task Cli_Resume_SavedMove_IsPreviewedBeforeAnythingMoves()
+    {
+        var source = SourceFile("m.txt", "original");
+        var id = SaveJob("Move", new());
+
+        var refused = await RunAsync("resume", id, "--json");
+
+        Assert.Equal(2, refused.Code);
+        Assert.Contains(Events(refused.Output), e => e.TryGetProperty("phase", out var p) && p.GetString() == "Preview"
+            && e.TryGetProperty("source", out var s) && s.GetString()!.EndsWith("m.txt", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains("deleted", refused.Output, StringComparison.Ordinal);
+        Assert.True(File.Exists(source));
+    }
+
+    [Theory]
+    [InlineData("a‮b")] // right-to-left override
+    [InlineData("a⁦b")] // isolate
+    [InlineData("a​b")] // zero-width space
+    [InlineData("a﻿b")]
+    [InlineData("a‎b")]
+    public void Cli_Safe_ReplacesInvisibleAndDirectionCharacters(string text) => Assert.Equal("a b", CliOutput.Safe(text));
+
     [Fact]
     public async Task Cli_CtrlC_Exit3_NoPartFilesLeft()
     {

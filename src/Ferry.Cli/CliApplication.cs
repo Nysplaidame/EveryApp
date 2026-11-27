@@ -22,7 +22,7 @@ internal static class CliApplication
         ferry verify <folderA> <folderB> [--json]
         ferry jobs [--json]
         Moves and automatic replacements show a preview and require confirmation.
-        --yes confirms that preview, including the saved paths when resuming.
+        --yes confirms that preview, including a saved job's paths and options when resuming.
         With --json, copy requires an explicit --if-exists rule other than ask.
         --rescue saves what it can from a failing drive and lists the parts it could not read.
         --if-unreadable ask is not available in this version.
@@ -89,7 +89,7 @@ internal static class CliApplication
             logger = LogSetup.Create("ferry");
             logger.Information("Ferry command started: {Command}", command);
             var yes = parsed.GetValue(cli.Yes);
-            var prompts = new ConsolePrompts(output, yes, json);
+            var prompts = new ConsolePrompts(output, yes, json, AppPaths.IsPortable);
             var copier = new TreeCopier(new WindowsFileSystem(), new DriveAwareScheduler(new WindowsDeviceResolver()), prompts, AppPaths.Jobs);
             int code;
             switch (command)
@@ -218,6 +218,24 @@ internal static class CliApplication
         output.JobId = jobId;
         var saved = SavedJob.Read(AppPaths.Jobs, jobId, ct);
         CheckOptions(saved.Options, json);
+
+        // The saved job is untrusted: one that can replace or delete files gets the same dry-run preview as a new job before the question.
+        if (!saved.IsFinished && ResumeRequest.NeedsPreview(saved.Mode, saved.Options))
+        {
+            var preview = await copier.RunAsync(jobId, saved.Sources, saved.Destination, saved.Mode, saved.Options with { DryRun = true },
+                new PauseGate(), output, ct).ConfigureAwait(false);
+            foreach (var item in preview.Plan)
+            {
+                output.Plan(item);
+            }
+
+            if (preview.Stopped)
+            {
+                return Finish(preview, output);
+            }
+        }
+
+        prompts.Previewed = saved; // the question must be about exactly what was shown
         return Finish(await copier.ResumeAsync(jobId, prompts, new PauseGate(), output, ct).ConfigureAwait(false), output);
     }
 

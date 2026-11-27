@@ -14,8 +14,16 @@ internal sealed class CliOutput(bool json) : IProgress<JobProgress>
 
     public Guid? JobId { get; set; }
 
+    /// <summary>
+    /// Text fit for the console: secrets masked, and control characters plus invisible format characters (text-direction overrides and
+    /// isolates, zero-width characters, byte-order marks) shown as spaces, so a file name cannot reorder or hide what a person confirms.
+    /// </summary>
     public static string Safe(string text) =>
-        new(SecretScrubber.Scrub(text).Select(c => char.IsControl(c) ? ' ' : c).ToArray());
+        new(SecretScrubber.Scrub(text).Select(c => char.IsControl(c) || CharUnicodeInfo.GetUnicodeCategory(c) == UnicodeCategory.Format ? ' ' : c).ToArray());
+
+    /// <summary>One line under a resume preview, e.g. a saved option the person should know about.</summary>
+    public void PreviewNote(string text) =>
+        Emit(new CliEvent("progress", JobId, Phase: "Preview", Message: Safe(text)), "  " + text);
 
     public void Report(JobProgress value)
     {
