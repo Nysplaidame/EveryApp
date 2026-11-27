@@ -492,6 +492,8 @@ internal sealed class RecordingFileSystem(IFileSystem inner) : IFileSystem
 
         public string GetFinalPath() => inner.GetFinalPath();
 
+        public FileIdentity GetIdentity() => inner.GetIdentity();
+
         public void DeleteOnClose() => inner.DeleteOnClose();
     }
 }

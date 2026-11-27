@@ -50,6 +50,35 @@ public abstract class FileSystemContractTests : IDisposable
     }
 
     [Fact]
+    public async Task Contract_Handles_DescribeTheOpenFile_NotWhateverHasTheNameNow()
+    {
+        await using (var w = Fs.CreateWrite(P("id.bin"), 0, unbuffered: false))
+        {
+            await w.WriteAsync(new byte[300], 0, CancellationToken.None);
+            var entry = Fs.GetEntry(P("id.bin"));
+            Assert.Equal(new FileIdentity(entry.FileId, entry.VolumeSerial), w.GetIdentity());
+        }
+
+        var before = Fs.GetEntry(P("id.bin"));
+        await using (var r = Fs.OpenRead(P("id.bin"), unbuffered: false))
+        {
+            var seen = r.GetEntry();
+            Assert.Equal((before.FileId, before.VolumeSerial, before.Length, before.LastWriteTimeUtc), (seen.FileId, seen.VolumeSerial, seen.Length, seen.LastWriteTimeUtc));
+        }
+
+        await using (var reopened = Fs.OpenWriteExisting(P("id.bin"), unbuffered: false))
+        {
+            Assert.Equal(new FileIdentity(before.FileId, before.VolumeSerial), reopened.GetIdentity());
+        }
+
+        // Another file put under the same name is told apart by the handle opened on it.
+        Fs.Delete(P("id.bin"));
+        await Write(Fs, P("id.bin"), new byte[300]);
+        await using var swapped = Fs.OpenWriteExisting(P("id.bin"), unbuffered: false);
+        Assert.NotEqual(new FileIdentity(before.FileId, before.VolumeSerial), swapped.GetIdentity());
+    }
+
+    [Fact]
     public async Task Contract_CreateWrite_OnExistingPath_ThrowsAlreadyExists_AndKeepsContent()
     {
         await Write(Fs, P("keep.bin"), [1, 2, 3, 4]);

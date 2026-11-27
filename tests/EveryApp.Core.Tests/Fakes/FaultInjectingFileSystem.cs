@@ -281,6 +281,8 @@ public sealed class FaultInjectingFileSystem(IFileSystem inner) : IFileSystem
             return inner.ReadAsync(buffer, offset, ct);
         }
 
+        public FileEntry GetEntry() => _dead ? throw new FileSystemException(path, IoErrorKind.NetworkLost, null) : inner.GetEntry();
+
         public ValueTask DisposeAsync() => inner.DisposeAsync();
     }
 
@@ -344,6 +346,12 @@ public sealed class FaultInjectingFileSystem(IFileSystem inner) : IFileSystem
         {
             ThrowIfDead();
             return inner.GetFinalPath();
+        }
+
+        public FileIdentity GetIdentity()
+        {
+            ThrowIfDead();
+            return inner.GetIdentity();
         }
 
         public void DeleteOnClose() => inner.DeleteOnClose();

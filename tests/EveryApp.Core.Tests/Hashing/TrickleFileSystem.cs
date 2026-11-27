@@ -65,6 +65,8 @@ internal sealed class TrickleFileSystem(IFileSystem inner, int maxPerRead) : IFi
             return h.ReadAsync(buffer.Length > owner.MaxPerRead ? buffer[..owner.MaxPerRead] : buffer, offset, ct);
         }
 
+        public FileEntry GetEntry() => h.GetEntry();
+
         public ValueTask DisposeAsync() => h.DisposeAsync();
     }
 }

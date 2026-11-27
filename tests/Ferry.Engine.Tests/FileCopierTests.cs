@@ -1132,6 +1132,8 @@ internal sealed class HookFileSystem(IFileSystem inner) : IFileSystem
             : fs.BeforeRead is not null || fs.AfterRead is not null ? HeldReadAsync(buffer, offset, ct)
             : inner.ReadAsync(buffer, offset, ct);
 
+        public FileEntry GetEntry() => inner.GetEntry();
+
         public ValueTask DisposeAsync() => inner.DisposeAsync();
 
         private async ValueTask<int> HeldReadAsync(Memory<byte> buffer, long offset, CancellationToken ct)
@@ -1208,6 +1210,8 @@ internal sealed class HookFileSystem(IFileSystem inner) : IFileSystem
         public ValueTask DisposeAsync() => inner.DisposeAsync();
 
         public string GetFinalPath() => inner.GetFinalPath();
+
+        public FileIdentity GetIdentity() => inner.GetIdentity();
 
         public void DeleteOnClose() => inner.DeleteOnClose();
     }

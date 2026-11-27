@@ -376,6 +376,59 @@ public sealed class FileCopierPipelineTests
     }
 
     [Fact]
+    public async Task Transfer_PartReplacedWhileDisconnected_IsNeitherWrittenNorDeleted()
+    {
+        using var rig = new Rig((6 * Chunk) + 513);
+        rig.B.Faults.FailWriteWhere(FileCopierTests.IsPart, 2L * Chunk, IoErrorKind.NetworkLost, times: 1, handleDies: true);
+        var decoy = FileCopierTests.Bytes(3 * Chunk, seed: 41);
+        string? part = null;
+        rig.B.Hooks.Opened = path =>
+        {
+            if (FileCopierTests.IsPart(path))
+            {
+                // Another file now answers to the part's name, at the same final path (like a hard link put in its place).
+                part = path;
+                rig.B.Memory!.AddFile(path, decoy);
+            }
+        };
+
+        var outcome = await rig.Copy(new CopyOptions(), Ct, time: new AutoAdvancingTime()).WaitAsync(Patience, Ct);
+
+        Assert.False(outcome.Success);
+        Assert.Equal(IoErrorKind.InvalidName, outcome.Problem?.Kind);
+        Assert.NotNull(part);
+        Assert.True(rig.B.Exists(part), "The file put in the part's place was deleted.");
+        Assert.True(decoy.AsSpan().SequenceEqual(rig.B.ReadAll(part)), "The file put in the part's place was written to.");
+        Assert.False(rig.B.Exists(rig.Dst));
+        Assert.Equal(0, rig.Pool.Outstanding);
+    }
+
+    [Fact]
+    public async Task Transfer_SourceSwappedJustBeforeReopen_IsRefused()
+    {
+        using var rig = new Rig((6 * Chunk) + 513);
+        var stamp = new DateTime(2030, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        rig.B.Memory!.Clock = () => stamp;
+        rig.B.AddFile(rig.Src, rig.Data); // same content again, with a time the swapped-in file will share
+        rig.B.Faults.FailReadRange(rig.Src, 2L * Chunk, 1, IoErrorKind.NetworkLost, times: 1, handleDies: true);
+        var opens = 0;
+        rig.B.Hooks.Opened = path =>
+        {
+            if (path == rig.Src && Interlocked.Increment(ref opens) == 2)
+            {
+                // After any look-up by name and just before the reopen, a different file of the same size and time takes the name.
+                rig.B.Memory.AddFile(rig.Src, FileCopierTests.Bytes(rig.Data.Length, seed: 77));
+            }
+        };
+
+        var outcome = await rig.Copy(new CopyOptions(), Ct, time: new AutoAdvancingTime()).WaitAsync(Patience, Ct);
+
+        Assert.False(outcome.Success);
+        Assert.Equal(CopyMessages.SourceChanged, outcome.Problem?.Message);
+        rig.AssertNothingLeft();
+    }
+
+    [Fact]
     public async Task Transfer_RescueMode_OneReadAtATime()
     {
         using var rig = new Rig((6 * Chunk) + 513);

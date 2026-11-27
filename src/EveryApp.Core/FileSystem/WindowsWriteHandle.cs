@@ -156,6 +156,24 @@ internal sealed class WindowsWriteHandle : IWriteHandle
         }
     }
 
+    public FileIdentity GetIdentity()
+    {
+        try
+        {
+            // One query (FileIdInfo): this runs once for every file copied, so it stays as cheap as possible.
+            if (!NativeFileApi.TryGetFileId(_handle, out var serial, out var id))
+            {
+                throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+            }
+
+            return new FileIdentity(id, serial);
+        }
+        catch (Exception ex) when (WindowsFileSystem.IsTranslatable(ex) || ex is ObjectDisposedException)
+        {
+            throw ErrorKinds.Translate(_path, ex);
+        }
+    }
+
     public void DeleteOnClose()
     {
         try

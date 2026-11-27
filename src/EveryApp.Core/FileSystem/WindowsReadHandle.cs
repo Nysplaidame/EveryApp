@@ -53,6 +53,18 @@ internal sealed class WindowsReadHandle : IReadHandle
         }
     }
 
+    public FileEntry GetEntry()
+    {
+        try
+        {
+            return WindowsFileSystem.EntryFromHandle(_handle, WindowsFileSystem.Normalize(_path));
+        }
+        catch (Exception ex) when (WindowsFileSystem.IsTranslatable(ex) || ex is ObjectDisposedException)
+        {
+            throw ErrorKinds.Translate(_path, ex);
+        }
+    }
+
     public async ValueTask DisposeAsync()
     {
         // Cancels and waits (bounded) for in-flight reads before closing the handle or releasing the buffer.

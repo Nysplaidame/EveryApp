@@ -630,7 +630,7 @@ public sealed partial class WindowsFileSystem(AlignedBufferPool? pool = null) : 
         return EntryFromHandle(handle, longForm);
     }
 
-    private static FileEntry EntryFromHandle(SafeFileHandle handle, string longForm)
+    internal static FileEntry EntryFromHandle(SafeFileHandle handle, string longForm)
     {
         if (!PInvoke.GetFileInformationByHandle(handle, out var info))
         {

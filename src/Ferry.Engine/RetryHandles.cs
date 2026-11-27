@@ -1,5 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
+using System.Runtime.ExceptionServices;
 using EveryApp.Core.FileSystem;
 
 namespace Ferry.Engine;
@@ -39,6 +40,13 @@ internal static class RetryHandles
         && !ct.IsCancellationRequested
         && !ReferenceEquals(used, current);
 
+    /// <summary>
+    /// True when a failed reopen must stop the handle for good: the file failed its identity check or another error the policy will not
+    /// retry. A lost connection or cancellation is not one.
+    /// </summary>
+    public static bool StopsHandle(Exception ex) =>
+        ex is not OperationCanceledException && !(ex is FileSystemException fs && RetryPolicy.IsTransient(fs.Kind));
+
     public static async ValueTask CloseFailedAsync(IAsyncDisposable? handle)
     {
         if (handle is null)
@@ -59,13 +67,16 @@ internal static class RetryHandles
 
 /// <summary>
 /// Reopens the source after a transient failure. Several reads may run at once: the first to fail on a handle replaces it (closing the
-/// old one aborts the others), and every other read that was on the old handle simply runs again on the new one.
+/// old one aborts the others), and every other read that was on the old handle simply runs again on the new one. <paramref name="reopen"/>
+/// checks the file it opened is still the source; once a reopen fails like that, every read (queued ones too) fails the same way without
+/// opening it again.
 /// </summary>
 [SuppressMessage("Design", "CA1001:Types that own disposable fields should be disposable", Justification = "SemaphoreSlim without AvailableWaitHandle holds nothing to release; disposing would strand waiters.")]
-internal sealed class RetryReadHandle(IReadHandle initial, Func<IReadHandle> reopen, RetryPolicy policy, IProgress<string>? status) : IReadHandle
+internal sealed class RetryReadHandle(IReadHandle initial, Func<ValueTask<IReadHandle>> reopen, RetryPolicy policy, IProgress<string>? status) : IReadHandle
 {
     private readonly SemaphoreSlim _swap = new(1, 1);
     private IReadHandle? _handle = initial;
+    private volatile ExceptionDispatchInfo? _stopped; // set (under _swap) when a reopen failed for good
 
     public long Length { get; } = initial.Length;
 
@@ -94,6 +105,7 @@ internal sealed class RetryReadHandle(IReadHandle initial, Func<IReadHandle> reo
             }
 
             await RetryHandles.WaitForSwapAsync(_swap, ct).ConfigureAwait(false);
+            _stopped?.Throw();
             if (Volatile.Read(ref _handle) is null)
             {
                 // The last reopen failed and the policy is waiting to try again: join in with this read's own retries.
@@ -108,20 +120,14 @@ internal sealed class RetryReadHandle(IReadHandle initial, Func<IReadHandle> reo
             await _swap.WaitAsync(ct).ConfigureAwait(false);
             try
             {
+                _stopped?.Throw();
                 var current = Volatile.Read(ref _handle);
                 if (current is null || ReferenceEquals(current, failed))
                 {
                     Volatile.Write(ref _handle, null);
                     await RetryHandles.CloseFailedAsync(current).ConfigureAwait(false);
-                    var reopened = reopen();
-                    if (reopened.Length != Length)
-                    {
-                        await RetryHandles.CloseFailedAsync(reopened).ConfigureAwait(false);
-                        throw new SourceChangedException();
-                    }
-
-                    Volatile.Write(ref _handle, reopened);
-                    current = reopened;
+                    current = await ReopenAsync().ConfigureAwait(false);
+                    Volatile.Write(ref _handle, current);
                 }
 
                 failed = current; // if this attempt fails too, the next one replaces this handle
@@ -133,12 +139,37 @@ internal sealed class RetryReadHandle(IReadHandle initial, Func<IReadHandle> reo
             }
         }, status, ct);
 
+    /// <summary>Runs under <c>_swap</c>. A reopen that fails for good stops this handle, so nothing tries the name again.</summary>
+    private async ValueTask<IReadHandle> ReopenAsync()
+    {
+        try
+        {
+            var reopened = await reopen().ConfigureAwait(false);
+            if (reopened.Length != Length)
+            {
+                await RetryHandles.CloseFailedAsync(reopened).ConfigureAwait(false);
+                throw new SourceChangedException();
+            }
+
+            return reopened;
+        }
+        catch (Exception ex) when (RetryHandles.StopsHandle(ex))
+        {
+            _stopped = ExceptionDispatchInfo.Capture(ex);
+            throw;
+        }
+    }
+
+    public FileEntry GetEntry() => Volatile.Read(ref _handle)!.GetEntry();
+
     public ValueTask DisposeAsync() => Volatile.Read(ref _handle)?.DisposeAsync() ?? ValueTask.CompletedTask;
 }
 
 /// <summary>
 /// Reopens the part file after a transient failure. Several writes may run at once: the first to fail on a handle replaces it (closing the
-/// old one aborts the others), and every other write that was on the old handle simply runs again on the new one.
+/// old one aborts the others), and every other write that was on the old handle simply runs again on the new one. <paramref name="reopen"/>
+/// checks the file it opened is still our part file; once a reopen fails like that, every write (queued ones too) fails the same way
+/// without opening it again.
 /// </summary>
 [SuppressMessage("Design", "CA1001:Types that own disposable fields should be disposable", Justification = "SemaphoreSlim without AvailableWaitHandle holds nothing to release; disposing would strand waiters.")]
 internal sealed class RetryWriteHandle(IWriteHandle initial, Func<ValueTask<IWriteHandle>> reopen, RetryPolicy policy, IProgress<string>? status, CancellationToken cancellation) : IWriteHandle
@@ -146,6 +177,7 @@ internal sealed class RetryWriteHandle(IWriteHandle initial, Func<ValueTask<IWri
     private readonly SemaphoreSlim _swap = new(1, 1);
     private IWriteHandle? _handle = initial;
     private volatile bool _reopened;
+    private volatile ExceptionDispatchInfo? _stopped; // set (under _swap) when a reopen failed for good
 
     public bool Reopened => _reopened;
 
@@ -176,6 +208,7 @@ internal sealed class RetryWriteHandle(IWriteHandle initial, Func<ValueTask<IWri
             }
 
             await RetryHandles.WaitForSwapAsync(_swap, ct).ConfigureAwait(false);
+            _stopped?.Throw();
             if (Volatile.Read(ref _handle) is null)
             {
                 // The last reopen failed and the policy is waiting to try again: join in with this write's own retries.
@@ -209,12 +242,22 @@ internal sealed class RetryWriteHandle(IWriteHandle initial, Func<ValueTask<IWri
             await _swap.WaitAsync(ct).ConfigureAwait(false);
             try
             {
+                _stopped?.Throw();
                 var current = Volatile.Read(ref _handle);
                 if (current is null || ReferenceEquals(current, failed))
                 {
                     Volatile.Write(ref _handle, null);
                     await RetryHandles.CloseFailedAsync(current).ConfigureAwait(false);
-                    current = await reopen().ConfigureAwait(false);
+                    try
+                    {
+                        current = await reopen().ConfigureAwait(false);
+                    }
+                    catch (Exception ex) when (RetryHandles.StopsHandle(ex))
+                    {
+                        _stopped = ExceptionDispatchInfo.Capture(ex); // nothing tries the name again
+                        throw;
+                    }
+
                     Volatile.Write(ref _handle, current);
                     _reopened = true;
                 }
@@ -235,6 +278,8 @@ internal sealed class RetryWriteHandle(IWriteHandle initial, Func<ValueTask<IWri
     public ValueTask SetLengthAsync(long length) => Volatile.Read(ref _handle)!.SetLengthAsync(length);
 
     public string GetFinalPath() => Volatile.Read(ref _handle)!.GetFinalPath();
+
+    public FileIdentity GetIdentity() => Volatile.Read(ref _handle)!.GetIdentity();
 
     public void DeleteOnClose() => Volatile.Read(ref _handle)!.DeleteOnClose();
 

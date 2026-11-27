@@ -788,6 +788,14 @@ public sealed class InMemoryFileSystem : IFileSystem
             }
         }
 
+        public FileEntry GetEntry()
+        {
+            lock (fs._lock)
+            {
+                return ToEntry(node);
+            }
+        }
+
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
@@ -919,6 +927,12 @@ public sealed class InMemoryFileSystem : IFileSystem
             {
                 return LongForm(node.Key);
             }
+        }
+
+        public FileIdentity GetIdentity()
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            return new FileIdentity(node.FileId, node.VolumeSerial);
         }
 
         public void DeleteOnClose() => _deleteOnClose = true;

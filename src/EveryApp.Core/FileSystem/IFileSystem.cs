@@ -6,6 +6,12 @@ public interface IReadHandle : IAsyncDisposable
     long Length { get; }
 
     ValueTask<int> ReadAsync(Memory<byte> buffer, long offset, CancellationToken ct);
+
+    /// <summary>
+    /// Describes the open file itself (id, volume, size, last write time), asked through this handle and never by name, so a file put in
+    /// its place under the same name cannot answer for it.
+    /// </summary>
+    FileEntry GetEntry();
 }
 
 /// <summary>
@@ -31,6 +37,12 @@ public interface IWriteHandle : IAsyncDisposable
 
     /// <summary>Where this open file really is, as Windows resolved it (every link followed), in the canonical <c>\\?\</c> form.</summary>
     string GetFinalPath();
+
+    /// <summary>
+    /// Which object on disk the open file is, asked through this handle and never by name. Two names for one file (hard links) give the
+    /// same answer; a different file under the same name does not.
+    /// </summary>
+    FileIdentity GetIdentity();
 
     /// <summary>
     /// Deletes the file through this handle when it closes (the handle carries delete access). The name is never looked up again, so a link

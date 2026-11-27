@@ -146,15 +146,25 @@ public sealed class FileCopier
                 return Failed(source, IoErrorKind.Other, CopyMessages.SourceChanged, part);
             }
 
-            reader = new RetryReadHandle(reader, () =>
+            reader = new RetryReadHandle(reader, async () =>
             {
-                var current = _fs.GetEntryFollowingLinks(source);
-                if (current.FileId != before.FileId || current.VolumeSerial != before.VolumeSerial || current.Length != length || current.LastWriteTimeUtc != before.LastWriteTimeUtc)
+                // Checked on the handle just opened, not by name first: a file swapped in between a look-up and the open cannot pass.
+                var reopened = _fs.OpenRead(source, unbuffered);
+                try
                 {
-                    throw new SourceChangedException();
-                }
+                    var current = reopened.GetEntry();
+                    if (current.FileId != before.FileId || current.VolumeSerial != before.VolumeSerial || current.Length != length || current.LastWriteTimeUtc != before.LastWriteTimeUtc)
+                    {
+                        throw new SourceChangedException();
+                    }
 
-                return _fs.OpenRead(source, unbuffered);
+                    return reopened;
+                }
+                catch
+                {
+                    await reopened.DisposeAsync().ConfigureAwait(false);
+                    throw;
+                }
             }, retry, hooks?.Status);
 
             (writer, part) = await retry.RunAsync(() => Task.FromResult(CreatePart(destination, length, writeUnbuffered, hooks)), RetryPolicy.IsTransient, hooks?.Status, ct).ConfigureAwait(false);
@@ -166,12 +176,14 @@ public sealed class FileCopier
                 return Failed(source, IoErrorKind.InvalidName, CopyMessages.PartOutsideDestination, part);
             }
             var originalFinalPath = writer.GetFinalPath();
+            var partIdentity = writer.GetIdentity();
             var retryWriter = new RetryWriteHandle(writer, async () =>
             {
                 var reopened = _fs.OpenWriteExisting(part, writeUnbuffered);
                 try
                 {
-                    if (!SamePath(originalFinalPath, reopened.GetFinalPath()))
+                    // Same place and the same file: a hard link to another file under the part's name has the right path but not the id.
+                    if (!SamePath(originalFinalPath, reopened.GetFinalPath()) || reopened.GetIdentity() != partIdentity)
                     {
                         partIsOurs = false; // the name now points somewhere else: never delete through it
                         throw new FileSystemException(part, IoErrorKind.InvalidName, null);
