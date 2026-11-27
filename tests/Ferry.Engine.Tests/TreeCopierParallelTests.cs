@@ -36,6 +36,36 @@ public sealed class TreeCopierParallelTests : TreeCopierTestBase
         AssertSameAsSource(6);
     }
 
+    /// <summary>A volume has one sector size: a checked job asks once per volume, not twice for every file.</summary>
+    [Fact]
+    public async Task TreeJob_CheckedCopy_AsksSectorSizeOncePerVolume()
+    {
+        const int files = 1000;
+        for (var i = 0; i < files; i++)
+        {
+            _rig.Mem.AddFile($@"C:\src\f{i}.bin", Bytes(100 + (i % 7), seed: i));
+        }
+
+        var result = await _rig.RunAsync([@"C:\src"], @"D:\dst", new CopyOptions { Verify = true });
+
+        Assert.Equal(files, result.Copied);
+        Assert.True(_rig.Fs.SectorSizeCalls <= 2, $"asked {_rig.Fs.SectorSizeCalls} times");
+    }
+
+    /// <summary>Without a job's shared cache (a single file) the copier still asks the file system itself.</summary>
+    [Fact]
+    public async Task FileCopier_WithoutHooks_StillAsksSectorSize()
+    {
+        _rig.Mem.AddFile(@"C:\one.bin", Bytes(100, seed: 1));
+        using var pool = new BufferPool();
+
+        var outcome = await new FileCopier(_rig.Fs, pool).CopyAsync(@"C:\one.bin", @"D:\one.bin", new CopyOptions { RescueMode = true }, new PauseGate(),
+            new LatestProgress(), null, Ct);
+
+        Assert.True(outcome.Success, outcome.Problem?.Message);
+        Assert.True(_rig.Fs.SectorSizeCalls >= 2);
+    }
+
     [Fact]
     public async Task Spinning_OneAtATime()
     {

@@ -38,6 +38,7 @@ internal sealed partial class TreeJob
     private bool _sameVolume;
     private bool _localDrives;
     private readonly SpeedLimiter? _limiter;
+    private readonly SectorSizeCache _sectorSizes;
     private LargeFileGates? _gates; // one per job, shared by every copy; disposed only once every copy has ended
     private int _workers = 1;
 
@@ -59,6 +60,7 @@ internal sealed partial class TreeJob
         _mover = new TreeMover(_fs, _destination, _outcome, _journal, _progress, Fail);
         _checksums = new ChecksumWriter(_fs, _destination, _options.HashAlgorithm, _journal, _outcome);
         _limiter = _options.SpeedLimitBytesPerSecond is { } rate ? new SpeedLimiter(rate, owner.Time) : null; // one per job, shared by every copy in it
+        _sectorSizes = new SectorSizeCache(_fs);
     }
 
     private bool VerifyOn => _options.Verify || _isMove;
@@ -629,6 +631,7 @@ internal sealed partial class TreeJob
                     TreePaths.Combine(targetFolderKey, Path.GetFileName(part)), targetKey)),
                 SharedLimiter = _limiter,
                 LargeGates = _gates,
+                SectorSizes = _sectorSizes,
                 ReplaceExisting = replace,
                 TryBlockClone = clone,
 

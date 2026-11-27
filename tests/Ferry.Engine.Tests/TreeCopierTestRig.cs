@@ -266,6 +266,7 @@ internal sealed class RecordingFileSystem(IFileSystem inner) : IFileSystem
 {
     private readonly Lock _lock = new();
     private readonly List<string> _log = [];
+    private int _sectorSizeCalls;
 
     /// <summary>Returns the bytes to really write for a write to (path, offset), e.g. with a flipped bit.</summary>
     public Func<string, long, ReadOnlyMemory<byte>, ReadOnlyMemory<byte>>? TransformWrite { get; set; }
@@ -399,7 +400,14 @@ internal sealed class RecordingFileSystem(IFileSystem inner) : IFileSystem
 
     public long GetFreeSpace(string path) => inner.GetFreeSpace(path);
 
-    public int GetSectorSize(string path) => inner.GetSectorSize(path);
+    /// <summary>How many times <see cref="GetSectorSize"/> was asked.</summary>
+    public int SectorSizeCalls => Volatile.Read(ref _sectorSizeCalls);
+
+    public int GetSectorSize(string path)
+    {
+        Interlocked.Increment(ref _sectorSizeCalls);
+        return inner.GetSectorSize(path);
+    }
 
     public SecurityCopyResult CopySecurity(string source, string target)
     {

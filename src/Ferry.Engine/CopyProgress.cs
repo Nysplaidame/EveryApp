@@ -56,6 +56,12 @@ public sealed class FileCopyHooks
     internal LargeFileGates? LargeGates { get; init; }
 
     /// <summary>
+    /// One sector-size cache shared by every copy of a job, so each volume is asked once instead of twice per file. When null the copier asks
+    /// the file system itself for every file.
+    /// </summary>
+    internal SectorSizeCache? SectorSizes { get; init; }
+
+    /// <summary>
     /// Called once the part file is complete, flushed (see <see cref="SkipSmallFileFlush"/>) and the right size, just before it takes the real name, with the source hash (null when
     /// neither verify nor checksum export is on). Return a <see cref="Problem"/> to refuse: the copy then fails and the part file is deleted.
     /// Used to verify the copy and to add extra data streams before the real name ever appears.
