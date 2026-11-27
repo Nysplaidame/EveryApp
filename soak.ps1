@@ -18,6 +18,11 @@
   Folder to copy (read only). Default: the "mixed" set's source in bench.local.json.
 .PARAMETER DestRoot
   Folder the script owns and empties. Default: a "soak" folder inside the "mixed" set's dest in bench.local.json.
+.PARAMETER MoveRoot
+  A second folder the script owns and empties, used as the target of the move step (it can be on another volume). Without it the move
+  step is a same-volume rename inside DestRoot: nothing is copied, so a kill during the move cannot be exercised.
+.PARAMETER Force
+  Start even when one cycle at the speed limit would take longer than the whole time budget.
 .PARAMETER Hours
   How long to keep starting new cycles (default 4). The cycle in progress always finishes.
 .PARAMETER Minutes
@@ -33,6 +38,8 @@
 param(
     [string]$Source = '',
     [string]$DestRoot = '',
+    [string]$MoveRoot = '',
+    [switch]$Force,
     [ValidateRange(0.01, 168)][double]$Hours = 4,
     [double]$Minutes = 0,
     [ValidateRange(1, 10000)][int]$LimitMBps = 5,
@@ -65,6 +72,7 @@ if (-not $Source -or -not $DestRoot) {
 if (-not (Test-Path -LiteralPath $Source -PathType Container)) { throw "Source folder not found: $Source" }
 $Source = [IO.Path]::GetFullPath($Source).TrimEnd('\')
 $DestRoot = [IO.Path]::GetFullPath($DestRoot).TrimEnd('\')
+if ($MoveRoot) { $MoveRoot = [IO.Path]::GetFullPath($MoveRoot).TrimEnd('\') }
 $leaf = Split-Path -Leaf $Source
 
 function Assert-Separate([string]$A, [string]$B) {
@@ -75,6 +83,18 @@ function Assert-Separate([string]$A, [string]$B) {
     }
 }
 Assert-Separate $Source $DestRoot
+if ($MoveRoot) { Assert-Separate $Source $MoveRoot; Assert-Separate $DestRoot $MoveRoot }
+
+# Refuses a folder, or any existing parent of it, that is a link or junction (a path through a link could lead into the source).
+function Assert-NoLinks([string]$Path) {
+    $p = [IO.Path]::GetFullPath($Path).TrimEnd('\')
+    while ($p -and $p.Length -gt 3) {
+        if ((Test-Path -LiteralPath $p) -and ((Get-Item -LiteralPath $p -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw "Refusing a folder that is or lies under a link: $p" }
+        $p = Split-Path -Parent $p
+    }
+}
+Assert-NoLinks $DestRoot
+if ($MoveRoot) { Assert-NoLinks $MoveRoot }
 
 # Empties DestRoot, but only a folder this script owns: new, empty, or marked by this script. Never a drive root. Links inside are removed
 # as links, never followed. Never touches the source.
@@ -82,6 +102,7 @@ function Clear-Owned([string]$Path) {
     $full = [IO.Path]::GetFullPath($Path).TrimEnd('\')
     if ($full.Length -le 3) { throw "Refusing to empty a drive root: $full" }
     Assert-Separate $Source $full
+    Assert-NoLinks $full
     $marker = Join-Path $full $markerName
     if (Test-Path -LiteralPath $full) {
         if (-not (Test-Path -LiteralPath $marker) -and (Get-ChildItem -LiteralPath $full -Force | Select-Object -First 1)) {
@@ -113,16 +134,24 @@ if ($Seed -lt 0) { $Seed = Get-Random -Maximum 1000000 }
 $rng = New-Object System.Random $Seed
 $limitText = "$($LimitMBps)MB/s"
 $estSeconds = [math]::Max(2.0, $sourceBytes / ($LimitMBps * 1e6))
-$maxGB = [math]::Round($Hours * 3600 * $LimitMBps / 1000, 1)
+$budgetSeconds = $Hours * 3600
+$cycleBytes = 2 * $sourceBytes # one copy and one move
+$cycleSeconds = $cycleBytes / ($LimitMBps * 1e6)
+$estGB = [math]::Round([math]::Max($budgetSeconds * $LimitMBps * 1e6, $cycleBytes) / 1e9, 1)
+if ($cycleSeconds -gt $budgetSeconds -and -not $Force) {
+    throw ("One cycle (copy and move of {0:F1} GB) would take about {1:F1} h at {2}, longer than the {3:F2} h budget. Use a smaller source, a higher -LimitMBps, more -Hours, or -Force." -f ($sourceBytes / 1e9), ($cycleSeconds / 3600), $limitText, $Hours)
+}
+$moveNote = if ($MoveRoot) { 'move step: real copy-and-delete into MoveRoot' } else { 'NO -MoveRoot: the move step is a same-volume rename only, so the kill-during-move check does not apply' }
 
-Write-Host ("Soak: {0} files, {1} MiB, {2:F2} h, limit {3}, seed {4}. Writes at most about {5} GB (limited copies and moves; resumed jobs run unlimited for their remaining data)." -f
-    $files.Count, [math]::Round($sourceBytes / 1MB), $Hours, $limitText, $Seed, $maxGB) -ForegroundColor Cyan
+Write-Host ("Soak: {0} files, {1} MiB, {2:F2} h, limit {3}, seed {4}. Writes about {5} GB (estimate: the larger of limit x time and one cycle; resumed jobs have no limit, so the real figure can be higher). {6}." -f
+    $files.Count, [math]::Round($sourceBytes / 1MB), $Hours, $limitText, $Seed, $estGB, $moveNote) -ForegroundColor Cyan
 
 New-Item -ItemType Directory -Force $outDir | Out-Null
 $work = Join-Path $outDir 'work'
 New-Item -ItemType Directory -Force $work | Out-Null
 foreach ($old in @(Get-ChildItem -LiteralPath $work -File -Force)) { Remove-Item -LiteralPath $old.FullName -Force }
 Clear-Owned $DestRoot
+if ($MoveRoot) { Clear-Owned $MoveRoot }
 
 # ---- suspend / resume a whole process --------------------------------------------------------------------------------------------------
 if (-not ('SoakNative' -as [type])) {
@@ -175,7 +204,7 @@ function Read-Events([string]$File) {
     $events = @()
     if (Test-Path -LiteralPath $File) {
         foreach ($line in @(Get-Content -LiteralPath $File)) {
-            if ($line -like '{*') { try { $events += ($line | ConvertFrom-Json) } catch { } }
+            if ($line -like '*"type":"result"*') { try { $events += ($line | ConvertFrom-Json) } catch { } }
         }
     }
     return $events
@@ -305,7 +334,7 @@ function Invoke-Verify([string]$Name, [string]$A, [string]$B) {
 }
 
 function Test-LeftoverParts([string]$Name) {
-    $parts = @(Get-ChildItem -LiteralPath $DestRoot -Recurse -Force -File -Filter '*.ferrypart' -ErrorAction SilentlyContinue)
+    $parts = @(foreach ($r in $DestRoot, $MoveRoot) { if ($r) { Get-ChildItem -LiteralPath $r -Recurse -Force -File -Filter '*.ferrypart' -ErrorAction SilentlyContinue } })
     if ($parts.Count -gt 0) {
         $stats.LeftoverParts += $parts.Count
         $problems.Add("cycle $($script:cycle) after $Name : $($parts.Count) leftover .ferrypart file(s), first $($parts[0].Name)")
@@ -315,10 +344,22 @@ function Test-LeftoverParts([string]$Name) {
 # ---- the loop --------------------------------------------------------------------------------------------------------------------------
 $endAt = $Hours * 3600
 $copyDir = Join-Path $DestRoot 'copy'
-$movedDir = Join-Path $DestRoot 'moved'
+$movedDir = if ($MoveRoot) { $MoveRoot } else { Join-Path $DestRoot 'moved' }
 $failedCycles = 0
+$evidenceKept = $false
+
+# Lists what is left in the output folders, so a failed cycle can be examined.
+function Save-Evidence {
+    $lines = foreach ($r in $DestRoot, $MoveRoot) {
+        if ($r -and (Test-Path -LiteralPath $r)) {
+            "== $r"
+            foreach ($f in @(Get-ChildItem -LiteralPath $r -Recurse -Force -ErrorAction SilentlyContinue)) { '{0}  {1}' -f $f.Length, $f.FullName.Substring($r.Length) }
+        }
+    }
+    $lines | Set-Content -Encoding utf8 (Join-Path $outDir "failed-cycle-$($script:cycle).txt")
+}
 try {
-    while ($clock.Elapsed.TotalSeconds -lt $endAt -and $failedCycles -lt 3) {
+    while ($clock.Elapsed.TotalSeconds -lt $endAt -and $failedCycles -eq 0) {
         $script:cycle++
         Write-Host ("==> cycle {0} ({1:F1} of {2:F1} min)" -f $script:cycle, ($clock.Elapsed.TotalMinutes), ($endAt / 60)) -ForegroundColor Cyan
         $ok = Invoke-Job 'copy' @('copy', $Source, $copyDir, '--yes', '--if-exists', 'overwrite', '--json', '--limit', $limitText) $true
@@ -335,8 +376,20 @@ try {
             $ok = Invoke-Verify 'verify-moved' $Source (Join-Path $movedDir $leaf)
         }
         $script:step = 'cleanup'
-        Clear-Owned $DestRoot
-        if ($ok) { $stats.Cycles++ } else { $failedCycles++ }
+        if ($ok) {
+            try {
+                Clear-Owned $DestRoot
+                if ($MoveRoot) { Clear-Owned $MoveRoot }
+                $stats.Cycles++
+            }
+            catch { $ok = $false; $problems.Add("cycle $($script:cycle) cleanup failed: $($_.Exception.Message)") }
+        }
+        if (-not $ok) {
+            # Keep the evidence: the output folders stay as they are, and the run stops.
+            $failedCycles++
+            $evidenceKept = $true
+            try { Save-Evidence } catch { }
+        }
         Write-Host ("    {0}; pauses {1}, kills {2}, verify failures {3}, job failures {4}" -f $(if ($ok) { 'cycle ok' } else { 'cycle FAILED' }), $stats.Pauses, $stats.Kills, $stats.VerifyFailures, $stats.JobFailures)
     }
 }
@@ -346,7 +399,9 @@ finally {
         Stop-Process -Id $script:current.Id -Force -ErrorAction SilentlyContinue
     }
 }
-Clear-Owned $DestRoot
+if (-not $evidenceKept) {
+    try { Clear-Owned $DestRoot; if ($MoveRoot) { Clear-Owned $MoveRoot } } catch { $problems.Add("final cleanup failed: $($_.Exception.Message)") }
+}
 $totalSeconds = $clock.Elapsed.TotalSeconds
 
 # ---- slopes ----------------------------------------------------------------------------------------------------------------------------
@@ -381,7 +436,7 @@ if ($null -ne $handleSlope -and $handleSlope -ge 1) { $growth += 'handle count g
 $pass = ($stats.Cycles -gt 0 -and $stats.VerifyFailures -eq 0 -and $stats.JobFailures -eq 0 -and $stats.LeftoverParts -eq 0 -and $growth.Count -eq 0 -and $failedCycles -eq 0)
 $writtenGB = [math]::Round($stats.Steps * $sourceBytes / 1e9, 1)
 $slopeNote = if ($meaningful) { '' } else { " (slopes not meaningful: $($window.Count) samples over $([math]::Round($spanMinutes)) min in the window; needs 10 or more samples over 10 min or more)" }
-$line = "{0}: {1} cycles, {2} pauses, {3} kills+resumes ({4} killed before the job was saved), {5} verify failures, {6} job failures, {7} leftover parts, working set {8}, handles {9}, about {10} GB written at most{11}" -f
+$line = "{0}: {1} cycles, {2} pauses, {3} kills+resumes ({4} killed before the job was saved), {5} verify failures, {6} job failures, {7} leftover parts, working set {8}, handles {9}, at most about {10} GB written (steps x source size){11}" -f
     $(if ($pass) { 'SOAK PASS' } else { 'SOAK FAIL' }), $stats.Cycles, $stats.Pauses, $stats.Resumes, $stats.EarlyKills, $stats.VerifyFailures, $stats.JobFailures,
     $stats.LeftoverParts, (Format-Slope $wsSlope), (Format-Slope $handleSlope), $writtenGB, $slopeNote
 
@@ -393,9 +448,11 @@ $md = @(
     "- Run: $([math]::Round($totalSeconds / 60, 1)) min, seed $Seed, limit $limitText, $($files.Count) files / $([math]::Round($sourceBytes / 1MB)) MiB per copy.",
     "- Samples: $($samples.Count) total, $($window.Count) in the slope window ($([math]::Round($spanMinutes)) min). Log: artifacts/soak/samples.csv.",
     '- Slope caveat: samples come from many short-lived ferry.exe processes (copy, move, verify, resume); the slope is fitted across all samples in the window, so a mix of step types can bias it. Read the CSV for a single long-lived process.',
-    "- Data written: an upper bound, steps x source size ($($stats.Steps) steps). A move on one volume may not rewrite the data; a resumed job only writes what was left.",
-    '- `ferry resume` takes no --limit, so resumed jobs ran at full speed.'
+    "- Data written: at most steps x source size ($($stats.Steps) steps). A move on one volume may not rewrite the data; a resumed job only writes what was left. The start-up estimate ($estGB GB) was limit x time or one cycle, whichever is larger.",
+    '- `ferry resume` takes no --limit, so resumed jobs ran at full speed.',
+    "- $moveNote."
 )
+if ($evidenceKept) { $md += '- A cycle failed: the output folders were NOT emptied, and artifacts/soak/failed-cycle-N.txt lists them. The next run empties them.' }
 if ($problems.Count -gt 0) { $md += ''; $md += '## Problems'; foreach ($p in $problems) { $md += "- $p" } }
 $md | Set-Content -Encoding utf8 (Join-Path $outDir 'summary.md')
 
