@@ -63,6 +63,9 @@ internal sealed partial class TreeJob
         _sectorSizes = new SectorSizeCache(_fs);
     }
 
+    /// <summary>The walk follows links, so a file may lie on another volume than its root.</summary>
+    private bool FollowsLinks => !_isMove && _options.FollowReparsePoints;
+
     private bool VerifyOn => _options.Verify || _isMove;
 
     private CopyOptions CopierOptions => VerifyOn == _options.Verify ? _options : _options with { Verify = true };
@@ -632,6 +635,10 @@ internal sealed partial class TreeJob
                 SharedLimiter = _limiter,
                 LargeGates = _gates,
                 SectorSizes = _sectorSizes,
+
+                // A file shares its root's volume unless the walk followed a link or a mount point out of it: then it is asked about itself.
+                SourceSectorRoot = FollowsLinks || entry.VolumeSerial != root.Entry.VolumeSerial ? null : root.Path,
+                DestinationSectorRoot = _destination,
                 ReplaceExisting = replace,
                 TryBlockClone = clone,
 

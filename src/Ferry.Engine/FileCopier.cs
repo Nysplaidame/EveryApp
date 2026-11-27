@@ -129,8 +129,10 @@ public sealed class FileCopier
 
             // A small file that will be verified is written unbuffered too, so it can be read back from the drive before its handle closes.
             var writeUnbuffered = unbuffered || (options.Verify && hooks is { VerifyInCopier: true } && !options.RescueMode && length > 0);
-            int SectorOf(string path) => hooks?.SectorSizes is { } cache ? cache.Get(path) : _fs.GetSectorSize(path);
-            var alignment = writeUnbuffered || options.RescueMode ? Math.Max(SectorOf(source), SectorOf(destination)) : BufferedAlignment;
+            int SectorOf(string path, string? root) => hooks?.SectorSizes is { } cache ? cache.Get(root, path) : _fs.GetSectorSize(path);
+            var alignment = writeUnbuffered || options.RescueMode
+                ? Math.Max(SectorOf(source, hooks?.SourceSectorRoot), SectorOf(destination, hooks?.DestinationSectorRoot))
+                : BufferedAlignment;
 
             // A large file waits for its turn to copy before it opens anything or creates its part file; it keeps the turn until its part is
             // flushed and closed (retries that reopen the part stay inside it).
@@ -220,7 +222,7 @@ public sealed class FileCopier
                 alignment,
                 unbuffered,
                 writeUnbuffered,
-                options.RescueMode ? new RescueReader(_fs, SectorOf(source), pause, options.MaxLostSectors) : null,
+                options.RescueMode ? new RescueReader(_fs, SectorOf(source, hooks?.SourceSectorRoot), pause, options.MaxLostSectors) : null,
                 _tuning.PipelineDepth);
             await transfer.RunAsync(ct).ConfigureAwait(false);
 

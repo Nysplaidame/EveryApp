@@ -266,6 +266,7 @@ internal sealed class RecordingFileSystem(IFileSystem inner) : IFileSystem
 {
     private readonly Lock _lock = new();
     private readonly List<string> _log = [];
+    private readonly List<string> _sectorSizeAsked = [];
     private int _sectorSizeCalls;
 
     /// <summary>Returns the bytes to really write for a write to (path, offset), e.g. with a flipped bit.</summary>
@@ -403,10 +404,38 @@ internal sealed class RecordingFileSystem(IFileSystem inner) : IFileSystem
     /// <summary>How many times <see cref="GetSectorSize"/> was asked.</summary>
     public int SectorSizeCalls => Volatile.Read(ref _sectorSizeCalls);
 
+    /// <summary>Every path <see cref="GetSectorSize"/> was asked about, in order.</summary>
+    public List<string> SectorSizeAsked
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return [.. _sectorSizeAsked];
+            }
+        }
+    }
+
+    /// <summary>Returns an exception to throw for a sector-size ask about this path, or null.</summary>
+    public Func<string, Exception?>? OnSectorSize { get; set; }
+
+    /// <summary>Returns the sector size to report for this path (as a link to another volume would), or null to ask the inner file system.</summary>
+    public Func<string, int?>? SectorSizeOverride { get; set; }
+
     public int GetSectorSize(string path)
     {
         Interlocked.Increment(ref _sectorSizeCalls);
-        return inner.GetSectorSize(path);
+        lock (_lock)
+        {
+            _sectorSizeAsked.Add(Plain(path));
+        }
+
+        if (OnSectorSize?.Invoke(path) is { } ex)
+        {
+            throw ex;
+        }
+
+        return SectorSizeOverride?.Invoke(path) ?? inner.GetSectorSize(path);
     }
 
     public SecurityCopyResult CopySecurity(string source, string target)

@@ -50,7 +50,76 @@ public sealed class TreeCopierParallelTests : TreeCopierTestBase
 
         Assert.Equal(files, result.Copied);
         Assert.True(_rig.Fs.SectorSizeCalls <= 2, $"asked {_rig.Fs.SectorSizeCalls} times");
+        Assert.Equal([@"C:\src", @"D:\dst"], _rig.Fs.SectorSizeAsked.Order().ToList());
     }
+    /// <summary>Each job root is asked about by its own path (so a root that is a link gets the linked volume's size), once, and never a file.</summary>
+    [Fact]
+    public async Task TreeJob_TwoSourceRoots_AskedSeparately_DestinationRootAskedByItsOwnPath()
+    {
+        _rig.Mem.AddFile(@"C:\a\1.bin", Bytes(100, seed: 1));
+        _rig.Mem.AddFile(@"C:\a\2.bin", Bytes(100, seed: 2));
+        _rig.Mem.AddFile(@"E:\b\1.bin", Bytes(100, seed: 3));
+        _rig.Mem.AddFile(@"E:\b\2.bin", Bytes(100, seed: 4));
+        _rig.Fs.SectorSizeOverride = p => Plain(p).StartsWith(@"D:\link", StringComparison.OrdinalIgnoreCase) ? 8192 : Plain(p).StartsWith('E') ? 512 : null;
+
+        var result = await _rig.RunAsync([@"C:\a", @"E:\b"], @"D:\link", new CopyOptions { Verify = true });
+
+        Assert.Equal(4, result.Copied);
+        Assert.Equal([@"C:\a", @"D:\link", @"E:\b"], _rig.Fs.SectorSizeAsked.Order().ToList());
+    }
+
+    /// <summary>When a root cannot be asked, each file is asked about itself (as before) and the failure is not remembered.</summary>
+    [Fact]
+    public async Task TreeJob_RootAskFails_FallsBackToPerFile_NothingCached()
+    {
+        const int files = 5;
+        for (var i = 0; i < files; i++)
+        {
+            _rig.Mem.AddFile($@"C:\src\f{i}.bin", Bytes(100, seed: i));
+        }
+
+        _rig.Fs.OnSectorSize = p => string.Equals(Plain(p), @"C:\src", StringComparison.OrdinalIgnoreCase)
+            ? new FileSystemException(p, IoErrorKind.Other, null)
+            : null;
+
+        var result = await _rig.RunAsync([@"C:\src"], @"D:\dst", new CopyOptions { Verify = true });
+
+        Assert.Equal(files, result.Copied);
+        var asked = _rig.Fs.SectorSizeAsked;
+        Assert.Equal(files, asked.Count(p => p == @"C:\src"));
+        Assert.Equal(files, asked.Count(p => p.StartsWith(@"C:\src\f", StringComparison.Ordinal)));
+    }
+
+    /// <summary>A file the walk found on another volume than its root (a mount point) is asked about itself.</summary>
+    [Fact]
+    public async Task TreeJob_FileOnAnotherVolumeThanItsRoot_AskedAboutItself()
+    {
+        _rig.Mem.AddFile(@"C:\src\a.bin", Bytes(100, seed: 1));
+        _rig.Mem.AddFile(@"C:\src\other.bin", Bytes(100, seed: 2));
+        _rig.Fs.MapEntry = e => e.FullPath.EndsWith("other.bin", StringComparison.OrdinalIgnoreCase) ? e with { VolumeSerial = e.VolumeSerial + 1 } : e;
+
+        var result = await _rig.RunAsync([@"C:\src"], @"D:\dst", new CopyOptions { Verify = true });
+
+        Assert.Equal(2, result.Copied);
+        Assert.Contains(_rig.Fs.SectorSizeAsked, p => p.EndsWith("other.bin", StringComparison.Ordinal) && p.StartsWith(@"C:\src", StringComparison.Ordinal));
+        Assert.DoesNotContain(@"C:\src\a.bin", _rig.Fs.SectorSizeAsked);
+    }
+
+    /// <summary>When the walk follows links a file can lie anywhere, so every file is asked about itself.</summary>
+    [Fact]
+    public async Task TreeJob_FollowingLinks_AsksPerFile()
+    {
+        _rig.Mem.AddFile(@"C:\src\a.bin", Bytes(100, seed: 1));
+        _rig.Mem.AddFile(@"C:\src\b.bin", Bytes(100, seed: 2));
+
+        var result = await _rig.RunAsync([@"C:\src"], @"D:\dst", new CopyOptions { Verify = true, FollowReparsePoints = true });
+
+        Assert.Equal(2, result.Copied);
+        Assert.Contains(@"C:\src\a.bin", _rig.Fs.SectorSizeAsked);
+        Assert.Contains(@"C:\src\b.bin", _rig.Fs.SectorSizeAsked);
+    }
+
+    private static string Plain(string path) => RecordingFileSystem.Plain(path);
 
     /// <summary>Without a job's shared cache (a single file) the copier still asks the file system itself.</summary>
     [Fact]

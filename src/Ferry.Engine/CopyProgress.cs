@@ -56,10 +56,16 @@ public sealed class FileCopyHooks
     internal LargeFileGates? LargeGates { get; init; }
 
     /// <summary>
-    /// One sector-size cache shared by every copy of a job, so each volume is asked once instead of twice per file. When null the copier asks
+    /// One sector-size cache shared by every copy of a job, so a job root is asked once instead of twice per file. When null the copier asks
     /// the file system itself for every file.
     /// </summary>
     internal SectorSizeCache? SectorSizes { get; init; }
+
+    /// <summary>The job root the source lies in, whose sector size stands for it. Null asks the file system about the source itself.</summary>
+    internal string? SourceSectorRoot { get; init; }
+
+    /// <summary>The destination root every part file lies under, whose sector size stands for it. Null asks about the destination itself.</summary>
+    internal string? DestinationSectorRoot { get; init; }
 
     /// <summary>
     /// Called once the part file is complete, flushed (see <see cref="SkipSmallFileFlush"/>) and the right size, just before it takes the real name, with the source hash (null when
