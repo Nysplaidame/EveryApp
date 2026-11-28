@@ -62,6 +62,50 @@ public sealed class JobJournalTests : IDisposable
     }
 
     [Fact]
+    public void Journal_CurrentVersion_RoundTrips_AndIsWrittenInTheHeader()
+    {
+        var id = MakeJournal("1.txt");
+
+        Assert.Contains("\"Hash\":\"v" + JobJournal.FormatVersion + "\"", File.ReadLines(PathFor(id)).First());
+        using var j = JobJournal.Open(_dir, id);
+        Assert.Equal(["1.txt"], j.CompletedPaths.ToArray());
+        Assert.Equal("{\"x\":1}", j.OptionsJson);
+    }
+
+    [Theory]
+    [InlineData("v2")]
+    [InlineData("v0")]
+    [InlineData("v99999")]
+    public async Task Journal_UnknownVersion_IsRefusedWithAPlainMessage_ByOpenAndHistory(string version)
+    {
+        var id = Guid.NewGuid();
+        var header = new JournalRecord(JournalRecordKind.JobStarted, null, 0, DateTime.UnixEpoch, version, "{}");
+        File.WriteAllBytes(PathFor(id), [.. JournalTestHelper.ForgeRecord(header), .. JournalTestHelper.ForgeLine(JournalRecordKind.FileDone, "1.txt")]);
+        var before = await File.ReadAllBytesAsync(PathFor(id), TestContext.Current.CancellationToken);
+
+        var open = Assert.Throws<InvalidDataException>(() => JobJournal.Open(_dir, id));
+        var history = Assert.Throws<InvalidDataException>(() => JobJournal.ReadSummary(_dir, id, TestContext.Current.CancellationToken));
+
+        Assert.Equal(JobJournal.UnknownVersionMessage, open.Message);
+        Assert.Equal(JobJournal.UnknownVersionMessage, history.Message);
+        Assert.Equal(before, await File.ReadAllBytesAsync(PathFor(id), TestContext.Current.CancellationToken)); // refused, never rewritten or truncated
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("1")]
+    [InlineData("vx")]
+    public void Journal_MissingOrMalformedVersion_IsNotATrustedHeader(string? version)
+    {
+        var id = Guid.NewGuid();
+        var header = new JournalRecord(JournalRecordKind.JobStarted, null, 0, DateTime.UnixEpoch, version, "{}");
+        File.WriteAllBytes(PathFor(id), JournalTestHelper.ForgeRecord(header));
+
+        Assert.Throws<InvalidDataException>(() => JobJournal.Open(_dir, id));
+    }
+
+    [Fact]
     public void Journal_CorruptMiddleLine_StopsAtCorruption()
     {
         var id = MakeJournal("1.txt", "2.txt", "3.txt");

@@ -123,7 +123,9 @@ internal static class CliApplication
         }
         catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException or FileSystemException)
         {
-            output.Problem("The files or saved job could not be opened. Check that they exist and are available.");
+            output.Problem(ex is InvalidDataException && ex.Message == JobJournal.UnknownVersionMessage
+                ? JobJournal.UnknownVersionMessage
+                : "The files or saved job could not be opened. Check that they exist and are available.");
             return output.Result(ExitCodes.Blocked, "The operation could not start or continue.");
         }
 #pragma warning disable CA1031 // Last-resort process boundary: stable exit code, no exception details on stdout.
@@ -273,7 +275,9 @@ internal static class CliApplication
             catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException)
             {
                 problems = true;
-                output.Problem($"Saved job {id:D} could not be read.");
+                output.Problem(ex is InvalidDataException && ex.Message == JobJournal.UnknownVersionMessage
+                    ? $"Saved job {id:D}: {JobJournal.UnknownVersionMessage}"
+                    : $"Saved job {id:D} could not be read.");
             }
         }
 

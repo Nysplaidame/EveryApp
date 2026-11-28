@@ -231,6 +231,25 @@ public sealed class JobJournal : IDisposable
             ? new JournalPartIdentity(Normalize(record.RelativePath!), Normalize(record.Detail!), volume, id)
             : throw new InvalidOperationException("A part identity that passed validation could not be read.");
 
+    /// <summary>
+    /// The journal format this build writes and reads. It sits in the header record's <see cref="JournalRecord.Hash"/> as <c>v1</c>. The record
+    /// kinds are frozen for version 1; any change to them or to the rules means a new version, and an older build refuses it.
+    /// </summary>
+    public const int FormatVersion = 1;
+
+    /// <summary>The plain message shown when a saved job was written in a format this build does not know.</summary>
+    public const string UnknownVersionMessage = "This saved job was made by a newer or unknown version of Ferry, so this version will not open it.";
+
+    private static string FormatVersionText => "v" + FormatVersion.ToString(CultureInfo.InvariantCulture);
+
+    /// <summary>Reads <c>v&lt;digits&gt;</c>; false for anything else.</summary>
+    private static bool TryParseVersion(string? text, out int version)
+    {
+        version = 0;
+        return text is { Length: > 1 and <= 10 } && text[0] == 'v'
+            && int.TryParse(text.AsSpan(1), NumberStyles.None, CultureInfo.InvariantCulture, out version);
+    }
+
     /// <summary>Starts a new journal. Throws <see cref="IOException"/> if one already exists for this job.</summary>
     public static JobJournal Create(string jobsDir, Guid jobId, string optionsJson, TimeProvider? timeProvider = null) =>
         CreateWithIo(jobsDir, jobId, optionsJson, timeProvider, null);
@@ -246,7 +265,7 @@ public sealed class JobJournal : IDisposable
         {
             var journal = new JobJournal(stream, optionsJson, new HashSet<string>(StringComparer.OrdinalIgnoreCase), [], false,
                 timeProvider ?? TimeProvider.System, io ?? new JournalIo());
-            var header = new JournalRecord(JournalRecordKind.JobStarted, null, 0, DateTime.UtcNow, null, optionsJson);
+            var header = new JournalRecord(JournalRecordKind.JobStarted, null, 0, DateTime.UtcNow, FormatVersionText, optionsJson);
             journal.AppendCore(header, isHeader: true, forceFlush: true);
             return journal;
         }
@@ -367,7 +386,8 @@ public sealed class JobJournal : IDisposable
 
         if (isHeader)
         {
-            return record.Kind == JournalRecordKind.JobStarted && record.Detail is not null && record.RelativePath is null;
+            return record.Kind == JournalRecordKind.JobStarted && record.Detail is not null && record.RelativePath is null
+                && TryParseVersion(record.Hash, out _);
         }
 
         if (record.Kind != JournalRecordKind.FilePartStarted && record.TargetPath is not null)
@@ -629,6 +649,12 @@ public sealed class JobJournal : IDisposable
                 switch (record.Kind)
                 {
                     case JournalRecordKind.JobStarted:
+                        if (!TryParseVersion(record.Hash, out var version) || version != FormatVersion)
+                        {
+                            // Never act on a layout this build does not know: refuse the whole file, with a plain message.
+                            throw new InvalidDataException(UnknownVersionMessage);
+                        }
+
                         options = record.Detail;
                         startedUtc = record.SourceLastWriteUtc;
                         break;

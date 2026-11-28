@@ -64,6 +64,37 @@ public sealed class TreeCopierMilestoneSecurityTests : TreeCopierTestBase
     }
 
     [Fact]
+    public async Task Copy_RetryReopenOnVolumeWithoutIds_OutsideItsRoot_NotCopied()
+    {
+        // No file ids and the same size and time (all a reopen can compare on such a volume): a folder swapped for a link
+        // between the first open and the retry would feed in another file, so the reopened handle must be checked for containment too.
+        _rig.Mem.AddFile(@"C:\src\sub\a.txt", new byte[3 * 1024 * 1024]);
+        _rig.Mem.AddFile(@"C:\other\a.txt", Enumerable.Repeat((byte)7, 3 * 1024 * 1024).ToArray()); // same size
+        var stamp = new DateTime(2026, 1, 2, 3, 4, 5, DateTimeKind.Utc);
+        _rig.Fs.MapEntry = e => e with { FileId = 0, LastWriteTimeUtc = stamp };
+        _rig.Faults.FailReadRange(@"C:\src\sub\a.txt", 0, 1, IoErrorKind.NetworkLost, times: 1, handleDies: true);
+        var opens = 0;
+        _rig.Fs.OnOpenRead = (path, _) =>
+        {
+            if (RecordingFileSystem.Plain(path).Equals(@"C:\src\sub\a.txt", StringComparison.OrdinalIgnoreCase) && Interlocked.Increment(ref opens) == 2)
+            {
+                _rig.Mem.Delete(@"C:\src\sub\a.txt");
+                _rig.Mem.Delete(@"C:\src\sub");
+                _rig.Mem.AddJunction(@"C:\src\sub", @"C:\other");
+            }
+
+            return null;
+        };
+
+        var result = await _rig.RunAsync([@"C:\src"], @"D:\dst");
+
+        Assert.True(Volatile.Read(ref opens) >= 2); // the first open and the retry's reopen (the file may then be tried again)
+        Assert.Equal(1, result.Failed);
+        Assert.False(_rig.Mem.Exists(@"D:\dst\src\sub\a.txt"));
+        Assert.Empty(_rig.PartFiles(@"D:\dst"));
+    }
+
+    [Fact]
     public async Task Move_SameVolume_SourceSwappedAfterWalk_NotRenamed()
     {
         AddText(@"C:\src\a.txt", "walked");

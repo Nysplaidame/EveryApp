@@ -175,6 +175,12 @@ public sealed class FileCopier
                 try
                 {
                     var current = reopened.GetEntry();
+                    // Where ids exist they pin the file; where they do not (id zero), size and time are weak, so the final path must still be inside the source root.
+                    if (hooks?.SourceMustBeUnder is { } sourceRoot && !PathSafety.IsSameOrUnderFinal(sourceRoot, reopened.GetFinalPath()))
+                    {
+                        throw new SourceChangedException();
+                    }
+
                     if (current.FileId != before.FileId || current.VolumeSerial != before.VolumeSerial || current.Length != length || current.LastWriteTimeUtc != before.LastWriteTimeUtc)
                     {
                         throw new SourceChangedException();
