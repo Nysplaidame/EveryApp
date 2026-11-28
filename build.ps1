@@ -174,6 +174,10 @@ try {
                 throw 'Run build.ps1 from a normal (non-administrator) window: the Ferry CLI tests check that Ferry refuses administrator rights.'
             }
 
+            if ($elevated -and $env:RUNNER_ENVIRONMENT -ne 'github-hosted') {
+                throw 'This runner runs as administrator but is not a GitHub-hosted runner. The Ferry CLI tests need a normal (non-administrator) account: run the job as one.'
+            }
+
             if ($elevated) {
                 # GitHub's Windows runner account is an administrator, and Ferry refuses to copy with administrator
                 # rights. Run every other test project as the runner account, and the CLI tests as a temporary
@@ -192,15 +196,32 @@ try {
                 $cliTrx = Join-Path $cliOutput 'TestResults/cli-standard-user.trx'
                 [void](New-Item -ItemType Directory -Force -Path (Split-Path $cliTrx))
                 Remove-Item -LiteralPath $cliTrx -Force -ErrorAction SilentlyContinue
+                $cliExe = Join-Path $cliOutput 'Ferry.Cli.Tests.exe'
+                $cliFilter = @('-trait-', 'Category=Machine', '-noColor')
+
+                # List the test methods first (discovery only, nothing runs), so every one of them must show up as passed.
+                $cliMethods = @(& $cliExe -list tests @cliFilter | Where-Object { $_ -like 'Ferry.Cli.Tests.*' } | ForEach-Object { $_.Trim() })
+                if ($LASTEXITCODE -ne 0) { throw "Listing the Ferry CLI tests failed with exit code $LASTEXITCODE." }
+
                 Invoke-Step 'test Ferry.Cli.Tests (CI: as a temporary standard user)' {
-                    & (Join-Path $root 'scripts/Invoke-AsStandardUser.ps1') -FilePath (Join-Path $cliOutput 'Ferry.Cli.Tests.exe') `
-                        -ArgumentList @('-trait-', 'Category=Machine', '-noColor', '-result-trx', $cliTrx) -WritableFolder $cliOutput
+                    & (Join-Path $root 'scripts/Invoke-AsStandardUser.ps1') -FilePath $cliExe `
+                        -ArgumentList ($cliFilter + @('-result-trx', $cliTrx)) -WritableFolder $cliOutput -TimeoutMinutes 10
                 }
+
+                # A floor near today's count catches a filter that silently drops most tests (xUnit exits 0 when none run).
+                $minimumCliTests = 35
                 if (-not (Test-Path -LiteralPath $cliTrx)) { throw 'Ferry.Cli.Tests wrote no results file.' }
-                $counters = ([xml](Get-Content -LiteralPath $cliTrx -Raw)).TestRun.ResultSummary.Counters
-                if ([int]$counters.total -lt 1 -or [int]$counters.failed -ne 0) {
-                    throw "Ferry.Cli.Tests: $($counters.total) test(s), $($counters.failed) failed."
+                $trx = [xml](Get-Content -LiteralPath $cliTrx -Raw)
+                $counters = $trx.TestRun.ResultSummary.Counters
+                if ([int]$counters.total -lt $minimumCliTests -or [int]$counters.failed -ne 0 -or [int]$counters.notExecuted -ne 0) {
+                    throw "Ferry.Cli.Tests: $($counters.total) test(s) (at least $minimumCliTests expected), $($counters.failed) failed, $($counters.notExecuted) not run."
                 }
+                $passedNames = @($trx.TestRun.Results.UnitTestResult | Where-Object { $_.outcome -eq 'Passed' } | ForEach-Object { $_.testName })
+                $missing = @($cliMethods | Where-Object { $m = $_; -not ($passedNames | Where-Object { $_ -eq $m -or $_.StartsWith($m + '(') }) })
+                if ($cliMethods.Count -lt 1 -or $missing.Count -gt 0) {
+                    throw ('Ferry.Cli.Tests: these tests did not pass or did not run: ' + ($missing -join ', '))
+                }
+                Write-Host "Ferry.Cli.Tests: $($counters.passed) of $($counters.total) passed; all $($cliMethods.Count) test methods ran." -ForegroundColor Green
             }
             elseif ($env:CI) {
                 # Category=Machine tests inspect this PC's real drives (device resolver), so they only make sense locally.

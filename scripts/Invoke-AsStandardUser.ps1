@@ -7,12 +7,14 @@
   Ferry is changed or bypassed: the program simply runs as a different, ordinary account.
 
   Order of work:
-  1. Refuse to run outside a GitHub Actions runner, or when not running as administrator.
+  1. Refuse to run outside a GitHub-hosted Actions runner (self-hosted ones are not discarded), or when not
+     running as administrator.
   2. Create a local user with a random password. The password is masked in the log (::add-mask::) and
      never printed, written to disk or passed on a command line.
   3. Give that user Modify rights on -WritableFolder only (the test output folder).
   4. Check, as that user, that the token is not elevated (no High integrity level), then run the program
-     with the user's own profile and environment. Its output is printed when it exits.
+     with the user's own profile and environment. Its output is printed line by line as it runs; after
+     -TimeoutMinutes it is stopped (clean-up still runs) and the script fails.
   5. Always (finally): remove the folder permission, delete the user and its profile.
   The runner is discarded after the job, so nothing outlives it even if clean-up fails.
   Needs PowerShell 7 (CI's pwsh): it uses .NET APIs that Windows PowerShell 5.1 does not have.
@@ -31,14 +33,15 @@ param(
     [Parameter(Mandatory)][string]$FilePath,
     [string[]]$ArgumentList = @(),
     [Parameter(Mandatory)][string]$WritableFolder,
-    [int]$TimeoutMinutes = 20
+    [ValidateRange(1, 15)][int]$TimeoutMinutes = 10
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-if ($env:GITHUB_ACTIONS -ne 'true' -or $env:CI -ne 'true') {
-    throw 'Refusing to create a local user outside a GitHub Actions runner.'
+if ($env:GITHUB_ACTIONS -ne 'true' -or $env:CI -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hosted') {
+    # Self-hosted runners also set GITHUB_ACTIONS but are not discarded after the job.
+    throw 'Refusing to create a local user outside a GitHub-hosted (discarded after the job) runner.'
 }
 
 $principal = [Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())
@@ -56,7 +59,7 @@ function New-RandomText {
 
 # Runs one program as the temporary user; returns its exit code and output.
 function Invoke-AsUser {
-    param([string]$Program, [string[]]$Arguments, [string]$UserName, [securestring]$Password, [string]$WorkingDirectory, [int]$TimeoutMs)
+    param([string]$Program, [string[]]$Arguments, [string]$UserName, [securestring]$Password, [string]$WorkingDirectory, [int]$TimeoutMs, [switch]$Stream)
 
     $start = [Diagnostics.ProcessStartInfo]::new($Program)
     foreach ($argument in $Arguments) { $start.ArgumentList.Add($argument) }
@@ -75,16 +78,34 @@ function Invoke-AsUser {
     $process = [Diagnostics.Process]::Start($start)
     try {
         $process.StandardInput.Close()
-        $output = $process.StandardOutput.ReadToEndAsync()
         $errorText = $process.StandardError.ReadToEndAsync()
-        if (-not $process.WaitForExit($TimeoutMs)) {
+        $output = [Text.StringBuilder]::new()
+        $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMs)
+        $timedOut = $false
+        # Read the output line by line against the deadline, so a hang still shows progress (with -Stream)
+        # and the timeout fires while this script, and its clean-up, still run.
+        $pending = $process.StandardOutput.ReadLineAsync()
+        while ($true) {
+            $remaining = ($deadline - [DateTime]::UtcNow).TotalMilliseconds
+            if ($remaining -le 0) { $timedOut = $true; break }
+            if (-not $pending.Wait([int][Math]::Min(1000, $remaining))) { continue }
+            $line = $pending.Result
+            if ($null -eq $line) { break }
+            [void]$output.AppendLine($line)
+            if ($Stream) { Write-Host $line }
+            $pending = $process.StandardOutput.ReadLineAsync()
+        }
+
+        if ($timedOut) {
             $process.Kill($true)
-            $process.WaitForExit()
+            [void]$process.WaitForExit(30000)
+            if (-not $Stream -and $output.Length -gt 0) { Write-Host $output.ToString() }
+            if ($errorText.Wait(5000) -and $errorText.Result) { Write-Host $errorText.Result }
             throw "$([IO.Path]::GetFileName($Program)) did not finish within $($TimeoutMs / 60000) minutes and was stopped."
         }
 
-        $process.WaitForExit() # Also waits for the output to be read to the end.
-        return [pscustomobject]@{ ExitCode = $process.ExitCode; Output = $output.Result; Error = $errorText.Result }
+        $process.WaitForExit()
+        return [pscustomobject]@{ ExitCode = $process.ExitCode; Output = $output.ToString(); Error = $errorText.Result }
     }
     finally {
         $process.Dispose()
@@ -133,8 +154,7 @@ try {
     Write-Host 'Temporary user runs with a standard (non-administrator) token.' -ForegroundColor Green
 
     Write-Host "==> $([IO.Path]::GetFileName($FilePath)) $($ArgumentList -join ' ') (as $userName)" -ForegroundColor Cyan
-    $run = Invoke-AsUser -Program $FilePath -Arguments $ArgumentList -UserName $userName -Password $password -WorkingDirectory $WritableFolder -TimeoutMs ($TimeoutMinutes * 60000)
-    if ($run.Output) { Write-Host $run.Output }
+    $run = Invoke-AsUser -Program $FilePath -Arguments $ArgumentList -UserName $userName -Password $password -WorkingDirectory $WritableFolder -TimeoutMs ($TimeoutMinutes * 60000) -Stream
     if ($run.Error) { Write-Host $run.Error }
     Write-Host "Exit code: $($run.ExitCode)"
     $exitCode = $run.ExitCode
