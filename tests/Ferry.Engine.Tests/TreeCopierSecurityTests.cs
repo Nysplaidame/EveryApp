@@ -239,23 +239,63 @@ public sealed class TreeCopierSecurityTests : TreeCopierTestBase
         Assert.Equal(2, result.MoreProblems);
     }
 
+    /// <summary>
+    /// Planning a tree four times bigger must take about four times as long, not sixteen (a quadratic planner).
+    /// Compares two sizes on the same machine instead of a fixed time limit, so a slow or busy CI runner
+    /// cannot fail it. The fastest of a few runs is used for each size, after a warm-up run, to keep noise out.
+    /// </summary>
     [Fact]
-    public async Task HugeTree_PlansQuickly()
+    public async Task HugeTree_PlanningTimeGrowsLinearly()
     {
-        for (var d = 0; d < 20_000; d++)
+        const int SmallFolders = 5_000; // 5 files each: 25,000 files.
+        const int Growth = 4;
+        AddTree(@"C:\small", SmallFolders);
+        AddTree(@"C:\big", SmallFolders * Growth);
+
+        _ = await PlanAsync(@"C:\small", SmallFolders * 5); // Warm-up: JIT and first-use costs stay out of the timings.
+        var small = await FastestPlanAsync(@"C:\small", SmallFolders * 5, runs: 3);
+        var big = await FastestPlanAsync(@"C:\big", SmallFolders * Growth * 5, runs: 2);
+
+        // Linear planning gives a ratio near 4 and quadratic near 16; 10 sits well between them.
+        var ratio = big.TotalMilliseconds / Math.Max(small.TotalMilliseconds, 1);
+        Assert.True(
+            ratio < 10,
+            $"Planning {Growth}x the files took {ratio:0.0}x as long ({small.TotalSeconds:0.00} s vs {big.TotalSeconds:0.00} s): planning is not linear.");
+
+        void AddTree(string root, int folders)
         {
-            for (var f = 0; f < 5; f++)
+            for (var d = 0; d < folders; d++)
             {
-                _rig.Mem.AddFile($@"C:\src\d{d / 100}\d{d}\f{f}.txt", [1]);
+                for (var f = 0; f < 5; f++)
+                {
+                    _rig.Mem.AddFile($@"{root}\d{d / 100}\d{d}\f{f}.txt", [1]);
+                }
             }
         }
 
-        var watch = Stopwatch.StartNew();
-        var result = await _rig.RunAsync([@"C:\src"], @"D:\dst", new CopyOptions { DryRun = true });
-        watch.Stop();
+        async Task<TimeSpan> FastestPlanAsync(string root, int files, int runs)
+        {
+            var fastest = TimeSpan.MaxValue;
+            for (var i = 0; i < runs; i++)
+            {
+                var elapsed = await PlanAsync(root, files);
+                fastest = elapsed < fastest ? elapsed : fastest;
+            }
 
-        Assert.Equal(100_000, result.Copied);
-        Assert.True(watch.Elapsed < TimeSpan.FromSeconds(2), $"Planning took {watch.Elapsed.TotalSeconds:0.00} s.");
+            return fastest;
+        }
+
+        async Task<TimeSpan> PlanAsync(string root, int files)
+        {
+            _rig.Fs.ClearLog();
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            var watch = Stopwatch.StartNew();
+            var result = await _rig.RunAsync([root], @"D:\dst", new CopyOptions { DryRun = true });
+            watch.Stop();
+            Assert.Equal(files, result.Copied);
+            return watch.Elapsed;
+        }
     }
 
     // ---- N3: the elevation check cannot be swapped out by a host
