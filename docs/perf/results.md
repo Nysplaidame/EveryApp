@@ -148,6 +148,10 @@ Like-for-like comparisons, verify on, both from today:
 
 Either way the gate (≤ 1.10) is met for mixed with verify on.
 
+### After the M1 security fixes (2026-11-28)
+
+The milestone security fixes added a check on every copied file that the file opened is the one that was listed. Ferry alone, mixed set, Storage Space → NVMe: verify off 65.5 s (first run of the session, then **31.0 s** on a repeat), verify on **33.8 s**. Before the fixes these were 42–46 s and 40–45 s, so the new checks cost no measurable time; the first-run outlier matches the "first copy after other activity is slower" effect seen before.
+
 ### Still open
 
 - Large files: done on this setup (above). The single-NVMe source of 2026-11-22 is gone (now part of an array), so this Storage Space → NVMe setup is the baseline from here on.
