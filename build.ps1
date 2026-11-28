@@ -168,7 +168,41 @@ try {
         Invoke-Step 'build' { dotnet build $solution -c $Configuration --no-restore }
 
         if (-not $SkipTests) {
-            if ($env:CI) {
+            $principal = [Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())
+            $elevated = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+            if ($elevated -and $env:GITHUB_ACTIONS -ne 'true') {
+                throw 'Run build.ps1 from a normal (non-administrator) window: the Ferry CLI tests check that Ferry refuses administrator rights.'
+            }
+
+            if ($elevated) {
+                # GitHub's Windows runner account is an administrator, and Ferry refuses to copy with administrator
+                # rights. Run every other test project as the runner account, and the CLI tests as a temporary
+                # standard user so they exercise Ferry exactly as a normal user would.
+                $testFilter = @('--filter-not-trait', 'Category=Machine')
+                $cliProject = Join-Path $root 'tests/Ferry.Cli.Tests/Ferry.Cli.Tests.csproj'
+                $testProjects = Get-ChildItem -Path (Join-Path $root 'tests') -Recurse -Filter '*.Tests.csproj' |
+                    Where-Object { $_.FullName -ne (Resolve-Path -LiteralPath $cliProject).Path }
+                foreach ($project in $testProjects) {
+                    Invoke-Step "test $($project.BaseName) (CI: skipping Category=Machine)" { dotnet test --project $project.FullName -c $Configuration --no-build -- @testFilter }
+                }
+
+                # The test program is run directly (xUnit's own runner options), because `dotnet test` would need the
+                # runner account's SDK and package folders. The TRX file proves the tests really ran.
+                $cliOutput = Join-Path $root ('artifacts/bin/Ferry.Cli.Tests/' + $Configuration.ToLowerInvariant() + '_win-x64')
+                $cliTrx = Join-Path $cliOutput 'TestResults/cli-standard-user.trx'
+                [void](New-Item -ItemType Directory -Force -Path (Split-Path $cliTrx))
+                Remove-Item -LiteralPath $cliTrx -Force -ErrorAction SilentlyContinue
+                Invoke-Step 'test Ferry.Cli.Tests (CI: as a temporary standard user)' {
+                    & (Join-Path $root 'scripts/Invoke-AsStandardUser.ps1') -FilePath (Join-Path $cliOutput 'Ferry.Cli.Tests.exe') `
+                        -ArgumentList @('-trait-', 'Category=Machine', '-noColor', '-result-trx', $cliTrx) -WritableFolder $cliOutput
+                }
+                if (-not (Test-Path -LiteralPath $cliTrx)) { throw 'Ferry.Cli.Tests wrote no results file.' }
+                $counters = ([xml](Get-Content -LiteralPath $cliTrx -Raw)).TestRun.ResultSummary.Counters
+                if ([int]$counters.total -lt 1 -or [int]$counters.failed -ne 0) {
+                    throw "Ferry.Cli.Tests: $($counters.total) test(s), $($counters.failed) failed."
+                }
+            }
+            elseif ($env:CI) {
                 # Category=Machine tests inspect this PC's real drives (device resolver), so they only make sense locally.
                 Invoke-Step 'test (CI: skipping Category=Machine)' { dotnet test --solution $solution -c $Configuration --no-build -- --filter-not-trait 'Category=Machine' }
             }
