@@ -4,7 +4,10 @@
 .DESCRIPTION
   Reads bench.local.json (git-ignored; copy bench.example.json). For each set it runs FastCopy and `ferry copy`, verify off and on,
   each tool verify off then on back to back, alternating which tool goes first each round, clearing the destination before every
-  run and the standby cache when run as administrator.
+  run. Run it from a normal (not administrator) PowerShell: ferry refuses to run elevated. It still tries to clear the standby
+  cache between runs, which only works with administrator rights, so the report says "no" there; to clear the cache, run
+  `Ferry.Bench flush` yourself from an administrator PowerShell. The source/destination check compares paths as text only (a
+  junction can hide an overlap); the marker-file rule still stops it from emptying a folder it did not make.
   Writes the medians and ratios to artifacts/bench/comparison.md and .json. Drive models only: no drive letters or paths in the output.
 .PARAMETER Generate
   Create each set's source data first (only into a missing or empty folder).

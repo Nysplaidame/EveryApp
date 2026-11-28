@@ -3,9 +3,10 @@
   Creates the self-signed EveryApp code-signing certificate for this PC.
 .DESCRIPTION
   Order of work (nothing is changed until every precondition has passed):
-  1. Preflight: Windows only, output path free, no existing cert (unless -Rotate), password chosen twice.
+  1. Preflight: Windows only, output path free, no existing cert (unless -Rotate), password (16+ characters) chosen twice.
   2. Create a 3072-bit RSA code-signing certificate in Cert:\CurrentUser\My (valid 3 years).
-  3. Export a password-protected PFX (AES256) to a git-ignored path (default: signing\everyapp-signing.pfx).
+  3. Export a password-protected PFX (AES256) to a git-ignored path (default: signing\everyapp-signing.pfx), then put the
+     certificate back in the store with a non-exportable key (the PFX stays the only exportable copy).
   4. Trust the PUBLIC certificate for this user (CurrentUser\Root and CurrentUser\TrustedPublisher).
   5. Only then, with -Rotate: remove the OLD certificate(s) from all three stores, by thumbprint.
   6. Print the "gh secret set" commands for you to run. This script never uploads secrets itself.
@@ -55,6 +56,7 @@ if (-not $WhatIfPreference) {
     $t1 = ConvertTo-PlainText $p1
     $t2 = ConvertTo-PlainText $p2
     if ([string]::IsNullOrEmpty($t1)) { throw 'The password must not be empty.' }
+    if ($t1.Length -lt 16) { throw 'Use a password of at least 16 characters (a passphrase of a few words is fine). Nothing was changed.' }
     if ($t1 -cne $t2) { throw 'The two passwords do not match. Nothing was changed.' }
     $password = $p1
 }
@@ -82,6 +84,16 @@ try {
         New-Item -ItemType Directory -Force -Path $pfxDir | Out-Null
         Export-PfxCertificate -Cert $cert -FilePath $PfxPath -Password $password -CryptoAlgorithmOption AES256_SHA256 | Out-Null
         $exported = $true
+    }
+
+    # ---- 3b. Keep only a non-exportable copy of the key in the store ----
+    # New-SelfSignedCertificate leaves the key exportable, so any program running as this user could copy it out.
+    # The PFX is now the only exportable copy; the store gets the same certificate back with a key that cannot be exported.
+    if (Confirm-Step 'Cert:\CurrentUser\My' 'Replace the store copy with a non-exportable key') {
+        $thumbprint = $cert.Thumbprint
+        Remove-Item -Path "Cert:\CurrentUser\My\$thumbprint" -DeleteKey -Force
+        $cert = Import-PfxCertificate -FilePath $PfxPath -CertStoreLocation Cert:\CurrentUser\My -Password $password
+        if ($cert.Thumbprint -ne $thumbprint) { throw 'The re-imported certificate does not match the one just created.' }
     }
 
     # ---- 4. Trust the public certificate (this user only) ----
