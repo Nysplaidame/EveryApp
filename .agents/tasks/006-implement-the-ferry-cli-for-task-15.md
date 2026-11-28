@@ -42,15 +42,15 @@ Complete the Ferry CLI described in Task 15 and verify it against the project's 
 - Acceptance output: **FAIL** — `restore (locked)` exited 1. Separate checks: CLI whitespace passed; build succeeded with 0 warnings/errors; CLI tests 33 passed.
 - Notes / follow-ups: CRLF repaired locally; Git normalization produces no source diff. STATE/HANDOFF updated. Full formatter encounters denied named-pipe access; rerun acceptance in an unrestricted build environment. Task 14 untouched.
 
-**Dispatcher (2026-11-12):** status `done`; worktree `K:\Documents\Obsidian\worktrees\EveryApp\agent_006-implement-the-ferry-cli-for-task-15`.
+**Dispatcher (2026-11-12):** status `done`; worktree `<worktree>`.
 - Notes: acceptance failed at tier executor
 
 <details><summary>Acceptance output (tail)</summary>
 
 ```
 
-K:\Documents\Obsidian\worktrees\EveryApp\agent_006-implement-the-ferry-cli-for-task-15\artifacts\bin\EveryApp.Core.Tests\release_win-x64\EveryApp.Core.Tests.dll (net10.0|x64) passed (6s 047ms)
-K:\Documents\Obsidian\worktrees\EveryApp\agent_006-implement-the-ferry-cli-for-task-15\artifacts\bin\Ferry.Engine.Tests\release_win-x64\Ferry.Engine.Tests.dll (net10.0|x64) passed (7s 887ms)
+<worktree>\artifacts\bin\EveryApp.Core.Tests\release_win-x64\EveryApp.Core.Tests.dll (net10.0|x64) passed (6s 047ms)
+<worktree>\artifacts\bin\Ferry.Engine.Tests\release_win-x64\Ferry.Engine.Tests.dll (net10.0|x64) passed (7s 887ms)
 [+11/x0/?0] Ferry.Cli.Tests.dll (net10.0|x64)(8s)
 
 [+15/x0/?0] Ferry.Cli.Tests.dll (net10.0|x64)(11s)
@@ -75,12 +75,12 @@ K:\Documents\Obsidian\worktrees\EveryApp\agent_006-implement-the-ferry-cli-for-t
 
 [+33/x0/?0] Ferry.Cli.Tests.dll (net10.0|x64)(41s)
 
-K:\Documents\Obsidian\worktrees\EveryApp\agent_006-implement-the-ferry-cli-for-task-15\artifacts\bin\Ferry.Cli.Tests\release_win-x64\Ferry.Cli.Tests.dll (net10.0|x64) passed (44s 303ms)
+<worktree>\artifacts\bin\Ferry.Cli.Tests\release_win-x64\Ferry.Cli.Tests.dll (net10.0|x64) passed (44s 303ms)
 
 Test run summary: Passed!
-  K:\Documents\Obsidian\worktrees\EveryApp\agent_006-implement-the-ferry-cli-for-task-15\artifacts\bin\EveryApp.Core.Tests\release_win-x64\EveryApp.Core.Tests.dll (net10.0|x64) passed (6s 047ms)
-  K:\Documents\Obsidian\worktrees\EveryApp\agent_006-implement-the-ferry-cli-for-task-15\artifacts\bin\Ferry.Cli.Tests\release_win-x64\Ferry.Cli.Tests.dll (net10.0|x64) passed (44s 303ms)
-  K:\Documents\Obsidian\worktrees\EveryApp\agent_006-implement-the-ferry-cli-for-task-15\artifacts\bin\Ferry.Engine.Tests\release_win-x64\Ferry.Engine.Tests.dll (net10.0|x64) passed (7s 887ms)
+  <worktree>\artifacts\bin\EveryApp.Core.Tests\release_win-x64\EveryApp.Core.Tests.dll (net10.0|x64) passed (6s 047ms)
+  <worktree>\artifacts\bin\Ferry.Cli.Tests\release_win-x64\Ferry.Cli.Tests.dll (net10.0|x64) passed (44s 303ms)
+  <worktree>\artifacts\bin\Ferry.Engine.Tests\release_win-x64\Ferry.Engine.Tests.dll (net10.0|x64) passed (7s 887ms)
 
   total: 648
   failed: 0

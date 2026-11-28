@@ -43,13 +43,13 @@ The environment is prepared for the next set of tasks (ferry CLI, benchmarks, se
 - Acceptance output: **Fail.** `build.ps1` stopped at `restore (locked)` with exit code 1. Direct locked restore of `EveryApp.slnx` also exited 1 without diagnostics.
 - Notes / follow-ups: Checklist and prerequisites are documented in `TASKS-15-17-PREP.md`. Card 002 is not merged into the feature branch; card 003 has a separate merge worktree. Signing script exists and was not run. This worktree is clean.
 
-**Dispatcher (2026-11-12):** status `done`; worktree `K:\Documents\Obsidian\worktrees\EveryApp\agent_005-prepare-environment-for-tasks-15-17-exec`.
+**Dispatcher (2026-11-12):** status `done`; worktree `<worktree>`.
 
 <details><summary>Acceptance output (tail)</summary>
 
 ```
-  Ferry.Engine.Tests -> K:\Documents\Obsidian\worktrees\EveryApp\agent_005-prepare-environment-for-tasks-15-17-exec\artifacts\bin\Ferry.Engine.Tests\release_win-x64\Ferry.Engine.Tests.dll
-  Ferry.Cli.Tests -> K:\Documents\Obsidian\worktrees\EveryApp\agent_005-prepare-environment-for-tasks-15-17-exec\artifacts\bin\Ferry.Cli.Tests\release_win-x64\Ferry.Cli.Tests.dll
+  Ferry.Engine.Tests -> <worktree>\artifacts\bin\Ferry.Engine.Tests\release_win-x64\Ferry.Engine.Tests.dll
+  Ferry.Cli.Tests -> <worktree>\artifacts\bin\Ferry.Cli.Tests\release_win-x64\Ferry.Cli.Tests.dll
 
 Build succeeded.
     0 Warning(s)
@@ -57,30 +57,30 @@ Build succeeded.
 
 Time Elapsed 00:00:11.79
 ==> test
-Running tests from K:\Documents\Obsidian\worktrees\EveryApp\agent_005-prepare-environment-for-tasks-15-17-exec\artifacts\bin\Ferry.Cli.Tests\release_win-x64\Ferry.Cli.Tests.dll (net10.0|x64)
-Running tests from K:\Documents\Obsidian\worktrees\EveryApp\agent_005-prepare-environment-for-tasks-15-17-exec\artifacts\bin\Ferry.Engine.Tests\release_win-x64\Ferry.Engine.Tests.dll (net10.0|x64)
-Running tests from K:\Documents\Obsidian\worktrees\EveryApp\agent_005-prepare-environment-for-tasks-15-17-exec\artifacts\bin\EveryApp.Core.Tests\release_win-x64\EveryApp.Core.Tests.dll (net10.0|x64)
+Running tests from <worktree>\artifacts\bin\Ferry.Cli.Tests\release_win-x64\Ferry.Cli.Tests.dll (net10.0|x64)
+Running tests from <worktree>\artifacts\bin\Ferry.Engine.Tests\release_win-x64\Ferry.Engine.Tests.dll (net10.0|x64)
+Running tests from <worktree>\artifacts\bin\EveryApp.Core.Tests\release_win-x64\EveryApp.Core.Tests.dll (net10.0|x64)
 skipped Ferry.Engine.Tests.TreeCopierRealFileTests.ReFS_SameVolume_UsesBlockClone (0ms)
   No ReFS volume on this PC.
-  from K:\Documents\Obsidian\worktrees\EveryApp\agent_005-prepare-environment-for-tasks-15-17-exec\artifacts\bin\Ferry.Engine.Tests\release_win-x64\Ferry.Engine.Tests.dll (net10.0|x64)
+  from <worktree>\artifacts\bin\Ferry.Engine.Tests\release_win-x64\Ferry.Engine.Tests.dll (net10.0|x64)
 [+1/x0/?0] Ferry.Cli.Tests.dll (net10.0|x64)(1s)
 [+126/x0/?1] Ferry.Engine.Tests.dll (net10.0|x64)(1s)
 [+404/x0/?0] EveryApp.Core.Tests.dll (net10.0|x64)(1s)
 
-K:\Documents\Obsidian\worktrees\EveryApp\agent_005-prepare-environment-for-tasks-15-17-exec\artifacts\bin\Ferry.Cli.Tests\release_win-x64\Ferry.Cli.Tests.dll (net10.0|x64) passed (3s 354ms)
+<worktree>\artifacts\bin\Ferry.Cli.Tests\release_win-x64\Ferry.Cli.Tests.dll (net10.0|x64) passed (3s 354ms)
 [+191/x0/?1] Ferry.Engine.Tests.dll (net10.0|x64)(4s)
 [+420/x0/?0] EveryApp.Core.Tests.dll (net10.0|x64)(4s)
 
 [+192/x0/?1] Ferry.Engine.Tests.dll (net10.0|x64)(7s)
 [+422/x0/?0] EveryApp.Core.Tests.dll (net10.0|x64)(7s)
 
-K:\Documents\Obsidian\worktrees\EveryApp\agent_005-prepare-environment-for-tasks-15-17-exec\artifacts\bin\EveryApp.Core.Tests\release_win-x64\EveryApp.Core.Tests.dll (net10.0|x64) passed (7s 817ms)
-K:\Documents\Obsidian\worktrees\EveryApp\agent_005-prepare-environment-for-tasks-15-17-exec\artifacts\bin\Ferry.Engine.Tests\release_win-x64\Ferry.Engine.Tests.dll (net10.0|x64) passed (7s 883ms)
+<worktree>\artifacts\bin\EveryApp.Core.Tests\release_win-x64\EveryApp.Core.Tests.dll (net10.0|x64) passed (7s 817ms)
+<worktree>\artifacts\bin\Ferry.Engine.Tests\release_win-x64\Ferry.Engine.Tests.dll (net10.0|x64) passed (7s 883ms)
 
 Test run summary: Passed!
-  K:\Documents\Obsidian\worktrees\EveryApp\agent_005-prepare-environment-for-tasks-15-17-exec\artifacts\bin\EveryApp.Core.Tests\release_win-x64\EveryApp.Core.Tests.dll (net10.0|x64) passed (7s 817ms)
-  K:\Documents\Obsidian\worktrees\EveryApp\agent_005-prepare-environment-for-tasks-15-17-exec\artifacts\bin\Ferry.Engine.Tests\release_win-x64\Ferry.Engine.Tests.dll (net10.0|x64) passed (7s 883ms)
-  K:\Documents\Obsidian\worktrees\EveryApp\agent_005-prepare-environment-for-tasks-15-17-exec\artifacts\bin\Ferry.Cli.Tests\release_win-x64\Ferry.Cli.Tests.dll (net10.0|x64) passed (3s 354ms)
+  <worktree>\artifacts\bin\EveryApp.Core.Tests\release_win-x64\EveryApp.Core.Tests.dll (net10.0|x64) passed (7s 817ms)
+  <worktree>\artifacts\bin\Ferry.Engine.Tests\release_win-x64\Ferry.Engine.Tests.dll (net10.0|x64) passed (7s 883ms)
+  <worktree>\artifacts\bin\Ferry.Cli.Tests\release_win-x64\Ferry.Cli.Tests.dll (net10.0|x64) passed (3s 354ms)
 
   total: 616
   failed: 0

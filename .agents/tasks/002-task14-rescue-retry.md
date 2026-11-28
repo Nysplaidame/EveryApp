@@ -61,17 +61,17 @@ If the code shows one of these meant something different, follow the code's esta
 - **Acceptance output:** **FAIL** — `build.ps1` stopped at locked restore. Single-worker locked restore and the Release build passed with 0 warnings and 0 errors. The format check and full test runner were denied named-pipe access; the latter ran zero tests.
 - **Notes / follow-ups:** The partial rescue and retry work was retained and extended in `3b01aa9`. Full acceptance requires an environment with restore and named-pipe access. The requested final `feat(ferry): rescue mode and network retry` commit remains outstanding. The task card is outside this worktree, so its Result section was not edited.
 
-**Dispatcher (2026-11-12):** status `done`; worktree `K:\Documents\Obsidian\worktrees\EveryApp\agent_002-task14-rescue`.
+**Dispatcher (2026-11-12):** status `done`; worktree `<worktree>`.
 
 <details><summary>Acceptance output (tail)</summary>
 
 ```
-  EveryApp.Core -> K:\Documents\Obsidian\worktrees\EveryApp\agent_002-task14-rescue\artifacts\bin\EveryApp.Core\release_win-x64\EveryApp.Core.dll
-  Ferry.Engine -> K:\Documents\Obsidian\worktrees\EveryApp\agent_002-task14-rescue\artifacts\bin\Ferry.Engine\release_win-x64\Ferry.Engine.dll
-  EveryApp.Core.Tests -> K:\Documents\Obsidian\worktrees\EveryApp\agent_002-task14-rescue\artifacts\bin\EveryApp.Core.Tests\release_win-x64\EveryApp.Core.Tests.dll
-  Ferry.Cli -> K:\Documents\Obsidian\worktrees\EveryApp\agent_002-task14-rescue\artifacts\bin\Ferry.Cli\release_win-x64\ferry.dll
-  Ferry.Engine.Tests -> K:\Documents\Obsidian\worktrees\EveryApp\agent_002-task14-rescue\artifacts\bin\Ferry.Engine.Tests\release_win-x64\Ferry.Engine.Tests.dll
-  Ferry.Cli.Tests -> K:\Documents\Obsidian\worktrees\EveryApp\agent_002-task14-rescue\artifacts\bin\Ferry.Cli.Tests\release_win-x64\Ferry.Cli.Tests.dll
+  EveryApp.Core -> <worktree>\artifacts\bin\EveryApp.Core\release_win-x64\EveryApp.Core.dll
+  Ferry.Engine -> <worktree>\artifacts\bin\Ferry.Engine\release_win-x64\Ferry.Engine.dll
+  EveryApp.Core.Tests -> <worktree>\artifacts\bin\EveryApp.Core.Tests\release_win-x64\EveryApp.Core.Tests.dll
+  Ferry.Cli -> <worktree>\artifacts\bin\Ferry.Cli\release_win-x64\ferry.dll
+  Ferry.Engine.Tests -> <worktree>\artifacts\bin\Ferry.Engine.Tests\release_win-x64\Ferry.Engine.Tests.dll
+  Ferry.Cli.Tests -> <worktree>\artifacts\bin\Ferry.Cli.Tests\release_win-x64\Ferry.Cli.Tests.dll
 
 Build succeeded.
     0 Warning(s)
@@ -79,26 +79,26 @@ Build succeeded.
 
 Time Elapsed 00:00:11.28
 ==> test
-Running tests from K:\Documents\Obsidian\worktrees\EveryApp\agent_002-task14-rescue\artifacts\bin\Ferry.Cli.Tests\release_win-x64\Ferry.Cli.Tests.dll (net10.0|x64)
-Running tests from K:\Documents\Obsidian\worktrees\EveryApp\agent_002-task14-rescue\artifacts\bin\Ferry.Engine.Tests\release_win-x64\Ferry.Engine.Tests.dll (net10.0|x64)
-Running tests from K:\Documents\Obsidian\worktrees\EveryApp\agent_002-task14-rescue\artifacts\bin\EveryApp.Core.Tests\release_win-x64\EveryApp.Core.Tests.dll (net10.0|x64)
+Running tests from <worktree>\artifacts\bin\Ferry.Cli.Tests\release_win-x64\Ferry.Cli.Tests.dll (net10.0|x64)
+Running tests from <worktree>\artifacts\bin\Ferry.Engine.Tests\release_win-x64\Ferry.Engine.Tests.dll (net10.0|x64)
+Running tests from <worktree>\artifacts\bin\EveryApp.Core.Tests\release_win-x64\EveryApp.Core.Tests.dll (net10.0|x64)
 skipped Ferry.Engine.Tests.TreeCopierRealFileTests.ReFS_SameVolume_UsesBlockClone (0ms)
   No ReFS volume on this PC.
-  from K:\Documents\Obsidian\worktrees\EveryApp\agent_002-task14-rescue\artifacts\bin\Ferry.Engine.Tests\release_win-x64\Ferry.Engine.Tests.dll (net10.0|x64)
+  from <worktree>\artifacts\bin\Ferry.Engine.Tests\release_win-x64\Ferry.Engine.Tests.dll (net10.0|x64)
 [+1/x0/?0] Ferry.Cli.Tests.dll (net10.0|x64)(2s)
 [+218/x0/?1] Ferry.Engine.Tests.dll (net10.0|x64)(2s)
 [+422/x0/?0] EveryApp.Core.Tests.dll (net10.0|x64)(2s)
 
-K:\Documents\Obsidian\worktrees\EveryApp\agent_002-task14-rescue\artifacts\bin\Ferry.Cli.Tests\release_win-x64\Ferry.Cli.Tests.dll (net10.0|x64) passed (3s 236ms)
-K:\Documents\Obsidian\worktrees\EveryApp\agent_002-task14-rescue\artifacts\bin\EveryApp.Core.Tests\release_win-x64\EveryApp.Core.Tests.dll (net10.0|x64) passed (5s 478ms)
+<worktree>\artifacts\bin\Ferry.Cli.Tests\release_win-x64\Ferry.Cli.Tests.dll (net10.0|x64) passed (3s 236ms)
+<worktree>\artifacts\bin\EveryApp.Core.Tests\release_win-x64\EveryApp.Core.Tests.dll (net10.0|x64) passed (5s 478ms)
 [+247/x0/?1] Ferry.Engine.Tests.dll (net10.0|x64)(5s)
 
-K:\Documents\Obsidian\worktrees\EveryApp\agent_002-task14-rescue\artifacts\bin\Ferry.Engine.Tests\release_win-x64\Ferry.Engine.Tests.dll (net10.0|x64) passed (7s 281ms)
+<worktree>\artifacts\bin\Ferry.Engine.Tests\release_win-x64\Ferry.Engine.Tests.dll (net10.0|x64) passed (7s 281ms)
 
 Test run summary: Passed!
-  K:\Documents\Obsidian\worktrees\EveryApp\agent_002-task14-rescue\artifacts\bin\Ferry.Engine.Tests\release_win-x64\Ferry.Engine.Tests.dll (net10.0|x64) passed (7s 281ms)
-  K:\Documents\Obsidian\worktrees\EveryApp\agent_002-task14-rescue\artifacts\bin\EveryApp.Core.Tests\release_win-x64\EveryApp.Core.Tests.dll (net10.0|x64) passed (5s 478ms)
-  K:\Documents\Obsidian\worktrees\EveryApp\agent_002-task14-rescue\artifacts\bin\Ferry.Cli.Tests\release_win-x64\Ferry.Cli.Tests.dll (net10.0|x64) passed (3s 236ms)
+  <worktree>\artifacts\bin\Ferry.Engine.Tests\release_win-x64\Ferry.Engine.Tests.dll (net10.0|x64) passed (7s 281ms)
+  <worktree>\artifacts\bin\EveryApp.Core.Tests\release_win-x64\EveryApp.Core.Tests.dll (net10.0|x64) passed (5s 478ms)
+  <worktree>\artifacts\bin\Ferry.Cli.Tests\release_win-x64\Ferry.Cli.Tests.dll (net10.0|x64) passed (3s 236ms)
 
   total: 671
   failed: 0

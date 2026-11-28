@@ -37,10 +37,10 @@ What makes it worth building, rather than installing the existing tools:
 ## 3. Constraints
 
 - The PC runs Windows 11 Pro 24H2 (a debloated "X-Lite" build). The suite must not assume default services are running (Windows Search, SysMain, Xbox services and others are disabled). It should detect missing dependencies and say so plainly, never fail mysteriously.
-- Mixed hardware: NVMe SSDs, a SATA SSD, 5400 rpm hard drives, a Storage Spaces volume (G:, NTFS), a NAS over SMB. Everything must behave well on slow hard drives and network shares, not only on NVMe.
+- Mixed hardware: NVMe SSDs, a SATA SSD, 5400 rpm hard drives, a Storage Spaces volume (NTFS), a NAS over SMB. Everything must behave well on slow hard drives and network shares, not only on NVMe.
 - The user works mostly through Explorer: Ctrl+C/Ctrl+V day to day, sometimes drag and drop.
 - Development tools present: .NET SDK 10, git, GitHub CLI.
-- Repository: `K:\Documents\Obsidian\EveryApp`.
+- Repository: a local clone of this public repository (`<repo>`); its location on the PC is not recorded here.
 
 ## 4. Decisions made with the user
 
@@ -104,7 +104,7 @@ What makes it worth building, rather than installing the existing tools:
 ### 5.3 Drive Health
 - Read SMART / NVMe health for every drive (incl. drives behind Storage Spaces where possible). Store a history.
 - Watch the Windows System log for disk errors (`disk` event 7 "bad block", 153, 157 surprise removal, NTFS errors) and map them to the physical drive.
-- Plain-language status per drive ("Healthy", "Watch", "Back up now"), with the reason ("H: has logged 925 bad blocks since yesterday").
+- Plain-language status per drive ("Healthy", "Watch", "Back up now"), with the reason ("D: has logged 925 bad blocks since yesterday").
 - Trends: reallocated/pending sectors, media errors, temperature, wear/percentage used, power-on hours.
 - Alerts via the hub (Windows, ntfy, Home Assistant). Home Assistant: per-drive sensors over MQTT (health, temperature, error counts).
 - Drive speed test (real-world: sequential, small-file, random), with results explained in plain words. May slip to v1.1.
@@ -228,8 +228,8 @@ One pluggable collector per source. Each returns normalised records: name, publi
 - **Portable mode:** apps + CLI only. No helper service, no Explorer takeover, no background Drive Health monitoring, no self-update. Drive Health still works as an on-demand scan when started elevated. Settings, journals and logs live beside the executables. Settings has an "Install helper" button to upgrade a portable copy to the full install.
 - **Elevation:** apps run non-elevated. When a copy needs admin rights (copying permissions/ownership, reading protected files), the app offers "Restart this job as administrator" and launches an elevated copy worker for that job only, with a UAC prompt. The service is **not** used for general file I/O, so its command set stays narrow (SMART, event log, later the driver store and MFT scanning).
 - **Speed target (release gate):** on this PC, within 10 % of FastCopy (its default "Copy" mode, default buffer, verify off, then again with verify on) for each of these sets:
-  - HDD (E:) → NVMe: large files
-  - HDD (E:) → NVMe: 10,000+ small files
+  - HDD → NVMe: large files
+  - HDD → NVMe: 10,000+ small files
   - NVMe → NVMe: large files
   - NVMe → NVMe: mixed files
 

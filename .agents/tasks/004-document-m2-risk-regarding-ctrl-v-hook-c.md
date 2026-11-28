@@ -43,14 +43,14 @@ The M2 risk about Ferry's Ctrl+V hook competing with copy tools like Ultracopier
 - Acceptance output: **Fail** — `build.ps1` stopped at `restore (locked)` with exit code 1. `git diff --check` passed.
 - Notes / follow-ups: Added the M2 risk, Ultracopier, the instruction to test with one running and decide detection/handling, and “Not yet in the spec” to `MANUAL-TEST.md`. No code changed. Git printed a `packed-refs.lock` permission warning during commit, but the commit completed.
 
-**Dispatcher (2026-11-12):** status `done`; worktree `K:\Documents\Obsidian\worktrees\EveryApp\agent_004-document-m2-risk-regarding-ctrl-v-hook-c`.
+**Dispatcher (2026-11-12):** status `done`; worktree `<worktree>`.
 
 <details><summary>Acceptance output (tail)</summary>
 
 ```
-  Ferry.Cli -> K:\Documents\Obsidian\worktrees\EveryApp\agent_004-document-m2-risk-regarding-ctrl-v-hook-c\artifacts\bin\Ferry.Cli\release_win-x64\ferry.dll
-  Ferry.Engine.Tests -> K:\Documents\Obsidian\worktrees\EveryApp\agent_004-document-m2-risk-regarding-ctrl-v-hook-c\artifacts\bin\Ferry.Engine.Tests\release_win-x64\Ferry.Engine.Tests.dll
-  Ferry.Cli.Tests -> K:\Documents\Obsidian\worktrees\EveryApp\agent_004-document-m2-risk-regarding-ctrl-v-hook-c\artifacts\bin\Ferry.Cli.Tests\release_win-x64\Ferry.Cli.Tests.dll
+  Ferry.Cli -> <worktree>\artifacts\bin\Ferry.Cli\release_win-x64\ferry.dll
+  Ferry.Engine.Tests -> <worktree>\artifacts\bin\Ferry.Engine.Tests\release_win-x64\Ferry.Engine.Tests.dll
+  Ferry.Cli.Tests -> <worktree>\artifacts\bin\Ferry.Cli.Tests\release_win-x64\Ferry.Cli.Tests.dll
 
 Build succeeded.
     0 Warning(s)
@@ -58,29 +58,29 @@ Build succeeded.
 
 Time Elapsed 00:00:11.03
 ==> test
-Running tests from K:\Documents\Obsidian\worktrees\EveryApp\agent_004-document-m2-risk-regarding-ctrl-v-hook-c\artifacts\bin\Ferry.Cli.Tests\release_win-x64\Ferry.Cli.Tests.dll (net10.0|x64)
-Running tests from K:\Documents\Obsidian\worktrees\EveryApp\agent_004-document-m2-risk-regarding-ctrl-v-hook-c\artifacts\bin\Ferry.Engine.Tests\release_win-x64\Ferry.Engine.Tests.dll (net10.0|x64)
-Running tests from K:\Documents\Obsidian\worktrees\EveryApp\agent_004-document-m2-risk-regarding-ctrl-v-hook-c\artifacts\bin\EveryApp.Core.Tests\release_win-x64\EveryApp.Core.Tests.dll (net10.0|x64)
+Running tests from <worktree>\artifacts\bin\Ferry.Cli.Tests\release_win-x64\Ferry.Cli.Tests.dll (net10.0|x64)
+Running tests from <worktree>\artifacts\bin\Ferry.Engine.Tests\release_win-x64\Ferry.Engine.Tests.dll (net10.0|x64)
+Running tests from <worktree>\artifacts\bin\EveryApp.Core.Tests\release_win-x64\EveryApp.Core.Tests.dll (net10.0|x64)
 skipped Ferry.Engine.Tests.TreeCopierRealFileTests.ReFS_SameVolume_UsesBlockClone (0ms)
   No ReFS volume on this PC.
-  from K:\Documents\Obsidian\worktrees\EveryApp\agent_004-document-m2-risk-regarding-ctrl-v-hook-c\artifacts\bin\Ferry.Engine.Tests\release_win-x64\Ferry.Engine.Tests.dll (net10.0|x64)
+  from <worktree>\artifacts\bin\Ferry.Engine.Tests\release_win-x64\Ferry.Engine.Tests.dll (net10.0|x64)
 [+1/x0/?0] Ferry.Cli.Tests.dll (net10.0|x64)(1s)
 [+143/x0/?1] Ferry.Engine.Tests.dll (net10.0|x64)(1s)
 [+384/x0/?0] EveryApp.Core.Tests.dll (net10.0|x64)(1s)
 
-K:\Documents\Obsidian\worktrees\EveryApp\agent_004-document-m2-risk-regarding-ctrl-v-hook-c\artifacts\bin\Ferry.Cli.Tests\release_win-x64\Ferry.Cli.Tests.dll (net10.0|x64) passed (3s 351ms)
+<worktree>\artifacts\bin\Ferry.Cli.Tests\release_win-x64\Ferry.Cli.Tests.dll (net10.0|x64) passed (3s 351ms)
 [+191/x0/?1] Ferry.Engine.Tests.dll (net10.0|x64)(4s)
 [+422/x0/?0] EveryApp.Core.Tests.dll (net10.0|x64)(4s)
 
-K:\Documents\Obsidian\worktrees\EveryApp\agent_004-document-m2-risk-regarding-ctrl-v-hook-c\artifacts\bin\EveryApp.Core.Tests\release_win-x64\EveryApp.Core.Tests.dll (net10.0|x64) passed (7s 343ms)
+<worktree>\artifacts\bin\EveryApp.Core.Tests\release_win-x64\EveryApp.Core.Tests.dll (net10.0|x64) passed (7s 343ms)
 [+192/x0/?1] Ferry.Engine.Tests.dll (net10.0|x64)(7s)
 
-K:\Documents\Obsidian\worktrees\EveryApp\agent_004-document-m2-risk-regarding-ctrl-v-hook-c\artifacts\bin\Ferry.Engine.Tests\release_win-x64\Ferry.Engine.Tests.dll (net10.0|x64) passed (8s 302ms)
+<worktree>\artifacts\bin\Ferry.Engine.Tests\release_win-x64\Ferry.Engine.Tests.dll (net10.0|x64) passed (8s 302ms)
 
 Test run summary: Passed!
-  K:\Documents\Obsidian\worktrees\EveryApp\agent_004-document-m2-risk-regarding-ctrl-v-hook-c\artifacts\bin\Ferry.Engine.Tests\release_win-x64\Ferry.Engine.Tests.dll (net10.0|x64) passed (8s 302ms)
-  K:\Documents\Obsidian\worktrees\EveryApp\agent_004-document-m2-risk-regarding-ctrl-v-hook-c\artifacts\bin\Ferry.Cli.Tests\release_win-x64\Ferry.Cli.Tests.dll (net10.0|x64) passed (3s 351ms)
-  K:\Documents\Obsidian\worktrees\EveryApp\agent_004-document-m2-risk-regarding-ctrl-v-hook-c\artifacts\bin\EveryApp.Core.Tests\release_win-x64\EveryApp.Core.Tests.dll (net10.0|x64) passed (7s 343ms)
+  <worktree>\artifacts\bin\Ferry.Engine.Tests\release_win-x64\Ferry.Engine.Tests.dll (net10.0|x64) passed (8s 302ms)
+  <worktree>\artifacts\bin\Ferry.Cli.Tests\release_win-x64\Ferry.Cli.Tests.dll (net10.0|x64) passed (3s 351ms)
+  <worktree>\artifacts\bin\EveryApp.Core.Tests\release_win-x64\EveryApp.Core.Tests.dll (net10.0|x64) passed (7s 343ms)
 
   total: 616
   failed: 0

@@ -42,17 +42,17 @@ The `feat/m1-foundation-ferry-engine` branch includes all changes from `agent/00
 - Acceptance output: **FAIL** — `build.ps1` stopped at `restore (locked)` with exit code 1.
 - Notes / follow-ups: Merge commit has both expected parents; `agent/002-task14-rescue` is an ancestor, and the worktree is clean. Resolved `STATE.md` using card 002’s version. The task card file wasn’t present in this worktree, so its Result section could not be edited. Restore failure is consistent with the recorded environment permission blocker; no ferry or core logic was changed beyond the merge.
 
-**Dispatcher (2026-11-12):** status `done`; worktree `K:\Documents\Obsidian\worktrees\EveryApp\agent_003-merge-card-002-branch-into-feature-branc`.
+**Dispatcher (2026-11-12):** status `done`; worktree `<worktree>`.
 
 <details><summary>Acceptance output (tail)</summary>
 
 ```
-  EveryApp.Core -> K:\Documents\Obsidian\worktrees\EveryApp\agent_003-merge-card-002-branch-into-feature-branc\artifacts\bin\EveryApp.Core\release_win-x64\EveryApp.Core.dll
-  Ferry.Engine -> K:\Documents\Obsidian\worktrees\EveryApp\agent_003-merge-card-002-branch-into-feature-branc\artifacts\bin\Ferry.Engine\release_win-x64\Ferry.Engine.dll
-  EveryApp.Core.Tests -> K:\Documents\Obsidian\worktrees\EveryApp\agent_003-merge-card-002-branch-into-feature-branc\artifacts\bin\EveryApp.Core.Tests\release_win-x64\EveryApp.Core.Tests.dll
-  Ferry.Cli -> K:\Documents\Obsidian\worktrees\EveryApp\agent_003-merge-card-002-branch-into-feature-branc\artifacts\bin\Ferry.Cli\release_win-x64\ferry.dll
-  Ferry.Engine.Tests -> K:\Documents\Obsidian\worktrees\EveryApp\agent_003-merge-card-002-branch-into-feature-branc\artifacts\bin\Ferry.Engine.Tests\release_win-x64\Ferry.Engine.Tests.dll
-  Ferry.Cli.Tests -> K:\Documents\Obsidian\worktrees\EveryApp\agent_003-merge-card-002-branch-into-feature-branc\artifacts\bin\Ferry.Cli.Tests\release_win-x64\Ferry.Cli.Tests.dll
+  EveryApp.Core -> <worktree>\artifacts\bin\EveryApp.Core\release_win-x64\EveryApp.Core.dll
+  Ferry.Engine -> <worktree>\artifacts\bin\Ferry.Engine\release_win-x64\Ferry.Engine.dll
+  EveryApp.Core.Tests -> <worktree>\artifacts\bin\EveryApp.Core.Tests\release_win-x64\EveryApp.Core.Tests.dll
+  Ferry.Cli -> <worktree>\artifacts\bin\Ferry.Cli\release_win-x64\ferry.dll
+  Ferry.Engine.Tests -> <worktree>\artifacts\bin\Ferry.Engine.Tests\release_win-x64\Ferry.Engine.Tests.dll
+  Ferry.Cli.Tests -> <worktree>\artifacts\bin\Ferry.Cli.Tests\release_win-x64\Ferry.Cli.Tests.dll
 
 Build succeeded.
     0 Warning(s)
@@ -60,26 +60,26 @@ Build succeeded.
 
 Time Elapsed 00:00:08.41
 ==> test
-Running tests from K:\Documents\Obsidian\worktrees\EveryApp\agent_003-merge-card-002-branch-into-feature-branc\artifacts\bin\Ferry.Cli.Tests\release_win-x64\Ferry.Cli.Tests.dll (net10.0|x64)
-Running tests from K:\Documents\Obsidian\worktrees\EveryApp\agent_003-merge-card-002-branch-into-feature-branc\artifacts\bin\Ferry.Engine.Tests\release_win-x64\Ferry.Engine.Tests.dll (net10.0|x64)
-Running tests from K:\Documents\Obsidian\worktrees\EveryApp\agent_003-merge-card-002-branch-into-feature-branc\artifacts\bin\EveryApp.Core.Tests\release_win-x64\EveryApp.Core.Tests.dll (net10.0|x64)
+Running tests from <worktree>\artifacts\bin\Ferry.Cli.Tests\release_win-x64\Ferry.Cli.Tests.dll (net10.0|x64)
+Running tests from <worktree>\artifacts\bin\Ferry.Engine.Tests\release_win-x64\Ferry.Engine.Tests.dll (net10.0|x64)
+Running tests from <worktree>\artifacts\bin\EveryApp.Core.Tests\release_win-x64\EveryApp.Core.Tests.dll (net10.0|x64)
 skipped Ferry.Engine.Tests.TreeCopierRealFileTests.ReFS_SameVolume_UsesBlockClone (0ms)
   No ReFS volume on this PC.
-  from K:\Documents\Obsidian\worktrees\EveryApp\agent_003-merge-card-002-branch-into-feature-branc\artifacts\bin\Ferry.Engine.Tests\release_win-x64\Ferry.Engine.Tests.dll (net10.0|x64)
-K:\Documents\Obsidian\worktrees\EveryApp\agent_003-merge-card-002-branch-into-feature-branc\artifacts\bin\Ferry.Cli.Tests\release_win-x64\Ferry.Cli.Tests.dll (net10.0|x64) passed (2s 154ms)
+  from <worktree>\artifacts\bin\Ferry.Engine.Tests\release_win-x64\Ferry.Engine.Tests.dll (net10.0|x64)
+<worktree>\artifacts\bin\Ferry.Cli.Tests\release_win-x64\Ferry.Cli.Tests.dll (net10.0|x64) passed (2s 154ms)
 [+237/x0/?1] Ferry.Engine.Tests.dll (net10.0|x64)(2s)
 [+419/x0/?0] EveryApp.Core.Tests.dll (net10.0|x64)(2s)
 
 [+247/x0/?1] Ferry.Engine.Tests.dll (net10.0|x64)(5s)
 [+422/x0/?0] EveryApp.Core.Tests.dll (net10.0|x64)(5s)
 
-K:\Documents\Obsidian\worktrees\EveryApp\agent_003-merge-card-002-branch-into-feature-branc\artifacts\bin\EveryApp.Core.Tests\release_win-x64\EveryApp.Core.Tests.dll (net10.0|x64) passed (6s 062ms)
-K:\Documents\Obsidian\worktrees\EveryApp\agent_003-merge-card-002-branch-into-feature-branc\artifacts\bin\Ferry.Engine.Tests\release_win-x64\Ferry.Engine.Tests.dll (net10.0|x64) passed (8s 399ms)
+<worktree>\artifacts\bin\EveryApp.Core.Tests\release_win-x64\EveryApp.Core.Tests.dll (net10.0|x64) passed (6s 062ms)
+<worktree>\artifacts\bin\Ferry.Engine.Tests\release_win-x64\Ferry.Engine.Tests.dll (net10.0|x64) passed (8s 399ms)
 
 Test run summary: Passed!
-  K:\Documents\Obsidian\worktrees\EveryApp\agent_003-merge-card-002-branch-into-feature-branc\artifacts\bin\EveryApp.Core.Tests\release_win-x64\EveryApp.Core.Tests.dll (net10.0|x64) passed (6s 062ms)
-  K:\Documents\Obsidian\worktrees\EveryApp\agent_003-merge-card-002-branch-into-feature-branc\artifacts\bin\Ferry.Engine.Tests\release_win-x64\Ferry.Engine.Tests.dll (net10.0|x64) passed (8s 399ms)
-  K:\Documents\Obsidian\worktrees\EveryApp\agent_003-merge-card-002-branch-into-feature-branc\artifacts\bin\Ferry.Cli.Tests\release_win-x64\Ferry.Cli.Tests.dll (net10.0|x64) passed (2s 154ms)
+  <worktree>\artifacts\bin\EveryApp.Core.Tests\release_win-x64\EveryApp.Core.Tests.dll (net10.0|x64) passed (6s 062ms)
+  <worktree>\artifacts\bin\Ferry.Engine.Tests\release_win-x64\Ferry.Engine.Tests.dll (net10.0|x64) passed (8s 399ms)
+  <worktree>\artifacts\bin\Ferry.Cli.Tests\release_win-x64\Ferry.Cli.Tests.dll (net10.0|x64) passed (2s 154ms)
 
   total: 671
   failed: 0
