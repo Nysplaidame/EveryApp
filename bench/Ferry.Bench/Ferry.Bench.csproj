@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Benchmarks only: built and format-checked with the solution, never run by build.ps1. Run them with bench.ps1. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <IsPackable>false</IsPackable>
+    <!-- BenchmarkDotNet needs public, unsealed benchmark classes with instance methods. -->
+    <NoWarn>$(NoWarn);CA1515;CA1822;CA1001</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="BenchmarkDotNet" />
+    <ProjectReference Include="..\..\src\Ferry.Engine\Ferry.Engine.csproj" />
+  </ItemGroup>
+
+</Project>

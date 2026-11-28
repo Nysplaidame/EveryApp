@@ -1,0 +1,177 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+# Nothing is granted at the top level. Each job declares exactly what it needs.
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+# Why two jobs: every step of a job runs on the same runner, and the runner holds every secret the job
+# references (and, with id-token: write, the OIDC request token) for the whole job. A step-level env alone
+# does not keep a compromised build dependency, test or dotnet tool away from the signing key. So:
+#   build   - restore, build, test, publish and SBOM, with a read-only token and no secrets or environment.
+#             It uploads the files to sign plus a SHA-256 manifest, and hands the manifest's hash to the next job.
+#   release - a fresh runner in the 'release' environment (where the signing secrets live). It runs no restore,
+#             build, test or dotnet tool: it downloads the files, checks them against the manifest, signs,
+#             packages, attests and creates the release. Only this job can write contents or request an OIDC token.
+jobs:
+  build:
+    name: build-and-test
+    runs-on: windows-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    outputs:
+      manifest-sha256: ${{ steps.manifest.outputs.sha256 }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Require the tagged commit to be on main
+        shell: pwsh
+        run: |
+          git fetch --no-tags origin main
+          if ($LASTEXITCODE -ne 0) { throw 'could not fetch main' }
+          git merge-base --is-ancestor $env:GITHUB_SHA origin/main
+          if ($LASTEXITCODE -ne 0) { throw "Refusing to release: $env:GITHUB_SHA is not on main. Merge through a reviewed PR first." }
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
+        with:
+          global-json-file: global.json
+
+      - name: Build and test
+        shell: pwsh
+        run: ./build.ps1 -Configuration Release
+
+      # build.ps1 has already restored in locked mode; publish must not restore again.
+      - name: Publish CLI
+        shell: pwsh
+        run: |
+          dotnet publish src/Ferry.Cli -c Release -r win-x64 --self-contained false --no-restore -o artifacts/publish/ferry
+          if ($LASTEXITCODE -ne 0) { throw 'publish failed' }
+
+      - name: Generate SBOM (CycloneDX)
+        shell: pwsh
+        run: |
+          dotnet tool restore
+          if ($LASTEXITCODE -ne 0) { throw 'tool restore failed' }
+          dotnet CycloneDX src/Ferry.Cli/Ferry.Cli.csproj -j -o artifacts/sbom  # what ships (not tests or bench tools)
+          if ($LASTEXITCODE -ne 0) { throw 'SBOM generation failed' }
+
+      # One line per file: "<sha256>  <path under artifacts/>", sorted, LF line ends. The release job rebuilds
+      # the same text from what it downloads and compares both the text and this hash.
+      - name: Write the file manifest
+        id: manifest
+        shell: pwsh
+        run: |
+          $root = (Resolve-Path artifacts).Path
+          $lines = foreach ($dir in 'publish/ferry', 'sbom') {
+            Get-ChildItem -LiteralPath (Join-Path $root $dir) -Recurse -File | ForEach-Object {
+              $rel = $_.FullName.Substring($root.Length + 1).Replace('\', '/')
+              '{0}  {1}' -f (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(), $rel
+            }
+          }
+          $lines = [string[]]@($lines); [Array]::Sort($lines, [StringComparer]::Ordinal)
+          if ($lines.Count -eq 0) { throw 'nothing to release' }
+          New-Item -ItemType Directory -Force -Path artifacts/manifest | Out-Null
+          $manifest = Join-Path $root 'manifest/SHA256SUMS.txt'
+          [IO.File]::WriteAllText($manifest, (($lines -join "`n") + "`n"), [Text.UTF8Encoding]::new($false))
+          $hash = (Get-FileHash -LiteralPath $manifest -Algorithm SHA256).Hash.ToLowerInvariant()
+          "sha256=$hash" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          Write-Host "Manifest: $($lines.Count) file(s), sha256 $hash"
+
+      - name: Upload the files to sign
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-input
+          path: |
+            artifacts/publish/ferry/
+            artifacts/sbom/
+            artifacts/manifest/
+          if-no-files-found: error
+          retention-days: 1
+
+  release:
+    name: sign-and-release
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 20
+    # The signing secrets live in this environment, which only accepts v* tags (deployment tag rule).
+    environment: release
+    permissions:
+      contents: write       # create the GitHub Release
+      id-token: write       # sign the provenance attestation (OIDC)
+      attestations: write   # store the provenance attestation
+    env:
+      RELEASE_TAG: ${{ github.ref_name }}
+      MANIFEST_SHA256: ${{ needs.build.outputs.manifest-sha256 }}
+    steps:
+      # Only for build.ps1 (its -SignOnly path) at the tagged commit. Nothing is restored or built here.
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Download the files to sign
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-input
+          path: artifacts
+
+      - name: Check the files against the manifest
+        shell: pwsh
+        run: |
+          $root = (Resolve-Path artifacts).Path
+          $manifest = Join-Path $root 'manifest/SHA256SUMS.txt'
+          if ($env:MANIFEST_SHA256 -notmatch '^[0-9a-f]{64}$') { throw 'The build job did not hand over a manifest hash.' }
+          $actual = (Get-FileHash -LiteralPath $manifest -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $env:MANIFEST_SHA256) { throw "Manifest hash mismatch: expected $env:MANIFEST_SHA256, got $actual." }
+          $lines = foreach ($dir in 'publish/ferry', 'sbom') {
+            Get-ChildItem -LiteralPath (Join-Path $root $dir) -Recurse -File | ForEach-Object {
+              $rel = $_.FullName.Substring($root.Length + 1).Replace('\', '/')
+              '{0}  {1}' -f (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(), $rel
+            }
+          }
+          $lines = [string[]]@($lines); [Array]::Sort($lines, [StringComparer]::Ordinal)
+          $rebuilt = ($lines -join "`n") + "`n"
+          if ($rebuilt -cne [IO.File]::ReadAllText($manifest)) { throw 'The downloaded files do not match the manifest (changed, missing or extra files).' }
+          Write-Host "Checked $($lines.Count) file(s) against the manifest."
+
+      # The only step that sees the signing secrets, and it runs only build.ps1 -SignOnly.
+      - name: Sign
+        shell: pwsh
+        env:
+          EVERYAPP_SIGN_PFX_BASE64: ${{ secrets.EVERYAPP_SIGN_PFX_BASE64 }}
+          EVERYAPP_SIGN_PFX_PASSWORD: ${{ secrets.EVERYAPP_SIGN_PFX_PASSWORD }}
+        run: ./build.ps1 -Configuration Release -SignOnly
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path artifacts/release | Out-Null
+          Compress-Archive -Path 'artifacts/publish/ferry/*' -DestinationPath "artifacts/release/Ferry-$env:RELEASE_TAG-win-x64.zip"
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-path: |
+            artifacts/release/*.zip
+            artifacts/sbom/*.json
+
+      - name: Create GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $assets = @(Get-ChildItem artifacts/release/*.zip, artifacts/sbom/*.json | ForEach-Object { $_.FullName })
+          gh release create $env:RELEASE_TAG @assets --repo $env:GITHUB_REPOSITORY --title $env:RELEASE_TAG --generate-notes --verify-tag
+          if ($LASTEXITCODE -ne 0) { throw 'release creation failed' }

@@ -1,0 +1,50 @@
+# EveryApp — HANDOFF (recent entries only)
+
+Newest at the top. Each entry: `## <what> — <date> (<agent>)`, ≤10 lines, ending with a `Touches:` line.
+Keep under ~300 lines; move older entries to `docs/archive/HANDOFF-history-<from>-<to>.md` in the same commit.
+Live state belongs in `STATE.md`; plan-execution detail in the superpowers progress log; decisions in `docs/adr/`.
+
+## Task 17: soak script and milestone security review — 28 November 2026 (Claude)
+
+`soak.ps1` (speed-capped copy → verify → move → delete loop with random freezes and kill+resume; owned-folder safety; optional `-MoveRoot`) built and reviewed; trial passes; the 4-hour run was not done (user: not now). README gained Ferry CLI usage. `/security-review`: no reportable findings (a source-junction race kept as hardening). Security-auditor milestone audit: 1 medium (release job exposed secrets to build steps), 7 low, 10 info — fixed in rounds A (engine/CLI: listed-file identity, unsafe names, resume preview, size caps, plain stop on journal failure, invisible-character scrub), B (release split with SHA-256 manifest, nuget.org-only, Dependabot cooldown, non-exportable signing key, personal paths removed), C (reopen containment on id-less volumes, journal format v1, tag-trigger risk documented); each round reviewed. Owner actions before v0.1.0 listed in STATE. Full `./build.ps1`: 939 tests, 938 passed, 1 skipped.
+Touches: `soak.ps1`, `README.md`, `src/Ferry.Engine/*`, `src/Ferry.Cli/*`, `src/EveryApp.Core/{FileSystem,Jobs,Paths,Settings}/*`, tests, `.github/workflows/release.yml`, `.github/dependabot.yml`, `nuget.config`, `scripts/New-SigningCert.ps1`, `bench.ps1`, `.agents/tasks/*`, `docs/superpowers/specs/2026-11-06-ferry-suite-v1-design.md`, `docs/security/threat-model.md`, `STATE.md`.
+
+## Start-up, sector size, fair bench: NVMe gate met — 27 November 2026 (Claude)
+
+Start-up: `DevicesOf` spent 560 ms per run on a WMI Storage Spaces lookup; now only when a disk's bus type is Storage Spaces (Task 9; one-file copy 0.73 → 0.19 s). Mixed verify-on gap: the small-file check itself costs ~nothing; Ferry alone 45 s vs FastCopy 50 s, but a FastCopy run slows whatever copy runs next (cause unknown; not CPU, not drive busy). Per-step timing found two extra handle opens per checked file for the sector size: now once per job root (Task 10; after-FastCopy run 80 → 61 s). `bench.ps1` runs each tool off then on back to back. Mixed, 3 rounds: 0.90 / 0.64; large 0.78 / 1.00. Reviews clean. Full `./build.ps1`: 881 tests, 880 passed, 1 skipped.
+Touches: `src/EveryApp.Core/Scheduling/{WindowsDeviceResolver,IVolumeApi,NativeVolumeApi}.cs`, `src/EveryApp.Core/NativeMethods.txt`, `src/Ferry.Engine/{FileCopier,CopyProgress,TreeJob,SectorSizeCache}.cs`, tests, `bench.ps1`, `docs/perf/results.md`, `STATE.md`.
+
+## Large files: several chunks in flight — 27 November 2026 (Claude)
+
+Found with probes on the drives (user-approved writes): a plain copy runs 1.02 GB/s with one 4 MiB chunk in flight and 2.5 GB/s with 4; Ferry ran ~1.0 because a write to a fresh part file runs inside the Windows call, so its read and write loops never overlapped. Task 8 keeps 4 reads and 4 writes in flight per large file (hashed in order; rescue still one at a time) and the check reads 4 ahead; retry handles made safe for concurrent calls. Reviews clean; security review L1–L3 fixed (identity checked on the reopened handle, stop after a failed check), threat model updated. Large set vs FastCopy, 1 round: 0.78 off / 1.00 on (pass; were 1.28 / 1.39). Full `./build.ps1`: 871 tests, 870 passed, 1 skipped.
+Touches: `src/Ferry.Engine/{FileCopier,RetryHandles,ThreadPoolHop,Verifier}.cs`, `src/EveryApp.Core/FileSystem/*` (file id on handles), tests, `docs/security/threat-model.md`, `docs/perf/results.md`, `STATE.md`.
+
+## Parallel copies built and measured — 27 November 2026 (Claude)
+
+User chose several workers per job on solid-state drives (hard drives stay one at a time). Built by plan `2026-11-26-ferry-parallel-copy` (7 tasks, subagent-driven, each reviewed): drive-kind probe (seek penalty), thread-safe job state, per-file progress slots, large-file turns (one copy and one check at a time, check behind the next copy), the parallel job loop with reserved names, a `jobs` bench mode. Reviews caught: a file starting after "stop", a stale wait message, 8.3 look-alike names, a cold-cache bench bias; all fixed. Security-auditor: no critical/high/medium; L1 fixed, three low risks accepted. Default set to 8 workers from a 1/2/4/8 probe. Gate run (source now a Storage Space): mixed 0.74 / 1.62, large 1.28 / 1.39; the large-file drop is the setup (old/new A/B equal). Final review: ready to merge, 7 minors fixed. Full `./build.ps1`: 849 tests, 848 passed, 1 skipped.
+Touches: `src/EveryApp.Core/Scheduling/{DriveKind,WindowsDriveKindProbe,IVolumeApi,NativeVolumeApi}.cs`, `src/EveryApp.Core/NativeMethods.txt`, `src/Ferry.Engine/{TreeCopier,TreeJob,TreeMover,TreePlanner,InFlightCopies,LargeFileGates,FileCopier,CopyProgress,CopyResult,JobOutcome,ProgressTracker,SpeedLimiter,ChecksumWriter,NameAllocator}.cs`, `bench/Ferry.Bench/{JobsProbe,Program,Sweep}.cs`, tests, `docs/security/threat-model.md`, `docs/perf/results.md`, `docs/superpowers/{specs,plans}/2026-11-26-ferry-parallel-copy*`, `STATE.md`.
+
+## Task 16 measured: speed gate not met — 22 November 2026 (Claude)
+
+Card 007 re-run twice (stale base, then Codex sandbox with no NuGet TLS or disk access), then done in-session. Built `bench/Ferry.Bench` (micro-benchmarks, data generator, tuning sweep, standby-cache flush) and `bench.ps1` (FastCopy vs `ferry copy`, alternating). Profiling found two small-file costs: the per-file flush (~80%) and a 5–7 ms antivirus wait when verify reopened a just-written file. User chose "skip the flush, recheck on resume". Verify now reads small files back through the open unbuffered handle; part files lost write-through. Security-auditor findings M1, M2, L1–L3 fixed and tested. Results (NVMe only, HDD offline): large verify off 0.52× FastCopy; large verify on 1.17×; mixed 2.02× / 7.61×. Gate not met; the options are in `docs/perf/results.md`, pending the user. Large-set sweep skipped to spare the drives; defaults unchanged. Full `./build.ps1`: 729 tests, 728 passed, 1 skipped.
+Touches: `bench/`, `bench.ps1`, `bench.example.json`, `src/Ferry.Engine/{FileCopier,TreeJob,ResumeRecovery,CopyProgress,JobOutcome,RetryHandles,CopierTuning}.cs`, `src/EveryApp.Core/{Jobs/JobJournal,FileSystem/*}.cs`, tests, `build.ps1`, `.github/workflows/release.yml`, `docs/security/threat-model.md`, `docs/perf/results.md`, `STATE.md`.
+
+## Cards 004 and 006 merged; card 007 held — 18 November 2026 (Claude)
+
+Card 006 (task 15, `ferry` CLI by Codex) reviewed and merged: strict option allow-list, response files off, scrubbed output, previews + confirmation for moves/replacements, Ctrl+C and kill/resume tests. Codex's four notes were blocked retries (no NuGet, sandbox pipes); it hand-wrote the System.CommandLine 2.0.2 lock entries, which the locked restore here validated. Fix-ups: `--rescue` enabled (written before task 14), `--if-unreadable ask` still refused (engine has no prompt until M2), `ferry verify` compares sizes before hashing; tests updated (rescue copy, same-size-different-bytes). Card 004's M2 Ctrl+V risk note merged. Card 007 (task 16) held: no harness or measurements, seven "blocked" notes, stale premises. Full `./build.ps1`: 703 tests, 702 passed, 1 skipped (ReFS).
+Touches: `src/Ferry.Cli/FolderVerifier.cs`, `src/Ferry.Cli/CliApplication.cs`, `tests/Ferry.Cli.Tests/CliTests.cs`, `docs/security/threat-model.md`, `STATE.md`, `HANDOFF.md`.
+
+## Task 14 accepted and merged — 18 November 2026 (Claude)
+
+Card 002's branch (`agent/002-task14-rescue`, Codex/Qwen work, last `838732e`) passed the full `./build.ps1` run here: locked restore, format check, build with 0 warnings, 671 tests (670 passed, 1 skipped: no ReFS drive). Codex's eight 12 Nov entries were all "acceptance blocked by sandbox" (named pipes, git locks); condensed here. Their substance: rescue bisects bad blocks down to sectors (2 retries, zero-fill, per-file cap `MaxLostSectors`), writes `<dest>.ferry-lost.txt`, and rescued files count as warnings, never "verified"; rescued moves keep the source. Network/sharing retries back off from 1 s up to 30 s (5 min budget), then reopen handles. A reopened source must match its file ID, size and timestamp. A reopened part file must resolve to the same final path, with no links followed. Any reopened write is hash-checked even with Verify off. Known limits: resume recopies rescued files, and an existing lost report gives a report-not-saved warning. Claude reviewed the code and found no issues. Threat model updated by Codex.
+Touches: `src/Ferry.Engine/`, `src/EveryApp.Core/FileSystem/`, tests, `docs/security/threat-model.md`, `STATE.md`, `HANDOFF.md`.
+
+## Explorer tab paste bug = Ultracopier — 11 November 2026 (Claude)
+
+Ctrl+V pasted into the left-most tab of a multi-tab Explorer window. PasteCatcher's live log showed it matched the right tab and passed the key through; the misroute also happened with PasteCatcher off, and only on Ctrl+V (right-click paste fine). Quitting Ultracopier (startup item, takes over paste) fixed it. Speculative PasteCatcher hardening was reverted (it did not fix anything). Added a note to MANUAL-TEST step 11. Open: Ferry's M2 paste hook will compete with such tools; not yet in the spec.
+Touches: `spikes/explorer-interception/MANUAL-TEST.md` (commit `7f1bb7f`), `STATE.md`, `HANDOFF.md`. No code.
+
+## Agent setup aligned to agent-ops — 8 November 2026 (Claude)
+
+Codex had no instructions in this repo (only `CLAUDE.md` existed). Shared rules now live in `AGENTS.md` (Codex reads it; Claude imports it). `STATE.md` is the start-of-session read and points into the spec, plan and progress log rather than copying them. `comprehensive-review` plugin enabled for this repo only (its security-auditor agent does the milestone security reviews; it's disabled globally).
+Touches: `AGENTS.md`, `CLAUDE.md`, `STATE.md`, `HANDOFF.md`, `.claude/settings.json`, `.agents/`. No code.

@@ -1,0 +1,62 @@
+using EveryApp.Core.Hashing;
+
+namespace Ferry.Engine;
+
+/// <summary>Settings for one copy job. Some fields are used by later stages (conflicts, retry, verify, extra streams).</summary>
+public sealed record CopyOptions
+{
+    public bool Verify { get; init; } = true;
+
+    public bool KeepDatesAndAttributes { get; init; } = true;
+
+    public bool CopyPermissions { get; init; }
+
+    public ConflictRule IfExists { get; init; } = ConflictRule.Ask;
+
+    public FailureRule IfUnreadable { get; init; } = FailureRule.RetryThenSkipAndList;
+
+    public bool RescueMode { get; init; }
+
+    /// <summary>Give up after this many unreadable sectors per file. Default 4,096 (2 MiB on 512-byte sectors, 16 MiB on 4 KiB sectors).</summary>
+    public int MaxLostSectors { get; init; } = RescueReader.DefaultMaxLostSectors;
+
+    public bool FollowReparsePoints { get; init; }
+
+    public long? SpeedLimitBytesPerSecond { get; init; }
+
+    public IReadOnlyList<string> Exclude { get; init; } = [];
+
+    public bool DryRun { get; init; }
+
+    public HashAlgorithmKind HashAlgorithm { get; init; } = HashAlgorithmKind.XxHash3;
+
+    /// <summary>Size of each read/write chunk. 0 = auto (<see cref="FileCopier.DefaultBufferSizeBytes"/>, tuned by benchmarks).</summary>
+    public int BufferSizeBytes { get; init; } // 0 = auto (CA1805 forbids spelling out "= 0")
+
+    /// <summary>NTFS extra data streams, opt-in.</summary>
+    public bool CopyAlternateStreams { get; init; }
+
+    /// <summary>Writes &lt;dest&gt;\ferry-checksums.&lt;algo&gt; (one "hash  relative-path" line per file).</summary>
+    public bool ExportChecksums { get; init; }
+}
+
+public enum ConflictRule
+{
+    Ask,
+    Overwrite,
+    OverwriteIfNewer,
+    Skip,
+
+    /// <summary>The incoming file gets the next free name, "name (2).ext"; the existing file is never touched.</summary>
+    Rename,
+
+    /// <summary>Same as <see cref="Rename"/> (Explorer's "keep both files"): the existing file keeps its name and content, the copy gets "name (2).ext".</summary>
+    KeepBoth,
+}
+
+public enum FailureRule
+{
+    RetryThenSkipAndList,
+    Ask,
+    Stop,
+}

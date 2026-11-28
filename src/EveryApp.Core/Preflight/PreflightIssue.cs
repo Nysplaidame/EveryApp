@@ -1,0 +1,30 @@
+namespace EveryApp.Core.Preflight;
+
+public enum PreflightCode
+{
+    PathTooLong,
+    ReservedName,
+    TrailingDotOrSpace,
+    IllegalCharForDestination,
+    CaseCollision,
+    TooLargeForFat32,
+    NotEnoughSpace,
+
+    /// <summary>The free space on the destination could not be read, so the space check could not run.</summary>
+    FreeSpaceUnknown,
+
+    /// <summary>Never produced by <see cref="PreflightRunner"/>; the copier reports it when it meets a locked file.</summary>
+    Locked,
+
+    /// <summary>
+    /// Never produced by <see cref="PreflightRunner"/>; the tree copier reports it (and writes nothing) when the destination is inside a
+    /// folder being copied or moved, or is the very item being copied, judged by on-disk identity rather than by path text.
+    /// </summary>
+    DestinationInsideSource,
+
+    /// <summary>A warning (once per job): the destination drive (FAT or exFAT) can't keep the "downloaded from the internet" marker on files.</summary>
+    ZoneMarkerNotKept,
+}
+
+/// <summary>One problem found before copying. <paramref name="Message"/> is plain language for non-technical people.</summary>
+public sealed record PreflightIssue(PreflightCode Code, string Path, string Message);

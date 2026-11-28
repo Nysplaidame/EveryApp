@@ -1,2 +1,10 @@
 .superpowers/
 local/
+bin/
+obj/
+*.local.json
+artifacts/
+TestResults/
+signing/
+*.pfx
+*.cer

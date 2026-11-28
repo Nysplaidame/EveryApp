@@ -1,0 +1,22 @@
+version: 2
+# cooldown: a new version must be public for 7 days before an update is proposed, so a hijacked
+# release is usually caught and pulled before it reaches a PR here (security updates are not delayed).
+updates:
+  - package-ecosystem: nuget
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      nuget-minor-patch:
+        update-types: [minor, patch]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      actions-minor-patch:
+        update-types: [minor, patch]

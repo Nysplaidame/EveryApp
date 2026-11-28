@@ -1,0 +1,194 @@
+using EveryApp.Core.Jobs;
+
+namespace EveryApp.Core.Tests.Jobs;
+
+/// <summary>FilePartStarted records (R29): the journal names every part file, and the file it is for, before the part is created.</summary>
+public sealed class JobJournalPartTests : IDisposable
+{
+    private readonly string _dir = Path.Combine(Path.GetTempPath(), "everyapp-journal-p-" + Guid.NewGuid().ToString("N"));
+
+    public JobJournalPartTests() => Directory.CreateDirectory(_dir);
+
+    public void Dispose()
+    {
+        try { Directory.Delete(_dir, true); } catch (IOException) { }
+    }
+
+    private static JournalRecord Part(string? rel, string? part, string? target) =>
+        new(JournalRecordKind.FilePartStarted, rel, 0, DateTime.UnixEpoch, null, part, target);
+
+    private static JournalRecord Done(string rel, string? detail) => new(JournalRecordKind.FileDone, rel, 0, DateTime.UnixEpoch, null, detail);
+
+    [Fact]
+    public void NotOnDiskFlag_RoundTrips_AndTheLatestDoneRecordWins()
+    {
+        var id = Guid.NewGuid();
+        using (var j = JobJournal.Create(_dir, id, "{}"))
+        {
+            j.Append(Done(@"0\a.txt", JobJournal.NotOnDiskYet));
+            j.Append(Done(@"0\b.txt", null));
+            j.Append(Done(@"0\c.txt", JobJournal.NotOnDiskYet));
+            j.Append(Done(@"0\c.txt", null)); // copied again and forced to disk: trusted now
+            Assert.Equal([@"0\a.txt"], j.NotOnDiskPaths);
+        }
+
+        using var again = JobJournal.Open(_dir, id);
+        Assert.Equal([@"0\a.txt"], again.NotOnDiskPaths);
+        Assert.Equal(3, again.CompletedPaths.Count); // still listed as done; the resume decides whether to trust it
+    }
+
+    [Fact]
+    public void PartRecords_RoundTrip_AndAreListedInOrder()
+    {
+        var id = Guid.NewGuid();
+        using (var j = JobJournal.Create(_dir, id, "{}"))
+        {
+            j.Append(Part(@"0\photos\a.jpg", @"photos\a.jpg.0011aabb.ferrypart", @"photos\a.jpg"));
+            j.Append(Part(@"0\b.txt", "b (2).txt.ffee0011.ferrypart", "b (2).txt"));
+            Assert.Equal(2, j.PartFiles.Count);
+        }
+
+        using var again = JobJournal.Open(_dir, id);
+        Assert.Equal(
+            [
+                new JournalPart(@"0\photos\a.jpg", @"photos\a.jpg.0011aabb.ferrypart", @"photos\a.jpg"),
+                new JournalPart(@"0\b.txt", "b (2).txt.ffee0011.ferrypart", "b (2).txt"),
+            ],
+            again.PartFiles);
+        Assert.Empty(again.CompletedPaths);
+    }
+
+    public static TheoryData<string?, string?, string?> InvalidParts() => new()
+    {
+        { null, "a.ferrypart", "a" },
+        { "a.txt", null, "a.txt" },
+        { "a.txt", "a.txt.tmp", "a.txt" },
+        { "a.txt", @"..\a.txt.0011aabb.ferrypart", "a.txt" },
+        { "a.txt", @"C:\a.txt.0011aabb.ferrypart", "a.txt" },
+        { "a.txt", "a.txt:s.ferrypart", "a.txt" },
+        { @"..\a.txt", "a.txt.0011aabb.ferrypart", "a.txt" },
+        { "a.txt", "a.txt.0011aabb.ferrypart", null },
+        { "a.txt", "a.txt.0011aabb.ferrypart", @"..\a.txt" },
+        { "a.txt", "a.txt.0011aabb.ferrypart", @"C:\a.txt" },
+        { "a.txt", @"x\a.txt.0011aabb.ferrypart", @"y\a.txt" }, // a part file always sits next to its target
+    };
+
+    [Theory]
+    [MemberData(nameof(InvalidParts))]
+    public void PartRecord_Unsafe_RejectedOnAppend_AndStopsLoad(string? rel, string? part, string? target)
+    {
+        var id = Guid.NewGuid();
+        using (var j = JobJournal.Create(_dir, id, "{}"))
+        {
+            Assert.Throws<ArgumentException>(() => j.Append(Part(rel, part, target)));
+        }
+
+        // A forged line with the same content is not trusted on load either (Append and Load share one rule set).
+        File.AppendAllBytes(Path.Combine(_dir, id.ToString("N") + ".journal"), JournalTestHelper.ForgeLine(JournalRecordKind.FilePartStarted, rel, part, target));
+        File.AppendAllBytes(Path.Combine(_dir, id.ToString("N") + ".journal"), JournalTestHelper.ForgeLine(JournalRecordKind.FileDone, "after.txt"));
+        using var again = JobJournal.Open(_dir, id);
+        Assert.Empty(again.PartFiles);
+        Assert.Empty(again.CompletedPaths);
+    }
+
+    [Fact]
+    public void OtherRecords_MustNotCarryATargetPath()
+    {
+        using var j = JobJournal.Create(_dir, Guid.NewGuid(), "{}");
+        Assert.Throws<ArgumentException>(() => j.Append(new JournalRecord(JournalRecordKind.FileDone, "a.txt", 1, DateTime.UnixEpoch, null, null, @"..\x")));
+    }
+
+    private static JournalRecord Created(string rel, string part, string? identity) =>
+        new(JournalRecordKind.FilePartCreated, rel, 0, DateTime.UnixEpoch, identity, part);
+
+    [Fact]
+    public void PartIdentity_RoundTrips()
+    {
+        var id = Guid.NewGuid();
+        var fileId = new UInt128(0x0102030405060708, 0x090a0b0c0d0e0f10);
+        using (var j = JobJournal.Create(_dir, id, "{}"))
+        {
+            j.Append(Created(@"0\b.txt", "b (2).txt.ffee0011.ferrypart", JobJournal.FormatIdentity(0xabcdef, fileId)));
+            Assert.Single(j.PartIdentities);
+        }
+
+        using var again = JobJournal.Open(_dir, id);
+        Assert.Equal([new JournalPartIdentity(@"0\b.txt", "b (2).txt.ffee0011.ferrypart", 0xabcdef, fileId)], again.PartIdentities);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("0000000000abcdef-0102030405060708090a0b0c0d0e0f1")] // one digit short
+    [InlineData("0000000000ABCDEF-0102030405060708090a0b0c0d0e0f10")] // not lower case
+    [InlineData("0000000000abcdef+0102030405060708090a0b0c0d0e0f10")]
+    [InlineData("0000000000abcdeg-0102030405060708090a0b0c0d0e0f10")]
+    public void PartIdentity_Malformed_RejectedOnAppend_AndStopsLoad(string? identity)
+    {
+        var id = Guid.NewGuid();
+        using (var j = JobJournal.Create(_dir, id, "{}"))
+        {
+            Assert.Throws<ArgumentException>(() => j.Append(Created("a.txt", "a.txt.0011aabb.ferrypart", identity)));
+        }
+
+        File.AppendAllBytes(Path.Combine(_dir, id.ToString("N") + ".journal"),
+            JournalTestHelper.ForgeRecord(Created("a.txt", "a.txt.0011aabb.ferrypart", identity)));
+        File.AppendAllBytes(Path.Combine(_dir, id.ToString("N") + ".journal"), JournalTestHelper.ForgeLine(JournalRecordKind.FileDone, "after.txt"));
+        using var again = JobJournal.Open(_dir, id);
+        Assert.Empty(again.PartIdentities);
+        Assert.Empty(again.CompletedPaths);
+    }
+
+    [Fact]
+    public void PartRecords_OverThePerFileLimit_RefusedOnAppend_AndStopLoad()
+    {
+        var id = Guid.NewGuid();
+        string PartName(int i) => $"a.txt.{i:x8}.ferrypart";
+        using (var j = JobJournal.Create(_dir, id, "{}"))
+        {
+            for (var i = 0; i < JobJournal.MaxPartsPerFile; i++)
+            {
+                j.Append(Part("a.txt", PartName(i), "a.txt"));
+                j.Append(Created("a.txt", PartName(i), JobJournal.FormatIdentity(1, (UInt128)i)));
+            }
+
+            Assert.Throws<ArgumentException>(() => j.Append(Part("a.txt", PartName(999), "a.txt")));
+            Assert.Throws<ArgumentException>(() => j.Append(Created("a.txt", PartName(999), JobJournal.FormatIdentity(1, 999))));
+            j.Append(Part("b.txt", "b.txt.00000001.ferrypart", "b.txt")); // other files are not affected
+        }
+
+        var path = Path.Combine(_dir, id.ToString("N") + ".journal");
+        File.AppendAllBytes(path, JournalTestHelper.ForgeLine(JournalRecordKind.FilePartStarted, "a.txt", PartName(999), "a.txt"));
+        File.AppendAllBytes(path, JournalTestHelper.ForgeLine(JournalRecordKind.FileDone, "after.txt"));
+        using var again = JobJournal.Open(_dir, id);
+        Assert.Equal(JobJournal.MaxPartsPerFile + 1, again.PartFiles.Count); // a's 64 and b's one; the forged 65th stops the load
+        Assert.Equal(JobJournal.MaxPartsPerFile, again.PartIdentities.Count);
+        Assert.Empty(again.CompletedPaths);
+    }
+
+    [Fact]
+    public void Journal_OverTheSizeLimit_IsNotOpened()
+    {
+        var id = Guid.NewGuid();
+        using (var j = JobJournal.Create(_dir, id, "{}"))
+        {
+            j.Append(Done(@"0\a.txt", null));
+        }
+
+        var io = new JournalIo { MaxJournalBytes = 64 };
+        Assert.Throws<InvalidDataException>(() => JobJournal.OpenWithIo(_dir, id, null, io).Dispose());
+        Assert.Throws<InvalidDataException>(() => JobJournal.ReadSummaryWithIo(_dir, id, io, TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public void PartRecord_IsHandedToTheOsAtOnce()
+    {
+        var handedOver = 0;
+        var io = new JournalIo { HandOver = _ => handedOver++ };
+        using var j = JobJournal.CreateWithIo(_dir, Guid.NewGuid(), "{}", null, io);
+        j.Append(new JournalRecord(JournalRecordKind.FileDone, "x.txt", 1, DateTime.UnixEpoch, null, null));
+        Assert.Equal(0, handedOver);
+        j.Append(Part("a.txt", "a.txt.0011aabb.ferrypart", "a.txt"));
+        Assert.Equal(1, handedOver);
+    }
+}
